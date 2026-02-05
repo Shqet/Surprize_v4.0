@@ -1,4 +1,6 @@
 default:
+  orchestrator:
+    stop_timeout_sec: 10
   services:
     exe_runner:
       path: "cmd"
