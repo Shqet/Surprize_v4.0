@@ -253,3 +253,102 @@ default:
 - Все сервисы читают параметры только из профиля
 - Захардкоженные пути запрещены
 - Отсутствующий параметр → ошибка старта сервиса
+
+Contracts v1 — STOPPING Synchronization & Error Semantics
+Orchestrator STOP Semantics (v1)
+Stop completion rule
+
+Переход STOPPING → IDLE разрешён только если выполнено одно из условий:
+
+Получен ServiceStatus=STOPPED от всех зарегистрированных сервисов
+
+Произошёл stop-timeout — тогда Orchestrator переводит систему в ERROR
+
+Stop timeout
+
+stop_timeout_sec — общий таймаут на фазу STOPPING
+
+При истечении таймаута:
+
+публикуется лог ERROR с code=ORCH_STATE_CHANGE или SERVICE_ERROR (см. ниже)
+
+Orchestrator переводится в ERROR
+
+дальнейшее восстановление/повтор — только новой командой (вне scope v1)
+
+Services STOP Contract (v1)
+Mandatory status emission
+
+Каждый сервис обязан публиковать ServiceStatusEvent (через EventBus):
+
+при старте: STARTING → RUNNING (или ERROR)
+
+при остановке: STOPPED (или ERROR)
+
+STOP guarantee
+
+При вызове stop() сервис обязан в конечном итоге опубликовать:
+
+ServiceStatus=STOPPED при нормальной остановке, или
+
+ServiceStatus=ERROR если корректная остановка невозможна
+
+Тихая остановка без STOPPED/ERROR запрещена (в v1 это считается дефектом сервиса)
+
+Idempotency
+
+Повторный stop() не должен ломать сервис
+
+Повторный start() в RUNNING запрещён без предварительного STOPPED (сервис должен логировать ошибку и/или игнорировать)
+
+Logging Requirements (v1 additions)
+Orchestrator stop wait logs
+
+Во время STOPPING Orchestrator обязан логировать прогресс ожидания через k=v:
+
+code=ORCH_STATE_CHANGE
+message=from=RUNNING to=STOPPING
+
+code=SERVICE_STATUS (INFO)
+message=service=<name> status=<status>
+
+При таймауте:
+
+level=ERROR
+
+code=SERVICE_ERROR или ORCH_STATE_CHANGE
+
+message=phase=STOPPING timeout_sec=<N> pending=<svc1,svc2,...>
+
+(Список pending допустимо писать как строку)
+
+Profiles v1
+Root Structure (unchanged)
+
+profile_name:
+orchestrator:
+stop_timeout_sec: int
+services:
+<service_name>:
+<param>: <value>
+
+Minimal Example (v1)
+
+default:
+orchestrator:
+stop_timeout_sec: 10
+services:
+exe_runner:
+path: "cmd"
+args: "/c ping 127.0.0.1 -n 5"
+timeout_sec: 10
+
+Rules
+
+Если orchestrator.stop_timeout_sec не задан:
+
+использовать дефолт 10 секунд (v1)
+
+и логировать WARNING, что параметр не задан
+
+Все сервисы по-прежнему читают параметры только из профиля

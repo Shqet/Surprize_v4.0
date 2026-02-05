@@ -28,6 +28,10 @@ UI ничего не знает про устройства и subprocess.
 - ROADMAP.md — очередь задач
 - DECISIONS.md — журнал решений
 - SERVICES.md — реестр сервисов
+- DEV_REPORT_TEMPLATE.md — обязательный шаблон отчёта разработчика для приёмки архитектором
+- ARCH_ACCEPTANCE_TEMPLATE.md — шаблон ответа архитектора (акт приёмки версии/этапа по Developer Report)
+- acceptance/ — принятые Architect Acceptance (закрытые версии и фазы проекта)
+
 
 ---
 

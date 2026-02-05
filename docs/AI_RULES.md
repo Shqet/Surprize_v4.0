@@ -44,3 +44,58 @@
 - Изменение правил:
   - только через обновление AI_RULES.md
   - с записью в DECISIONS.md
+---
+
+# Process & Responsibility Rules
+
+## Documentation Update Policy
+
+- Документация обновляется **только** при изменении:
+  - архитектуры
+  - контрактов
+  - форматов данных
+- Реализационные изменения без изменения поведения
+  **не требуют** обновления ARCH.md или CONTRACTS.md
+- Все архитектурные решения фиксируются в DECISIONS.md
+
+---
+
+## Developer Chat Assignment Policy
+
+- Один Developer Chat обслуживает **одну архитектурную фазу**
+  (v0, v1, v2, …)
+- Developer Chat не меняется на каждую задачу
+- Смена Developer Chat — **осознанное архитектурное решение**,
+  а не ротация “по задаче”
+
+---
+
+## Work Acceptance Rules
+
+### Task Acceptance (any task)
+- Любая завершённая задача принимается архитектором
+  **только при наличии отчёта**,
+  оформленного по шаблону DEV_REPORT_TEMPLATE.md
+- Отсутствие отчёта = работа не принята,
+  независимо от качества кода
+
+### Version / Phase Closure (v0, v1, v2, …)
+- Закрытие версии/фазы выполняется только через
+  **Architect Acceptance** по шаблону ARCH_ACCEPTANCE_TEMPLATE.md
+- Acceptance основывается на Developer Report и фиксирует:
+  - статус (ACCEPTED / ACCEPTED WITH NOTES / REJECTED)
+  - принятый scope
+  - принятые допущения (не баги)
+  - что вынесено в следующую фазу
+- После acceptance версия считается **архитектурно закрытой**:
+  любые изменения требуют новой задачи и нового отчёта
+### Acceptance Storage Rule
+
+- Заполненные Architect Acceptance **обязаны храниться** в каталоге:
+  docs/acceptance/
+- Имена файлов:
+  ACCEPT_<version>.md
+  (например: ACCEPT_v0.md, ACCEPT_v1.md)
+- Шаблон ARCH_ACCEPTANCE_TEMPLATE.md **не используется** как место для фактической приёмки
+- Отсутствие acceptance-файла для версии означает,
+  что версия **не считается архитектурно закрытой**
