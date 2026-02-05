@@ -1,0 +1,6 @@
+default:
+  services:
+    exe_runner:
+      path: "cmd"
+      args: "/c ping 127.0.0.1 -n 5"
+      timeout_sec: 10

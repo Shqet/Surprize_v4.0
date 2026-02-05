@@ -1,100 +1,23 @@
-# =========================
-# Python bytecode
-# =========================
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
-
-# =========================
-# Virtual environments
-# =========================
+*.pyd
+*.so
 .venv/
 venv/
-env/
-ENV/
 
-# =========================
-# PyCharm / IntelliJ IDEA
-# =========================
+# Logs / runtime
+data/
+*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
 .idea/
 *.iml
 
-# =========================
-# Pytest / coverage
-# =========================
+# Pytest / mypy / ruff
 .pytest_cache/
-.coverage
-.coverage.*
-htmlcov/
-.tox/
-.nox/
-
-# =========================
-# Build / distribution
-# =========================
-build/
-dist/
-.eggs/
-*.egg-info/
-pip-wheel-metadata/
-
-# =========================
-# Packaging
-# =========================
-*.whl
-
-# =========================
-# Logs
-# =========================
-*.log
-logs/
-
-# =========================
-# Databases
-# =========================
-*.sqlite3
-*.db
-
-# =========================
-# Environment variables
-# =========================
-.env
-.env.*
-
-# =========================
-# OS junk
-# =========================
-.DS_Store
-Thumbs.db
-
-# =========================
-# Editor backups
-# =========================
-*~
-*.swp
-*.swo
-
-# =========================
-# Jupyter
-# =========================
-.ipynb_checkpoints/
-
-# =========================
-# MyPy / Ruff / Pyright
-# =========================
 .mypy_cache/
 .ruff_cache/
-.pyright/
-
-# =========================
-# Temporary files
-# =========================
-tmp/
-temp/
-.cache/
-
-# =========================
-# Custom project artifacts
-# =========================
-outputs/
-data/*.db

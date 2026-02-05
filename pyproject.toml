@@ -1,0 +1,40 @@
+[project]
+name = "surprize-shell"
+version = "0.0.1"
+description = "Desktop shell + orchestrator + services (v0 bootstrap)"
+requires-python = ">=3.11"
+dependencies = [
+  "PyQt6>=6.6",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.6.0",
+  "black>=24.0.0",
+  "mypy>=1.10.0",
+  "pytest>=8.0.0",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["app", "tests"]
+fix = true
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]  # black already handles line length
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+no_implicit_optional = true
+check_untyped_defs = true
+mypy_path = ["app"]
