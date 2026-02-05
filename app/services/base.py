@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Protocol
+from typing import Any, Protocol
 
 
 class ServiceStatus(str, Enum):
@@ -19,15 +19,16 @@ class BaseService(Protocol):
       - start() -> None
       - stop() -> None
       - status() -> ServiceStatus
-    Rules:
-      - start/stop are idempotent
-      - errors must be logged + sent as ServiceStatusEvent(ERROR) (will be done in concrete services)
+
+    Notes:
+      - start/stop must be idempotent (enforced in concrete services)
+      - profile config is passed via args/kwargs by ServiceManager (no contract change)
     """
 
     @property
     def name(self) -> str: ...
 
-    def start(self, *args, **kwargs) -> None: ...
+    def start(self, *args: Any, **kwargs: Any) -> None: ...
 
     def stop(self) -> None: ...
 
