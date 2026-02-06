@@ -1,0 +1,15 @@
+{
+  "experiment": {
+    "name": "v2_demo"
+  },
+  "integrator": {
+    "dt": 0.01,
+    "t_max": 60.0
+  },
+  "initial_conditions": {
+    "v0": 800.0,
+    "elevation_deg": 30.0,
+    "azimuth_deg": 0.0,
+    "h0": 0.0
+  }
+}

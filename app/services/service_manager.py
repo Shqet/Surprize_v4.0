@@ -1,80 +1,69 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Dict
 
 from app.core.event_bus import EventBus
 from app.core.events import ServiceStatusEvent
 from app.core.logging_setup import emit_log
-from app.services.base import BaseService, ServiceStatus
+from app.services.base import ServiceStatus
 
 
 class ServiceManager:
-    """
-    v0:
-      - register(service)
-      - start_all(profile_config)
-      - stop_all()
-      - keep name->service map
-      - services do not call each other directly (manager orchestrates)
-    """
-
     def __init__(self, bus: EventBus) -> None:
         self._bus = bus
-        self._services: dict[str, BaseService] = {}
+        self._services: Dict[str, Any] = {}
 
-    def register(self, service: BaseService) -> None:
-        name = service.name
-        if not name:
-            raise ValueError("service.name must be non-empty")
-        if name in self._services:
-            raise ValueError(f"service already registered: {name}")
+    # needed by Orchestrator v1/v2
+    def get_services(self) -> Dict[str, Any]:
+        return self._services
 
-        self._services[name] = service
+    def register(self, service: Any) -> None:
+        self._services[service.name] = service
+        emit_log(self._bus, "INFO", "services", "SERVICE_REGISTER", f"service={service.name}")
+        # initial status event (contract)
+        self._bus.publish(ServiceStatusEvent(service_name=service.name, status=ServiceStatus.IDLE.value))
 
-        emit_log(self._bus, "INFO", "services", "SERVICE_REGISTER", f"service={name}")
-        # Initial snapshot
-        self._bus.publish(ServiceStatusEvent(service_name=name, status=ServiceStatus.IDLE.value))
-
-    def start_all(self, profile_config: dict[str, Any]) -> None:
+    def start_all(self, profile_config: dict) -> None:
         """
-        profile_config: dict loaded from YAML, expected structure:
-          <profile_name>:
-            services:
-              <service_name>: { ...service cfg... }
+        Accepts either:
+          - full profile dict: {"default": {...}}
+          - already selected section: {"services": {...}, "orchestrator": {...}}
         """
-        for name, svc in self._services.items():
-            svc_cfg = self._extract_service_cfg(profile_config, name)
+        default_section = profile_config.get("default") if isinstance(profile_config, dict) else None
+        if isinstance(default_section, dict):
+            cfg = default_section
+        elif isinstance(profile_config, dict):
+            cfg = profile_config
+        else:
+            cfg = {}
 
+        services_cfg = cfg.get("services", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(services_cfg, dict):
+            services_cfg = {}
+
+        # deterministic order
+        for name in sorted(self._services.keys()):
+            svc = self._services[name]
             emit_log(self._bus, "INFO", "services", "SERVICE_START", f"service={name}")
-            # "Command accepted / starting" — actual RUNNING должен публиковать сам сервис
-            self._bus.publish(ServiceStatusEvent(service_name=name, status=ServiceStatus.STARTING.value))
+
+            section = services_cfg.get(name, {})
+            if section is None or not isinstance(section, dict):
+                section = {}
 
             try:
-                svc.start(cfg=svc_cfg)
+                # primary: pass section as positional (most of your services)
+                svc.start(section)
+            except TypeError:
+                # fallback: kw-only start(profile_section=...)
+                svc.start(profile_section=section)
             except Exception as ex:
                 emit_log(self._bus, "ERROR", "services", "SERVICE_ERROR", f"service={name} err={type(ex).__name__}")
-                self._bus.publish(ServiceStatusEvent(service_name=name, status=ServiceStatus.ERROR.value))
-                raise
 
     def stop_all(self) -> None:
-        # Best-effort stop (non-blocking if services implement async stop)
-        for name, svc in reversed(list(self._services.items())):
+        for name in sorted(self._services.keys()):
+            svc = self._services[name]
             emit_log(self._bus, "INFO", "services", "SERVICE_STOP", f"service={name}")
-            # Не публикуем STOPPED тут — фактический STOPPED/ERROR публикует сам сервис
             try:
                 svc.stop()
             except Exception as ex:
                 emit_log(self._bus, "ERROR", "services", "SERVICE_ERROR", f"service={name} err={type(ex).__name__}")
-                self._bus.publish(ServiceStatusEvent(service_name=name, status=ServiceStatus.ERROR.value))
-                # continue stopping others
-
-    def get_services(self) -> dict[str, BaseService]:
-        return dict(self._services)
-
-    def _extract_service_cfg(self, profile_config: dict[str, Any], service_name: str) -> dict[str, Any]:
-        if not profile_config:
-            return {}
-        profile_root = next(iter(profile_config.values()), {})
-        services = profile_root.get("services", {}) if isinstance(profile_root, dict) else {}
-        cfg = services.get(service_name, {}) if isinstance(services, dict) else {}
-        return cfg if isinstance(cfg, dict) else {}

@@ -1,8 +1,32 @@
 default:
   orchestrator:
     stop_timeout_sec: 10
+
   services:
     exe_runner:
       path: "cmd"
       args: "/c ping 127.0.0.1 -n 5"
       timeout_sec: 10
+
+    ballistics_model:
+      model_root: "model_ballistics"
+      python_exe: "python"
+      calc_entry: "run_vkr.py"
+      plots_entry: "visualization.py"
+      out_root: "outputs"
+      timeout_sec: 120
+      make_plots: true
+
+      # Будет сериализовано в run_dir/vkr_config.json (как есть)
+      config_json:
+        # Минимальные заглушки; наполни реальными параметрами модели
+        experiment:
+          name: "v2_demo"
+        integrator:
+          dt: 0.01
+          t_max: 60.0
+        initial_conditions:
+          v0: 800.0
+          elevation_deg: 30.0
+          azimuth_deg: 0.0
+          h0: 0.0
