@@ -19,14 +19,29 @@ default:
 
       # Будет сериализовано в run_dir/vkr_config.json (как есть)
       config_json:
-        # Минимальные заглушки; наполни реальными параметрами модели
-        experiment:
-          name: "v2_demo"
-        integrator:
-          dt: 0.01
-          t_max: 60.0
+        simulation:
+          dt: 0.002
+          t_max: 120.0
+          max_steps: 2000000
+
+        projectile:
+          m: 10.0
+          S: 0.01
+          C_L: 0.0
+          C_mp: 0.0
+          g: 9.81
+
+        rotation:
+          Ix: 0.02
+          Iy: 0.10
+          Iz: 0.10
+          k_stab: 1.0
+
         initial_conditions:
-          v0: 800.0
-          elevation_deg: 30.0
-          azimuth_deg: 0.0
-          h0: 0.0
+          V0: 310.0
+          theta_deg: 15.0
+          psi_deg: 0.0
+          X0: 0.0
+          Y0: 0.0
+          Z0: 1.0
+          omega_body: [ 0.0, 0.0, 100.0 ]

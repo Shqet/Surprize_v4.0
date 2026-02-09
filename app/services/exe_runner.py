@@ -63,18 +63,27 @@ class ExeRunnerService:
             return self._status
 
     def start(self, *args: Any, **kwargs: Any) -> None:
-        cfg_dict = kwargs.get("cfg", {})
+        # 1) Принять конфиг из всех допустимых источников
+        cfg_dict = kwargs.get("cfg")
+        if cfg_dict is None:
+            cfg_dict = kwargs.get("profile_section")
+        if cfg_dict is None and args and isinstance(args[0], dict):
+            cfg_dict = args[0]
+        if cfg_dict is None:
+            cfg_dict = {}
+
+        # 2) Распарсить cfg только после того, как cfg_dict определён
         cfg = self._parse_cfg(cfg_dict)
 
+        # 3) Idempotent start + установить состояние
         with self._lock:
             if self._status in (ServiceStatus.STARTING, ServiceStatus.RUNNING):
-                # idempotent start
                 return
             self._status = ServiceStatus.STARTING
             self._cfg = cfg
             self._stop_requested.clear()
 
-        # Launch in background thread to keep start() fast.
+        # 4) Launch in background thread to keep start() fast.
         t = threading.Thread(target=self._run_worker, name="ExeRunnerService.run", daemon=True)
         self._run_thread = t
         t.start()
