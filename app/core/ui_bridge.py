@@ -16,10 +16,46 @@ class UIBridge(QObject):
         super().__init__()
         self._bus = bus
 
-        bus.subscribe(LogEvent, self._on_log_event)
-        bus.subscribe(ServiceStatusEvent, self._on_service_status)
-        bus.subscribe(OrchestratorStateEvent, self._on_orch_state)
-        bus.subscribe(ProcessOutputEvent, self._on_process_output)
+        # Keep explicit handler refs for unsubscribe/detach
+        self._h_log = self._on_log_event
+        self._h_svc = self._on_service_status
+        self._h_orch = self._on_orch_state
+        self._h_proc = self._on_process_output
+        self._detached = False
+
+        bus.subscribe(LogEvent, self._h_log)
+        bus.subscribe(ServiceStatusEvent, self._h_svc)
+        bus.subscribe(OrchestratorStateEvent, self._h_orch)
+        bus.subscribe(ProcessOutputEvent, self._h_proc)
+
+    def detach(self) -> None:
+        """
+        Call on app shutdown before Qt destroys this QObject.
+        Prevents EventBus from invoking handlers after UI is gone.
+        """
+        if self._detached:
+            return
+        self._detached = True
+
+        # EventBus may or may not implement unsubscribe; handle both.
+        unsub = getattr(self._bus, "unsubscribe", None)
+        if callable(unsub):
+            try:
+                unsub(LogEvent, self._h_log)
+            except Exception:
+                pass
+            try:
+                unsub(ServiceStatusEvent, self._h_svc)
+            except Exception:
+                pass
+            try:
+                unsub(OrchestratorStateEvent, self._h_orch)
+            except Exception:
+                pass
+            try:
+                unsub(ProcessOutputEvent, self._h_proc)
+            except Exception:
+                pass
 
     def _safe_emit(self, sig: pyqtSignal, event: object) -> None:
         # When app is closing, Qt may delete this QObject while background threads still publish.
