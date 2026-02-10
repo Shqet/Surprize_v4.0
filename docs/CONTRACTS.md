@@ -27,6 +27,24 @@ RUNNING
 STOPPING
 ERROR
 
+Runtime Profile Overrides (v3)
+Orchestrator поддерживает передачу runtime-overrides при запуске:
+
+start(profile_name: str, overrides: dict | None = None)
+
+
+Overrides применяются:
+
+только in-memory
+
+поверх загруженного профиля
+
+через безопасный deep-merge
+
+без записи на диск
+
+UI и другие клиенты не имеют права модифицировать YAML-профили напрямую.
+
 ---
 
 ## Event Types

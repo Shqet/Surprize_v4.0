@@ -13,6 +13,44 @@ from app.services.base import ServiceStatus
 from app.services.service_manager import ServiceManager
 
 
+def deep_merge(base: dict, overrides: dict) -> dict:
+    """Recursively merge overrides into base (in-place) and return base.
+
+    Rules:
+    - dict + dict -> recursive merge
+    - any other value (including lists) -> replace entirely
+    """
+    if not isinstance(base, dict):
+        raise TypeError("base must be dict")
+    if not isinstance(overrides, dict):
+        raise TypeError("overrides must be dict")
+
+    for key, override_value in overrides.items():
+        if key in base:
+            base_value = base[key]
+            if isinstance(base_value, dict) and isinstance(override_value, dict):
+                deep_merge(base_value, override_value)
+            else:
+                base[key] = override_value
+        else:
+            base[key] = override_value
+    return base
+
+
+def count_leaf_values(d: object) -> int:
+    """Count leaf (non-dict) values in a nested dict structure.
+
+    - dict -> sum of children leaves
+    - anything else (including lists) -> 1
+    """
+    if isinstance(d, dict):
+        total = 0
+        for v in d.values():
+            total += count_leaf_values(v)
+        return total
+    return 1
+
+
 class Orchestrator:
     """
     v1:
@@ -54,12 +92,12 @@ class Orchestrator:
         with self._lock:
             return self._state
 
-    def start(self, profile_name: str) -> None:
+    def start(self, profile_name: str, overrides: dict | None = None) -> None:
         with self._lock:
             if self._state in (OrchestratorState.PRECHECK, OrchestratorState.RUNNING, OrchestratorState.STOPPING):
                 return
 
-        emit_log(self._bus, "INFO", "orchestrator", "ORCH_START_REQUEST", f"profile={profile_name}")
+        emit_log(self._bus, "INFO", "orchestrator", "ORCH_START_REQUEST", f"profile={profile_name} overrides={1 if overrides is not None else 0}")
         self._set_state(OrchestratorState.PRECHECK)
 
         try:
@@ -68,6 +106,60 @@ class Orchestrator:
             emit_log(self._bus, "ERROR", "orchestrator", "SERVICE_ERROR", f"stage=load_profile err={type(ex).__name__}")
             self._set_state(OrchestratorState.ERROR)
             return
+
+
+        if overrides is not None:
+            if not isinstance(overrides, dict):
+                emit_log(
+                    self._bus,
+                    "ERROR",
+                    "orchestrator",
+                    "SERVICE_ERROR",
+                    f"stage=validate_overrides err=TypeError",
+                )
+                self._set_state(OrchestratorState.ERROR)
+                return
+
+            # Apply overrides in-memory (no disk writes)
+            try:
+                if isinstance(profile_cfg, dict) and isinstance(profile_cfg.get(profile_name), dict):
+                    deep_merge(profile_cfg[profile_name], overrides)
+                elif isinstance(profile_cfg, dict):
+                    deep_merge(profile_cfg, overrides)
+                else:
+                    raise TypeError("profile_cfg must be dict")
+            except Exception as ex:
+                emit_log(
+                    self._bus,
+                    "ERROR",
+                    "orchestrator",
+                    "SERVICE_ERROR",
+                    f"stage=apply_overrides err={type(ex).__name__}",
+                )
+                self._set_state(OrchestratorState.ERROR)
+                return
+
+            emit_log(
+                self._bus,
+                "INFO",
+                "orchestrator",
+                "ORCH_PROFILE_OVERRIDES_APPLIED",
+                f"keys={count_leaf_values(overrides)}",
+            )
+
+            # Fail-fast config sanity check (minimal)
+            root = profile_cfg.get(profile_name) if isinstance(profile_cfg, dict) else None
+            root = root if isinstance(root, dict) else (profile_cfg if isinstance(profile_cfg, dict) else None)
+            services = root.get("services") if isinstance(root, dict) else None
+            if not isinstance(services, dict):
+                emit_log(self._bus, "ERROR", "orchestrator", "SERVICE_ERROR", "stage=cfg_check err=services_missing")
+                self._set_state(OrchestratorState.ERROR)
+                return
+            bm = services.get("ballistics_model")
+            if bm is not None and not isinstance(bm, dict):
+                emit_log(self._bus, "ERROR", "orchestrator", "SERVICE_ERROR", "stage=cfg_check err=ballistics_model_not_dict")
+                self._set_state(OrchestratorState.ERROR)
+                return
 
         self._apply_stop_timeout_from_profile(profile_cfg, profile_name)
 

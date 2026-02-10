@@ -7,7 +7,7 @@ from typing import Any
 import yaml
 
 
-@dataclass(frozen=True)
+@dataclass()
 class ProfileError(Exception):
     message: str
 
