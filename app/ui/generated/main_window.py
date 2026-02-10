@@ -12,17 +12,36 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
         MainWindow.setObjectName("MainWindow")
-        MainWindow.resize(800, 600)
+        MainWindow.resize(800, 592)
         self.centralwidget = QtWidgets.QWidget(parent=MainWindow)
         self.centralwidget.setObjectName("centralwidget")
         self.gridLayout = QtWidgets.QGridLayout(self.centralwidget)
         self.gridLayout.setObjectName("gridLayout")
-        self.vl_trajectory_visualization = QtWidgets.QVBoxLayout()
-        self.vl_trajectory_visualization.setObjectName("vl_trajectory_visualization")
-        self.gridLayout.addLayout(self.vl_trajectory_visualization, 0, 1, 1, 1)
+        self.tw_research = QtWidgets.QTabWidget(parent=self.centralwidget)
+        self.tw_research.setTabPosition(QtWidgets.QTabWidget.TabPosition.South)
+        self.tw_research.setTabShape(QtWidgets.QTabWidget.TabShape.Triangular)
+        self.tw_research.setElideMode(QtCore.Qt.TextElideMode.ElideLeft)
+        self.tw_research.setObjectName("tw_research")
+        self.scenarioTab = QtWidgets.QWidget()
+        self.scenarioTab.setObjectName("scenarioTab")
+        self.gridLayout_2 = QtWidgets.QGridLayout(self.scenarioTab)
+        self.gridLayout_2.setObjectName("gridLayout_2")
         self.gl_trajectory_params = QtWidgets.QGridLayout()
         self.gl_trajectory_params.setObjectName("gl_trajectory_params")
-        self.gridLayout.addLayout(self.gl_trajectory_params, 0, 0, 1, 1)
+        self.gridLayout_2.addLayout(self.gl_trajectory_params, 0, 0, 1, 1)
+        self.vl_trajectory_visualization = QtWidgets.QVBoxLayout()
+        self.vl_trajectory_visualization.setObjectName("vl_trajectory_visualization")
+        self.gridLayout_2.addLayout(self.vl_trajectory_visualization, 0, 1, 1, 1)
+        self.tw_research.addTab(self.scenarioTab, "")
+        self.monitoringTab = QtWidgets.QWidget()
+        self.monitoringTab.setObjectName("monitoringTab")
+        self.gridLayout_33 = QtWidgets.QGridLayout(self.monitoringTab)
+        self.gridLayout_33.setObjectName("gridLayout_33")
+        self.tw_research.addTab(self.monitoringTab, "")
+        self.gridLayout.addWidget(self.tw_research, 1, 0, 1, 1)
+        self.l_video = QtWidgets.QHBoxLayout()
+        self.l_video.setObjectName("l_video")
+        self.gridLayout.addLayout(self.l_video, 0, 0, 1, 1)
         MainWindow.setCentralWidget(self.centralwidget)
         self.menubar = QtWidgets.QMenuBar(parent=MainWindow)
         self.menubar.setGeometry(QtCore.QRect(0, 0, 800, 21))
@@ -33,11 +52,14 @@ class Ui_MainWindow(object):
         MainWindow.setStatusBar(self.statusbar)
 
         self.retranslateUi(MainWindow)
+        self.tw_research.setCurrentIndex(0)
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
 
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
         MainWindow.setWindowTitle(_translate("MainWindow", "MainWindow"))
+        self.tw_research.setTabText(self.tw_research.indexOf(self.scenarioTab), _translate("MainWindow", "Сценарий"))
+        self.tw_research.setTabText(self.tw_research.indexOf(self.monitoringTab), _translate("MainWindow", "Мониторинг"))
 
 
 if __name__ == "__main__":
