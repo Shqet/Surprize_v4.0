@@ -31,49 +31,45 @@ BITRATE = 2_000_000  # 2 Mbps
 
 HOST = "0.0.0.0"
 PORT = 8554
+THERMAL_PROBE_INTERVAL_SEC = 5
 # ==========================
 
 
-def detect_thermal_device_blocking() -> str:
+def detect_thermal_device_once() -> str | None:
     """
-    Блокирующий поиск инфракрасной камеры по выводу `v4l2-ctl --list-devices`.
+    Неблокирующий поиск инфракрасной камеры по выводу `v4l2-ctl --list-devices`.
 
     Ищем строку, содержащую "USB Camera".
     Первая /dev/video* строка сразу после неё — и есть нужное устройство.
 
-    Если ничего не нашли — ждём 5 секунд и повторяем.
+    Возвращает:
+      - путь вида "/dev/videoX" если найдено
+      - None если не найдено или произошла ошибка
     """
-    while True:
-        try:
-            out = subprocess.check_output(
-                ["v4l2-ctl", "--list-devices"],
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-        except Exception as e:
-            print(f"[THERMAL][WARN] v4l2-ctl --list-devices failed: {e}. Retry in 5 seconds...")
-            time.sleep(5)
-            continue
+    try:
+        out = subprocess.check_output(
+            ["v4l2-ctl", "--list-devices"],
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except Exception as e:
+        print(f"[THERMAL][WARN] v4l2-ctl --list-devices failed: {e}")
+        return None
 
-        lines = out.splitlines()
-        dev = None
-        for i, line in enumerate(lines):
-            if "USB Camera" in line:
-                # ищем первую строку ниже, начинающуюся с /dev/video
-                for j in range(i + 1, len(lines)):
-                    l2 = lines[j].strip()
-                    if l2.startswith("/dev/video"):
-                        dev = l2
-                        break
-                if dev:
-                    break
+    lines = out.splitlines()
+    for i, line in enumerate(lines):
+        if "USB Camera" in line:
+            for j in range(i + 1, len(lines)):
+                l2 = lines[j].strip()
+                if l2.startswith("/dev/video"):
+                    if os.path.exists(l2):
+                        print(f"[THERMAL][INFO] Detected thermal camera at {l2}")
+                        return l2
+                    return None
+            return None
 
-        if dev:
-            print(f"[THERMAL][INFO] Detected thermal camera at {dev}")
-            return dev
+    return None
 
-        print("[THERMAL][WARN] USB Camera not found in v4l2-ctl --list-devices, retrying in 5 seconds...")
-        time.sleep(5)
 
 
 class AppSrcOutput(Output):
@@ -159,29 +155,81 @@ class CameraFactory(GstRtspServer.RTSPMediaFactory):
 
 class ThermalFactory(GstRtspServer.RTSPMediaFactory):
     """
-    Фабрика для термального потока с Infiray P2 Pro (UVC /dev/videoX).
-    - /visible запускается сразу, без ожидания камеры
-    - /thermal при первом запросе ищет "USB Camera" через v4l2-ctl --list-devices
-      и блокируется, пока камера не появится
-    - если путь /dev/videoX позже исчезнет (камеру выдернули) —
-      при следующем подключении к /thermal поиск повторится
+    Фабрика для термального потока (UVC /dev/videoX).
+
+    Требования:
+    - /thermal не должен блокировать RTSP обработку, даже если камера отсутствует
+    - если камера появится/пропадёт — устройство должно переобнаруживаться без перезапуска
     """
-    def __init__(self, device: str | None = None):
+
+    def __init__(self):
         super().__init__()
-        self.device = device
         self.set_shared(True)
 
-    def _ensure_device(self):
-        if self.device is None or not os.path.exists(self.device):
-            print("[THERMAL] Ensuring thermal camera device (waiting for USB Camera)...")
-            self.device = detect_thermal_device_blocking()
+        self.device: str | None = None
+        self._probe_source_id: int | None = None
+
+        self._start_background_probe()
+
+    def _start_background_probe(self):
+        if self._probe_source_id is not None:
+            return
+
+        # Первичная быстрая проверка сразу (без sleep)
+        self._probe_once()
+
+        # Дальше — периодически (не блокирует main loop)
+        self._probe_source_id = GLib.timeout_add_seconds(
+            THERMAL_PROBE_INTERVAL_SEC,
+            self._probe_tick,
+        )
+
+    def _probe_tick(self):
+        self._probe_once()
+        return True  # продолжать таймер
+
+    def _probe_once(self):
+        dev = detect_thermal_device_once()
+
+        if dev and os.path.exists(dev):
+            if dev != self.device:
+                self.device = dev
+                print(f"[THERMAL][INFO] Thermal device updated: {self.device}")
+        else:
+            if self.device is not None:
+                print("[THERMAL][WARN] Thermal device disappeared; switching to placeholder")
+            self.device = None
+
+    def _build_placeholder_pipeline(self):
+        print("[THERMAL][WARN] Thermal camera not found; serving black placeholder stream")
+        bitrate_kbps = BITRATE // 1000
+        placeholder_desc = (
+            "videotestsrc is-live=true pattern=black ! "
+            "video/x-raw,framerate=15/1,width=640,height=480 ! "
+            "videoconvert ! "
+            f"x264enc bitrate={bitrate_kbps} speed-preset=ultrafast tune=zerolatency key-int-max=25 ! "
+            "rtph264pay name=pay0 pt=96"
+        )
+        pipeline = Gst.parse_launch(placeholder_desc)
+        bus = pipeline.get_bus()
+        bus.add_signal_watch()
+
+        def on_message(bus, msg):
+            if msg.type == Gst.MessageType.ERROR:
+                err, dbg = msg.parse_error()
+                print("[THERMAL][PLACEHOLDER][ERROR]", err, dbg)
+            elif msg.type == Gst.MessageType.WARNING:
+                warn, dbg = msg.parse_warning()
+                print("[THERMAL][PLACEHOLDER][WARN]", warn, dbg)
+
+        bus.connect("message", on_message)
+        return pipeline
 
     def do_create_element(self, url):
-        # гарантируем наличие актуального device перед созданием пайплайна
-        self._ensure_device()
+        if not self.device:
+            return self._build_placeholder_pipeline()
 
         bitrate_kbps = BITRATE // 1000
-
         print(f"[THERMAL] create_element url={url}, device={self.device}")
 
         # Камера даёт 256x384, две картинки вертикально.
