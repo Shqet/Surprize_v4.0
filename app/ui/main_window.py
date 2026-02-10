@@ -47,6 +47,12 @@ class MainWindow(QMainWindow):
         self._initial_config: dict[str, Any] = self._load_initial_config_json()
         self.current_config: dict[str, Any] = copy.deepcopy(self._initial_config)
 
+        # --- UI Step 3: last run intent (in-memory, no запуск на Step 3/Шаг 2) ---
+        self._last_run_intent: Optional[dict[str, Any]] = None
+
+        # --- UI Step 4: disable/enable Generate while ballistics_model is RUNNING ---
+        self._bm_running: bool = False
+
         # UI from generated .ui
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
@@ -71,6 +77,9 @@ class MainWindow(QMainWindow):
 
         # connect Generate
         self._connect_actions()
+
+        # UI Step 4: state handling for Generate button
+        self._connect_state_handling()
 
     # ---------------- config source ----------------
 
@@ -176,17 +185,91 @@ class MainWindow(QMainWindow):
         if btn is not None:
             btn.clicked.connect(self.on_generate_clicked)
 
+
+    # ---------------- UI Step 4: state handling ----------------
+
+    def _connect_state_handling(self) -> None:
+        """Subscribe to bridge events to disable/enable Generate while running."""
+        try:
+            self._bridge.service_status_event.connect(self._on_service_status_event)
+        except Exception:
+            # Bridge may be absent in some tests; ignore
+            pass
+        try:
+            self._bridge.orch_state_event.connect(self._on_orch_state_event)
+        except Exception:
+            pass
+
+        # initial state: enabled unless already running
+        self._set_generate_enabled(not self._bm_running)
+
+    def _get_generate_button(self) -> Optional[QPushButton]:
+        return self.findChild(QPushButton, "btn_generate_trajectory")
+
+    def _set_generate_enabled(self, enabled: bool) -> None:
+        btn = self._get_generate_button()
+        if btn is not None:
+            btn.setEnabled(enabled)
+
+    def _on_service_status_event(self, e: object) -> None:
+        """Disable/enable Generate based on ServiceStatusEvent for ballistics_model."""
+        service_name = getattr(e, "service_name", None)
+        status = getattr(e, "status", None)
+
+        if service_name != "ballistics_model":
+            return
+
+        if status == "RUNNING":
+            self._bm_running = True
+            self._set_generate_enabled(False)
+            return
+
+        if status in ("STOPPED", "ERROR"):
+            # UI Step 5: log run completion (no stdout / artifacts parsing here)
+            bus = getattr(self._bridge, "_bus", None)
+            if bus is not None:
+                emit_log(
+                    bus,
+                    level=("ERROR" if status == "ERROR" else "INFO"),
+                    source="ui",
+                    code="UI_RUN_FINISHED",
+                    message=f"status={status}",
+                )
+
+            self._bm_running = False
+            self._set_generate_enabled(True)
+            return
+
+    def _on_orch_state_event(self, e: object) -> None:
+        """Fallback: ensure Generate is enabled when orchestrator is not running."""
+        state = getattr(e, "state", None)
+
+        # If orchestrator is idle/error, we allow Generate unless service is still running
+        if state in ("IDLE", "ERROR"):
+            if not self._bm_running:
+                self._set_generate_enabled(True)
+
     def on_generate_clicked(self) -> None:
         """
-        Step 2 / Шаг 5:
-        - финальная валидация current_config (dict + json.dumps)
-        - json stringify (compact: indent=None)
-        - bytes
-        - keys: количество leaf-ключей (не-dict значений)
-        - логи: UI_GENERATE_CLICKED + UI_CONFIG_READY
+        UI Step 3 — Шаг 3:
+        - сформировать overrides
+        - залогировать UI_RUN_REQUESTED
+        - вызвать orch.start(..., overrides=...)
         """
         bus = getattr(self._bridge, "_bus", None)
         if bus is None:
+            return
+
+
+        # UI Step 4: ignore repeated run while ballistics_model is RUNNING
+        if self._bm_running:
+            emit_log(
+                bus,
+                level="INFO",
+                source="ui",
+                code="UI_RUN_ALREADY_RUNNING",
+                message="Generate ignored: ballistics_model already RUNNING",
+            )
             return
 
         emit_log(
@@ -197,9 +280,19 @@ class MainWindow(QMainWindow):
             message="Нажата кнопка генерации траектории",
         )
 
-        cfg = self._editor.get_config() if self._editor is not None else self.current_config
+        if self._editor is None:
+            emit_log(
+                bus,
+                level="ERROR",
+                source="ui",
+                code="UI_CONFIG_INVALID",
+                message="Редактор config_json не найден",
+            )
+            return
 
-        # финальная валидация
+        # 1) cfg = deepcopy(editor.get_config())
+        cfg = copy.deepcopy(self._editor.get_config())
+
         if not isinstance(cfg, dict):
             emit_log(
                 bus,
@@ -210,6 +303,7 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # 2) финальная сериализация
         try:
             json_str = json.dumps(cfg, ensure_ascii=False, indent=None)
         except Exception as e:
@@ -222,18 +316,52 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self.current_config = cfg
-
         n_bytes = len(json_str.encode("utf-8"))
         n_keys = self._count_leaf_keys(cfg)
+
+        # 3) Run Intent (in-memory)
+        run_intent = {
+            "service": "ballistics_model",
+            "config_json": cfg,
+        }
+        self._last_run_intent = run_intent
 
         emit_log(
             bus,
             level="INFO",
             source="ui",
-            code="UI_CONFIG_READY",
-            message=f"bytes={n_bytes} keys={n_keys}",
+            code="UI_RUN_REQUESTED",
+            message=f"service=ballistics_model bytes={n_bytes} keys={n_keys}",
         )
+
+        # 4) overrides для Orchestrator
+        overrides = {
+            "services": {
+                "ballistics_model": {
+                    "config_json": cfg,
+                    "make_plots": False,
+                }
+            }
+        }
+
+        # 5) РЕАЛЬНЫЙ ЗАПУСК через Orchestrator
+        # Disable immediately to avoid double-click until RUNNING status arrives
+        self._bm_running = True
+        self._set_generate_enabled(False)
+
+        try:
+            self._orch.start("default", overrides=overrides)
+        except Exception as e:
+            # rollback UI state on failure
+            self._bm_running = False
+            self._set_generate_enabled(True)
+            emit_log(
+                bus,
+                level="ERROR",
+                source="ui",
+                code="UI_RUN_START_FAILED",
+                message=f"Не удалось запустить orchestrator: {e!r}",
+            )
 
     def _count_leaf_keys(self, obj: Any) -> int:
         """
@@ -246,7 +374,6 @@ class MainWindow(QMainWindow):
             for v in obj.values():
                 total += self._count_leaf_keys(v)
             return total
-        # dict закончился => leaf (scalar/list/etc.)
         return 1
 
     # ---------------- logging helpers ----------------
