@@ -66,13 +66,34 @@ class UIBridge(QObject):
             return
 
     def _on_log_event(self, e: LogEvent) -> None:
-        self._safe_emit(self.log_event, e)
+        if self._detached:
+            return
+        # During shutdown Qt may delete this QObject; accessing bound signals can raise RuntimeError.
+        try:
+            self._safe_emit(self.log_event, e)
+        except RuntimeError:
+            return
 
     def _on_service_status(self, e: ServiceStatusEvent) -> None:
-        self._safe_emit(self.service_status_event, e)
+        if self._detached:
+            return
+        try:
+            self._safe_emit(self.service_status_event, e)
+        except RuntimeError:
+            return
 
     def _on_orch_state(self, e: OrchestratorStateEvent) -> None:
-        self._safe_emit(self.orch_state_event, e)
+        if self._detached:
+            return
+        try:
+            self._safe_emit(self.orch_state_event, e)
+        except RuntimeError:
+            return
 
     def _on_process_output(self, e: ProcessOutputEvent) -> None:
-        self._safe_emit(self.process_output_event, e)
+        if self._detached:
+            return
+        try:
+            self._safe_emit(self.process_output_event, e)
+        except RuntimeError:
+            return
