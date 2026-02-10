@@ -26,8 +26,11 @@ Gst.init(None)
 # ========= CONFIG =========
 FRAME_WIDTH = 1280
 FRAME_HEIGHT = 720
-TARGET_FPS = 15
-BITRATE = 2_000_000  # 2 Mbps
+VISIBLE_FPS = 15
+VISIBLE_BITRATE = 2_000_000  # bps
+
+THERMAL_FPS = 15
+THERMAL_BITRATE = 2_000_000  # bps
 
 HOST = "0.0.0.0"
 PORT = 8554
@@ -112,7 +115,7 @@ class AppSrcOutput(Output):
 
             buf.pts = pts
             buf.dts = dts
-            buf.duration = int(1e9 / TARGET_FPS)
+            buf.duration = int(1e9 / VISIBLE_FPS)
 
             for i, src in enumerate(list(self.appsrcs)):
                 b = buf if i == 0 else buf.copy()
@@ -120,7 +123,12 @@ class AppSrcOutput(Output):
 
 
 class CameraFactory(GstRtspServer.RTSPMediaFactory):
-    """Фабрика для потока с Pi-камеры (Picamera2 → H.264 → RTSP)."""
+    """Фабрика для потока с Pi-камеры (Picamera2 → H.264 → RTSP).
+
+    Важно: appsrc добавляем/убираем через lifecycle RTSPMedia (configure/unprepared),
+    а не через bus STATE_CHANGED->NULL. Это надёжнее для shared media.
+    """
+
     def __init__(self, appsrc_output: AppSrcOutput):
         super().__init__()
         self.appsrc_output = appsrc_output
@@ -132,25 +140,41 @@ class CameraFactory(GstRtspServer.RTSPMediaFactory):
             "caps=video/x-h264,stream-format=byte-stream,alignment=au,framerate={}/1 "
             "! h264parse config-interval=1 "
             "! rtph264pay name=pay0 pt=96"
-        ).format(TARGET_FPS)
+        ).format(VISIBLE_FPS)
 
-        pipeline = Gst.parse_launch(pipeline_desc)
-        appsrc = pipeline.get_child_by_name("source")
+        print(f"[VISIBLE] pipeline: appsrc(h264) fps={VISIBLE_FPS} bitrate={VISIBLE_BITRATE}")
+        return Gst.parse_launch(pipeline_desc)
 
+    def do_configure(self, media):
+        # Called for each RTSPMedia instance (or when shared media is prepared).
+        element = media.get_element()
+        appsrc = element.get_child_by_name("source") if element else None
+        if appsrc is None:
+            print("[VISIBLE][ERROR] appsrc 'source' not found in pipeline")
+            return
+
+        # NOTE: if you later switch to manual PTS, set do-timestamp=False and manage pts in AppSrcOutput.
         appsrc.set_property("do-timestamp", True)
         self.appsrc_output.add_appsrc(appsrc)
 
-        def _on_state_changed(bus, msg):
-            if msg.type == Gst.MessageType.STATE_CHANGED:
-                old, new, _ = msg.parse_state_changed()
-                if new == Gst.State.NULL:
+        def _on_unprepared(_media):
+            self.appsrc_output.remove_appsrc(appsrc)
+
+        # When the last client disconnects, shared media becomes unprepared.
+        media.connect("unprepared", _on_unprepared)
+
+        # Optional fallback: remove appsrc on pipeline errors (won't be the primary lifecycle hook).
+        bus = element.get_bus()
+        if bus is not None:
+            bus.add_signal_watch()
+
+            def _on_bus_message(_bus, msg):
+                if msg.type == Gst.MessageType.ERROR:
+                    err, dbg = msg.parse_error()
+                    print("[VISIBLE][ERROR]", err, dbg)
                     self.appsrc_output.remove_appsrc(appsrc)
 
-        bus = pipeline.get_bus()
-        bus.add_signal_watch()
-        bus.connect("message", _on_state_changed)
-
-        return pipeline
+            bus.connect("message", _on_bus_message)
 
 
 class ThermalFactory(GstRtspServer.RTSPMediaFactory):
@@ -201,14 +225,14 @@ class ThermalFactory(GstRtspServer.RTSPMediaFactory):
             self.device = None
 
     def _build_placeholder_pipeline(self):
-        print("[THERMAL][WARN] Thermal camera not found; serving black placeholder stream")
-        bitrate_kbps = BITRATE // 1000
+        print(f"[THERMAL][WARN] Thermal camera not found; serving black placeholder stream (fps={THERMAL_FPS}, bitrate={THERMAL_BITRATE})")
+        bitrate_kbps = THERMAL_BITRATE // 1000
         placeholder_desc = (
             "videotestsrc is-live=true pattern=black ! "
-            "video/x-raw,framerate=15/1,width=640,height=480 ! "
+            f"video/x-raw,framerate={THERMAL_FPS}/1,width=640,height=480 ! "
             "videoconvert ! "
-            f"x264enc bitrate={bitrate_kbps} speed-preset=ultrafast tune=zerolatency key-int-max=25 ! "
-            "rtph264pay name=pay0 pt=96"
+            f"x264enc bitrate={bitrate_kbps} speed-preset=ultrafast tune=zerolatency key-int-max={THERMAL_FPS*2} ! "
+            "rtph264pay name=pay0 pt=96 config-interval=1"
         )
         pipeline = Gst.parse_launch(placeholder_desc)
         bus = pipeline.get_bus()
@@ -229,8 +253,8 @@ class ThermalFactory(GstRtspServer.RTSPMediaFactory):
         if not self.device:
             return self._build_placeholder_pipeline()
 
-        bitrate_kbps = BITRATE // 1000
-        print(f"[THERMAL] create_element url={url}, device={self.device}")
+        bitrate_kbps = THERMAL_BITRATE // 1000
+        print(f"[THERMAL] create_element url={url}, device={self.device}, fps={THERMAL_FPS}, bitrate={THERMAL_BITRATE}")
 
         # Камера даёт 256x384, две картинки вертикально.
         # Обрезаем нижние 192 пикселя — остаётся верхняя.
@@ -243,8 +267,8 @@ class ThermalFactory(GstRtspServer.RTSPMediaFactory):
             "coloreffects preset=heat ! "
             "videoconvert ! "
             f"x264enc bitrate={bitrate_kbps} "
-            "speed-preset=ultrafast tune=zerolatency key-int-max=25 ! "
-            "rtph264pay name=pay0 pt=96"
+            f"speed-preset=ultrafast tune=zerolatency key-int-max={THERMAL_FPS*2} ! "
+            "rtph264pay name=pay0 pt=96 config-interval=1"
         )
 
         pipeline = Gst.parse_launch(pipeline_desc)
@@ -267,16 +291,18 @@ class ThermalFactory(GstRtspServer.RTSPMediaFactory):
 
 def main():
     try:
+        print("[CONFIG] VISIBLE_FPS=", VISIBLE_FPS, "VISIBLE_BITRATE=", VISIBLE_BITRATE)
+        print("[CONFIG] THERMAL_FPS=", THERMAL_FPS, "THERMAL_BITRATE=", THERMAL_BITRATE)
         # --- Pi-камера (видимый поток) ---
         picam2 = Picamera2()
         cam_config = picam2.create_video_configuration(
             main={"size": (FRAME_WIDTH, FRAME_HEIGHT), "format": "YUV420"},
-            controls={"FrameRate": TARGET_FPS},
+            controls={"FrameRate": VISIBLE_FPS},
             buffer_count=6,
         )
         picam2.configure(cam_config)
 
-        encoder = H264Encoder(bitrate=BITRATE, repeat=True)
+        encoder = H264Encoder(bitrate=VISIBLE_BITRATE, repeat=True)
         appsrc_output = AppSrcOutput()
 
         # --- RTSP сервер ---
