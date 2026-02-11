@@ -60,7 +60,62 @@ ServiceStatusEvent:
 OrchestratorStateEvent:
   state
 
+RtspChannelHealthEvent:
+  service_name: str
+  channel: "visible" | "thermal"
+  url: str
+  state: "CONNECTED" | "RECONNECTING" | "OFFLINE"
+  attempt: int
+  last_error: str | None
+
+### RtspChannelHealthEvent (v1)
+
+**Назначение:** публикация health-состояния RTSP-канала.  
+**Источник:** `rtsp_health` service.  
+**Потребители:** UI и любые наблюдатели (без управления сервисом напрямую).
+
+**Обязательные поля:**
+- `service: str` — всегда `"rtsp_health"`
+- `channel: str` — идентификатор канала (например `"visible"`, `"thermal"`)
+- `state: str` — одно из: `CONNECTED | RECONNECTING`
+- `attempt: int` — номер попытки переподключения (0 при CONNECTED)
+- `ts: float` — timestamp (unix seconds)
+
+**Семантика v1:**
+- `CONNECTED` — probe успешен (канал доступен сейчас)
+- `RECONNECTING` — probe неуспешен, сервис выполняет backoff и будет повторять проверки
+- `OFFLINE` в v1 **не используется** (зарезервировано на v2 при необходимости)
+
+**Важно:**
+- отсутствие сигнала/недоступность RTSP не означает `ServiceStatus=ERROR`
+- fatal-ошибки среды (например, отсутствует `ffprobe`) переводят сервис в `ServiceStatus=ERROR`
 ---
+### RtspIngestStatsEvent (v1)
+
+**Назначение:** телеметрия ingest-потока (декодирование/получение кадров) по RTSP-каналу.  
+**Источник:** `rtsp_ingest` service.  
+**Потребители:** UI/мониторинг (read-only), логика принятия решений (опционально).
+
+**Обязательные поля:**
+- `service: str` — всегда `"rtsp_ingest"`
+- `channel: str` — идентификатор канала (например `"visible"`, `"thermal"`)
+- `state: str` — одно из: `INGESTING | RESTARTING | STALLED`
+- `fps_est: float` — оценка частоты обновления `latest.jpg` (0 если кадров нет)
+- `last_frame_age_sec: float` — возраст последнего кадра в секундах (∞/large если нет)
+- `restarts: int` — количество рестартов ffmpeg с момента старта сервиса
+- `ts: float` — timestamp (unix seconds)
+
+**Семантика v1:**
+- `INGESTING` — кадры поступают (last_frame_age_sec <= max_frame_age_sec)
+- `RESTARTING` — ffmpeg перезапускается / backoff-ожидание перед рестартом
+- `STALLED` — ffmpeg жив, но кадры не обновляются дольше порога `max_frame_age_sec` (если задан)
+
+**Важно:**
+- Событие носит мониторинговый характер; UI не управляет сервисом через него.
+- Отсутствие сети/камеры не обязательно переводит сервис в `ERROR` (ожидается reconnect/backoff).
+- Fatal errors (например, отсутствует ffmpeg или неверная конфигурация) переводят сервис в `ServiceStatus=ERROR`.
+
+
 
 ## Profiles
 

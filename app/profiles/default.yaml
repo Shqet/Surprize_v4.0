@@ -45,3 +45,16 @@ default:
           Y0: 0.0
           Z0: 1.0
           omega_body: [ 0.0, 0.0, 100.0 ]
+
+    rtsp_health:
+      channels:
+        visible:
+          url: "rtsp://192.168.0.10:8554/visible"
+        thermal:
+          url: "rtsp://192.168.0.10:8554/thermal"
+      probe_timeout_sec: 3
+      period_ok_sec: 2
+      backoff:
+        base_ms: 300
+        max_ms: 5000
+        jitter_ms: 200
