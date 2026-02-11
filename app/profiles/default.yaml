@@ -4,11 +4,13 @@ default:
 
   services:
     exe_runner:
+      role: job
       path: "cmd"
       args: "/c ping 127.0.0.1 -n 5"
       timeout_sec: 10
 
     ballistics_model:
+      role: job
       model_root: "model_ballistics"
       python_exe: "python"
       calc_entry: "run_vkr.py"
@@ -44,9 +46,11 @@ default:
           X0: 0.0
           Y0: 0.0
           Z0: 1.0
-          omega_body: [ 0.0, 0.0, 100.0 ]
+          omega_body: [0.0, 0.0, 100.0]
 
+    # Daemon: мониторит доступность RTSP (ffprobe нужен в PATH)
     rtsp_health:
+      role: daemon
       channels:
         visible:
           url: "rtsp://192.168.0.10:8554/visible"
@@ -58,3 +62,34 @@ default:
         base_ms: 300
         max_ms: 5000
         jitter_ms: 200
+
+    # Daemon: ingest RTSP -> latest.jpg + stats events
+    # Обязательное: channels + restart_backoff :contentReference[oaicite:1]{index=1}
+    rtsp_ingest:
+      role: daemon
+      channels:
+        visible:
+          url: "rtsp://192.168.0.10:8554/visible"
+        thermal:
+          url: "rtsp://192.168.0.10:8554/thermal"
+
+      # optional (default: "ffmpeg")
+      ffmpeg_path: "ffmpeg"
+
+      # default: "outputs"
+      out_root: "outputs"
+
+      # как часто обновлять latest.jpg на канал
+      snapshot_fps: 2.0
+
+      # optional; таймаут на запуск/операции (если сервис поддерживает)
+      probe_timeout_sec: 3
+
+      # обязательный backoff (v1)
+      restart_backoff:
+        base_ms: 300
+        max_ms: 5000
+        jitter_ms: 200
+
+      # optional, но рекомендовано: детект "stalled"
+      max_frame_age_sec: 3.0

@@ -33,6 +33,41 @@ def _require_path(d: dict[str, Any], path: str) -> Any:
     return cur
 
 
+def _normalize_service_roles(root: dict[str, Any]) -> None:
+    """
+    v4 addition (backward compatible):
+      - services.<name>.role is optional
+      - default role="job"
+      - allowed: "job" | "daemon"
+    Mutates root in-place.
+    """
+    services = root.get("services")
+    if services is None:
+        return
+    if not isinstance(services, dict):
+        raise ProfileError("services_not_mapping=1")
+
+    for svc_name, svc_cfg in services.items():
+        if svc_cfg is None:
+            svc_cfg = {}
+            services[svc_name] = svc_cfg
+
+        if not isinstance(svc_cfg, dict):
+            raise ProfileError(f"service_not_mapping={svc_name}")
+
+        role = svc_cfg.get("role", "job")
+        if role is None:
+            role = "job"
+
+        if not isinstance(role, str):
+            raise ProfileError(f"service_role_not_string={svc_name}")
+
+        if role not in ("job", "daemon"):
+            raise ProfileError(f"service_role_invalid={svc_name} role={role}")
+
+        svc_cfg["role"] = role
+
+
 def load_profile(profile_name: str) -> dict[str, Any]:
     """
     v2 loader:
@@ -56,6 +91,9 @@ def load_profile(profile_name: str) -> dict[str, Any]:
         raise ProfileError(f"missing_root_key={profile_name}")
 
     root = data[profile_name]
+
+    # v4: normalize/validate service roles (default role=job)
+    _normalize_service_roles(root)
 
     # v0/v1 required service: exe_runner (kept)
     _require_path(root, "services.exe_runner.path")

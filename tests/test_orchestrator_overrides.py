@@ -9,34 +9,37 @@ from app.core.event_bus import EventBus
 from app.core.events import LogEvent
 from app.orchestrator.orchestrator import Orchestrator
 from app.orchestrator.states import OrchestratorState
+from app.services.base import ServiceStatus
+from app.core.events import ServiceStatusEvent
 
 
 @dataclass
-class _DummyService:
+class _CapturingService:
     name: str
+    bus: EventBus
+
+    start_calls: int = 0
+    last_profile_cfg: dict[str, Any] | None = None
+
+    def start(self, profile_cfg: dict[str, Any]) -> None:
+        self.start_calls += 1
+        self.last_profile_cfg = profile_cfg
+        # minimal status progression (helps orchestrator record RUNNING statuses)
+        self.bus.publish(ServiceStatusEvent(service_name=self.name, status=ServiceStatus.STARTING.value))
+        self.bus.publish(ServiceStatusEvent(service_name=self.name, status=ServiceStatus.RUNNING.value))
+
+    def stop(self) -> None:
+        return
 
 
 class _CapturingServiceManager:
-    """Minimal ServiceManager double for Orchestrator tests (no subprocess, no Qt)."""
+    """ServiceManager double for Orchestrator v4 tests (no subprocess, no Qt)."""
 
-    def __init__(self, bus: EventBus) -> None:
-        self._bus = bus
-        self._services: dict[str, _DummyService] = {}
-        self.last_profile_cfg: dict[str, Any] | None = None
-        self.start_all_calls: int = 0
+    def __init__(self, services: dict[str, _CapturingService]) -> None:
+        self._services = dict(services)
 
-    def register(self, svc: _DummyService) -> None:
-        self._services[svc.name] = svc
-
-    def get_services(self) -> dict[str, _DummyService]:
+    def get_services(self) -> dict[str, _CapturingService]:
         return dict(self._services)
-
-    def start_all(self, profile_cfg: dict[str, Any]) -> None:
-        self.last_profile_cfg = profile_cfg
-        self.start_all_calls += 1
-
-    def stop_all(self) -> None:
-        return
 
 
 def _subscribe_logs(bus: EventBus) -> list[LogEvent]:
@@ -48,7 +51,11 @@ def _subscribe_logs(bus: EventBus) -> list[LogEvent]:
 def test_start_without_overrides_forwards_profile_cfg(monkeypatch: pytest.MonkeyPatch) -> None:
     bus = EventBus()
     logs = _subscribe_logs(bus)
-    sm = _CapturingServiceManager(bus)
+
+    svc_a = _CapturingService(name="exe_runner", bus=bus)
+    svc_b = _CapturingService(name="ballistics_model", bus=bus)
+    sm = _CapturingServiceManager({"exe_runner": svc_a, "ballistics_model": svc_b})
+
     orch = Orchestrator(bus, sm)
 
     from app.orchestrator import orchestrator as orch_mod
@@ -56,8 +63,8 @@ def test_start_without_overrides_forwards_profile_cfg(monkeypatch: pytest.Monkey
     base_cfg = {
         "default": {
             "services": {
-                "ballistics_model": {"config_json": {}},
-                "exe_runner": {"path": "cmd", "args": "/c echo hi"},
+                "ballistics_model": {"role": "job", "config_json": {}},
+                "exe_runner": {"role": "job", "path": "cmd", "args": "/c echo hi"},
             },
             "orchestrator": {"stop_timeout_sec": 10},
         }
@@ -67,15 +74,22 @@ def test_start_without_overrides_forwards_profile_cfg(monkeypatch: pytest.Monkey
 
     orch.start("default")
 
-    assert sm.start_all_calls == 1
-    assert sm.last_profile_cfg is base_cfg
+    # v4: start() calls svc.start(profile_cfg) per service in profile
+    assert svc_a.start_calls == 1
+    assert svc_b.start_calls == 1
+    assert svc_a.last_profile_cfg is base_cfg
+    assert svc_b.last_profile_cfg is base_cfg
     assert orch.state == OrchestratorState.RUNNING
     assert any(e.code == "ORCH_START_REQUEST" for e in logs)
 
 
 def test_start_with_overrides_applies_deep_merge(monkeypatch: pytest.MonkeyPatch) -> None:
     bus = EventBus()
-    sm = _CapturingServiceManager(bus)
+
+    svc_a = _CapturingService(name="exe_runner", bus=bus)
+    svc_b = _CapturingService(name="ballistics_model", bus=bus)
+    sm = _CapturingServiceManager({"exe_runner": svc_a, "ballistics_model": svc_b})
+
     orch = Orchestrator(bus, sm)
 
     from app.orchestrator import orchestrator as orch_mod
@@ -83,8 +97,8 @@ def test_start_with_overrides_applies_deep_merge(monkeypatch: pytest.MonkeyPatch
     base_cfg = {
         "default": {
             "services": {
-                "ballistics_model": {"config_json": {}},
-                "exe_runner": {"path": "cmd", "args": "/c echo hi"},
+                "ballistics_model": {"role": "job", "config_json": {}},
+                "exe_runner": {"role": "job", "path": "cmd", "args": "/c echo hi"},
             },
             "orchestrator": {"stop_timeout_sec": 10},
         }
@@ -102,16 +116,20 @@ def test_start_with_overrides_applies_deep_merge(monkeypatch: pytest.MonkeyPatch
 
     orch.start("default", overrides=overrides)
 
-    assert sm.start_all_calls == 1
-    assert sm.last_profile_cfg is base_cfg
-    assert sm.last_profile_cfg["default"]["services"]["ballistics_model"]["config_json"] == {"k": 123, "nested": {"x": 1}}
+    assert svc_a.start_calls == 1
+    assert svc_b.start_calls == 1
+    assert svc_b.last_profile_cfg is base_cfg
+    assert base_cfg["default"]["services"]["ballistics_model"]["config_json"] == {"k": 123, "nested": {"x": 1}}
     assert orch.state == OrchestratorState.RUNNING
 
 
 def test_start_with_invalid_overrides_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
     bus = EventBus()
     logs = _subscribe_logs(bus)
-    sm = _CapturingServiceManager(bus)
+
+    svc_a = _CapturingService(name="exe_runner", bus=bus)
+    sm = _CapturingServiceManager({"exe_runner": svc_a})
+
     orch = Orchestrator(bus, sm)
 
     from app.orchestrator import orchestrator as orch_mod
@@ -119,8 +137,7 @@ def test_start_with_invalid_overrides_fails_fast(monkeypatch: pytest.MonkeyPatch
     base_cfg = {
         "default": {
             "services": {
-                "ballistics_model": {"config_json": {}},
-                "exe_runner": {"path": "cmd", "args": "/c echo hi"},
+                "exe_runner": {"role": "job", "path": "cmd", "args": "/c echo hi"},
             }
         }
     }
@@ -129,6 +146,6 @@ def test_start_with_invalid_overrides_fails_fast(monkeypatch: pytest.MonkeyPatch
 
     orch.start("default", overrides=[1, 2, 3])  # type: ignore[arg-type]
 
-    assert sm.start_all_calls == 0
+    assert svc_a.start_calls == 0
     assert orch.state == OrchestratorState.ERROR
     assert any((e.code == "SERVICE_ERROR" and "validate_overrides" in e.message) for e in logs)

@@ -53,12 +53,10 @@ def count_leaf_values(d: object) -> int:
 
 class Orchestrator:
     """
-    v1:
-      - Tracks service statuses via ServiceStatusEvent ONLY
-      - stop(): STOPPING synchronization in a worker thread (no UI blocking)
-      - STOPPING -> IDLE only when all services are STOPPED
-      - STOPPING -> ERROR if any service reports ERROR OR timeout with pending services
-      - Logging: SERVICE_STATUS progress logs, including synthetic STOPPING (log-only)
+    v4:
+      - service roles: daemon/job
+      - RUNNING reflects job run-cycle, not daemon lifetime
+      - stop(): stops only jobs; shutdown path may stop all elsewhere (app.main)
     """
 
     def __init__(self, bus: EventBus, service_manager: ServiceManager) -> None:
@@ -68,8 +66,11 @@ class Orchestrator:
         self._lock = threading.Lock()
         self._state: OrchestratorState = OrchestratorState.IDLE
 
-        # v1: service_name -> last ServiceStatus (source of truth: ServiceStatusEvent)
+        # service_name -> last ServiceStatus (source of truth: ServiceStatusEvent)
         self._service_status: dict[str, ServiceStatus] = {}
+
+        # current run-cycle jobs set
+        self._run_jobs: set[str] = set()
 
         # wake-up for stop waiter
         self._status_changed = threading.Event()
@@ -78,10 +79,9 @@ class Orchestrator:
         self._stop_wait_thread: Optional[threading.Thread] = None
         self._stop_wait_cancel = threading.Event()
 
-        # v1: stop timeout (loaded from profile on start; default applied by orchestrator)
+        # stop timeout (loaded from profile on start; default applied by orchestrator)
         self._stop_timeout_sec: int = 10
 
-        # Subscribe for status tracking
         self._bus.subscribe(ServiceStatusEvent, self._on_service_status_event)
 
         # initial state event for UI
@@ -97,7 +97,13 @@ class Orchestrator:
             if self._state in (OrchestratorState.PRECHECK, OrchestratorState.RUNNING, OrchestratorState.STOPPING):
                 return
 
-        emit_log(self._bus, "INFO", "orchestrator", "ORCH_START_REQUEST", f"profile={profile_name} overrides={1 if overrides is not None else 0}")
+        emit_log(
+            self._bus,
+            "INFO",
+            "orchestrator",
+            "ORCH_START_REQUEST",
+            f"profile={profile_name} overrides={1 if overrides is not None else 0}",
+        )
         self._set_state(OrchestratorState.PRECHECK)
 
         try:
@@ -107,16 +113,9 @@ class Orchestrator:
             self._set_state(OrchestratorState.ERROR)
             return
 
-
         if overrides is not None:
             if not isinstance(overrides, dict):
-                emit_log(
-                    self._bus,
-                    "ERROR",
-                    "orchestrator",
-                    "SERVICE_ERROR",
-                    f"stage=validate_overrides err=TypeError",
-                )
+                emit_log(self._bus, "ERROR", "orchestrator", "SERVICE_ERROR", "stage=validate_overrides err=TypeError")
                 self._set_state(OrchestratorState.ERROR)
                 return
 
@@ -157,46 +156,133 @@ class Orchestrator:
                 return
             bm = services.get("ballistics_model")
             if bm is not None and not isinstance(bm, dict):
-                emit_log(self._bus, "ERROR", "orchestrator", "SERVICE_ERROR", "stage=cfg_check err=ballistics_model_not_dict")
+                emit_log(
+                    self._bus,
+                    "ERROR",
+                    "orchestrator",
+                    "SERVICE_ERROR",
+                    "stage=cfg_check err=ballistics_model_not_dict",
+                )
                 self._set_state(OrchestratorState.ERROR)
                 return
 
         self._apply_stop_timeout_from_profile(profile_cfg, profile_name)
 
-        try:
-            self._sm.start_all(profile_cfg)
-        except Exception as ex:
-            emit_log(self._bus, "ERROR", "orchestrator", "SERVICE_ERROR", f"stage=start_all err={type(ex).__name__}")
-            self._set_state(OrchestratorState.ERROR)
-            return
+        jobs, daemons = self._compute_roles(profile_cfg, profile_name)
+        emit_log(
+            self._bus,
+            "INFO",
+            "orchestrator",
+            "ORCH_SERVICE_ROLES",
+            f"jobs={','.join(sorted(jobs))} daemons={','.join(sorted(daemons))}",
+        )
+
+        services_map = self._sm.get_services()
+
+        # Start daemons first (only if not already RUNNING)
+        daemons_started = 0
+        for name in daemons:
+            svc = services_map.get(name)
+            if svc is None:
+                continue
+            if self._is_service_running(name):
+                continue
+            try:
+                svc.start(profile_cfg)
+                daemons_started += 1
+            except Exception as ex:
+                emit_log(
+                    self._bus,
+                    "ERROR",
+                    "orchestrator",
+                    "SERVICE_ERROR",
+                    f"stage=daemon_start service={name} err={type(ex).__name__}",
+                )
+                # daemon failures do not fail whole job cycle
+
+        emit_log(self._bus, "INFO", "orchestrator", "ORCH_DAEMONS_START", f"count={daemons_started}")
+
+        # New run-cycle job set
+        with self._lock:
+            self._run_jobs = set(jobs)
+
+        # Start jobs for this run-cycle
+        jobs_started = 0
+        for name in jobs:
+            svc = services_map.get(name)
+            if svc is None:
+                continue
+            try:
+                svc.start(profile_cfg)
+                jobs_started += 1
+            except Exception as ex:
+                emit_log(
+                    self._bus,
+                    "ERROR",
+                    "orchestrator",
+                    "SERVICE_ERROR",
+                    f"stage=job_start service={name} err={type(ex).__name__}",
+                )
+                self._set_state(OrchestratorState.ERROR)
+                return
+
+        emit_log(self._bus, "INFO", "orchestrator", "ORCH_JOBS_START", f"count={jobs_started}")
 
         self._set_state(OrchestratorState.RUNNING)
 
     def stop(self) -> None:
+        """
+        v4: stop affects only job services from current run-set.
+        Daemons keep running; their STOPPED/ERROR must not block STOPPING.
+        """
         with self._lock:
-            if self._state in (OrchestratorState.IDLE, OrchestratorState.STOPPING):
+            if self._state == OrchestratorState.IDLE:
                 return
+            if self._state == OrchestratorState.STOPPING:
+                return
+            if self._state != OrchestratorState.RUNNING:
+                # conservative no-op
+                return
+
+            run_jobs = set(self._run_jobs)
 
         emit_log(self._bus, "INFO", "orchestrator", "ORCH_STOP_REQUEST", "req=1")
         self._set_state(OrchestratorState.STOPPING)
 
-        # v1 logging: synthetic STOPPING progress per service (log-only; not a ServiceStatus enum value)
-        for name in sorted(self._sm.get_services().keys()):
-            emit_log(self._bus, "INFO", "orchestrator", "SERVICE_STATUS", f"service={name} status=STOPPING")
+        services_map = self._sm.get_services()
 
-        try:
-            self._sm.stop_all()
-        except Exception as ex:
-            emit_log(self._bus, "ERROR", "orchestrator", "SERVICE_ERROR", f"stage=stop_all err={type(ex).__name__}")
-            self._set_state(OrchestratorState.ERROR)
-            return
+        # Synthetic STOPPING log only for jobs (daemons are not being stopped)
+        for name in sorted(run_jobs):
+            if name in services_map:
+                emit_log(self._bus, "INFO", "orchestrator", "SERVICE_STATUS", f"service={name} status=STOPPING")
+
+        # Stop jobs only (best-effort)
+        stopped_req = 0
+        for name in run_jobs:
+            svc = services_map.get(name)
+            if svc is None:
+                continue
+            try:
+                svc.stop()
+                stopped_req += 1
+            except Exception as ex:
+                emit_log(
+                    self._bus,
+                    "ERROR",
+                    "orchestrator",
+                    "SERVICE_ERROR",
+                    f"stage=job_stop service={name} err={type(ex).__name__}",
+                )
+                self._set_state(OrchestratorState.ERROR)
+                return
+
+        emit_log(self._bus, "INFO", "orchestrator", "ORCH_JOBS_STOP", f"count={stopped_req}")
 
         self._start_stop_waiter()
 
-    # -------------------- v1: Service status tracking --------------------
+    # -------------------- Service status tracking --------------------
 
     def _on_service_status_event(self, e: ServiceStatusEvent) -> None:
-        # Diagnostic: raw service status as received (before normalization / transitions)
         emit_log(
             self._bus,
             "INFO",
@@ -211,32 +297,41 @@ class Orchestrator:
             st = ServiceStatus.ERROR
 
         finish_to: OrchestratorState | None = None
+        pending_jobs_csv: str | None = None
+        should_log_jobs_done = False
+
         with self._lock:
             self._service_status[e.service_name] = st
+            cur_state = self._state
+            run_jobs = set(self._run_jobs)
 
-            # BUGFIX: if the main service stops by itself while ORCH is RUNNING,
-            # we must finish the run (otherwise UI keeps seeing RUNNING and blocks next start).
-            if self._state == OrchestratorState.RUNNING and e.service_name == "ballistics_model":
-                if st == ServiceStatus.STOPPED:
-                    finish_to = OrchestratorState.IDLE
-                elif st == ServiceStatus.ERROR:
+            # only jobs affect run-cycle completion / failure
+            if e.service_name in run_jobs:
+                if st == ServiceStatus.ERROR:
                     finish_to = OrchestratorState.ERROR
+                else:
+                    pending = sorted([j for j in run_jobs if self._service_status.get(j) != ServiceStatus.STOPPED])
+                    pending_jobs_csv = ",".join(pending)
+                    should_log_jobs_done = True
+
+                    if cur_state == OrchestratorState.RUNNING and not pending:
+                        finish_to = OrchestratorState.IDLE
+            else:
+                # daemon status never completes a run by itself
+                pass
 
         emit_log(self._bus, "INFO", "orchestrator", "SERVICE_STATUS", f"service={e.service_name} status={st.value}")
 
+        if should_log_jobs_done and self.state in (OrchestratorState.PRECHECK, OrchestratorState.RUNNING, OrchestratorState.STOPPING):
+            emit_log(self._bus, "INFO", "orchestrator", "ORCH_JOBS_DONE", f"pending={pending_jobs_csv or ''}")
+
         if finish_to is not None:
-            emit_log(
-                self._bus,
-                "INFO",
-                "orchestrator",
-                "ORCH_RUN_FINISHED",
-                f"service={e.service_name} status={st.value} to={finish_to.value}",
-            )
+            emit_log(self._bus, "INFO", "orchestrator", "ORCH_RUN_FINISHED", f"to={finish_to.value}")
             self._set_state(finish_to)
 
         self._status_changed.set()
 
-    # -------------------- v1: STOPPING synchronization --------------------
+    # -------------------- STOPPING synchronization --------------------
 
     def _start_stop_waiter(self) -> None:
         with self._lock:
@@ -253,9 +348,11 @@ class Orchestrator:
     def _stop_wait_worker(self) -> None:
         with self._lock:
             timeout_sec = int(self._stop_timeout_sec)
+            jobs = set(self._run_jobs)
         deadline = time.monotonic() + max(1, timeout_sec)
 
-        service_names = set(self._sm.get_services().keys())
+        # Wait only for jobs (daemons are ignored in STOPPING sync)
+        service_names = set(jobs)
 
         while True:
             if self._stop_wait_cancel.is_set():
@@ -266,6 +363,7 @@ class Orchestrator:
                     return
                 snapshot = {k: self._service_status.get(k) for k in service_names}
 
+            # ERROR only for jobs
             errored = sorted([name for name, st in snapshot.items() if st == ServiceStatus.ERROR])
             if errored:
                 emit_log(self._bus, "ERROR", "orchestrator", "SERVICE_ERROR", f"errored={','.join(errored)}")
@@ -308,6 +406,31 @@ class Orchestrator:
             with self._lock:
                 self._stop_timeout_sec = default_timeout
             emit_log(self._bus, "WARNING", "orchestrator", "SERVICE_ERROR", f"param=stop_timeout_sec default={default_timeout}")
+
+    def _compute_roles(self, profile_cfg: dict, profile_name: str) -> tuple[list[str], list[str]]:
+        jobs: list[str] = []
+        daemons: list[str] = []
+
+        root = profile_cfg.get(profile_name) if isinstance(profile_cfg, dict) else None
+        root = root if isinstance(root, dict) else (profile_cfg if isinstance(profile_cfg, dict) else None)
+        services = root.get("services") if isinstance(root, dict) else None
+        if not isinstance(services, dict):
+            return jobs, daemons
+
+        for svc_name, svc_cfg in services.items():
+            role = "job"
+            if isinstance(svc_cfg, dict):
+                role = str(svc_cfg.get("role", "job") or "job")
+            if role == "daemon":
+                daemons.append(svc_name)
+            else:
+                jobs.append(svc_name)
+
+        return jobs, daemons
+
+    def _is_service_running(self, service_name: str) -> bool:
+        with self._lock:
+            return self._service_status.get(service_name) == ServiceStatus.RUNNING
 
     # -------------------- internals --------------------
 

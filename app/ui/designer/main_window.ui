@@ -51,7 +51,20 @@
      </widget>
     </item>
     <item row="0" column="0">
-     <layout class="QHBoxLayout" name="l_video"/>
+     <layout class="QHBoxLayout" name="l_video">
+      <property name="leftMargin">
+       <number>0</number>
+      </property>
+      <property name="topMargin">
+       <number>0</number>
+      </property>
+      <item>
+       <layout class="QGridLayout" name="vl_rtsp_visible"/>
+      </item>
+      <item>
+       <layout class="QGridLayout" name="vl_rtsp_thermal"/>
+      </item>
+     </layout>
     </item>
    </layout>
   </widget>

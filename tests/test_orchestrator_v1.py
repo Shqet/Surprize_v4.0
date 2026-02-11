@@ -14,42 +14,29 @@ from app.services.base import ServiceStatus
 
 
 @dataclass
-class _DummyService:
+class _FakeService:
     name: str
+    bus: EventBus
+    stop_emits_stopped: bool = False  # tests control STOPPED explicitly unless enabled
+
+    def start(self, profile_cfg: dict[str, Any]) -> None:
+        self.bus.publish(ServiceStatusEvent(service_name=self.name, status=ServiceStatus.STARTING.value))
+        self.bus.publish(ServiceStatusEvent(service_name=self.name, status=ServiceStatus.RUNNING.value))
+
+    def stop(self) -> None:
+        if self.stop_emits_stopped:
+            self.bus.publish(ServiceStatusEvent(service_name=self.name, status=ServiceStatus.STOPPED.value))
 
 
 class _FakeServiceManager:
-    """
-    Fake ServiceManager for unit tests:
-      - No subprocess, no Qt
-      - Emits ServiceStatusEvent for start only
-      - stop_all() does NOT emit STOPPED automatically (tests control it explicitly)
-    """
+    def __init__(self, services: dict[str, _FakeService]) -> None:
+        self._services = dict(services)
 
-    def __init__(self, bus: EventBus) -> None:
-        self._bus = bus
-        self._services: dict[str, _DummyService] = {}
-
-    def register(self, svc: _DummyService) -> None:
-        self._services[svc.name] = svc
-        # mimic v0: services start IDLE on register
-        self._bus.publish(ServiceStatusEvent(service_name=svc.name, status=ServiceStatus.IDLE.value))
-
-    def get_services(self) -> dict[str, _DummyService]:
+    def get_services(self) -> dict[str, _FakeService]:
         return dict(self._services)
 
-    def start_all(self, profile_cfg: dict[str, Any]) -> None:
-        # mimic typical progression: STARTING -> RUNNING
-        for name in sorted(self._services.keys()):
-            self._bus.publish(ServiceStatusEvent(service_name=name, status=ServiceStatus.STARTING.value))
-            self._bus.publish(ServiceStatusEvent(service_name=name, status=ServiceStatus.RUNNING.value))
 
-    def stop_all(self) -> None:
-        # tests will publish STOPPED or ERROR when desired
-        return
-
-
-def _wait_state(bus_states: list[str], expected: str, timeout: float = 0.6) -> bool:
+def _wait_state(bus_states: list[str], expected: str, timeout: float = 0.8) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if bus_states and bus_states[-1] == expected:
@@ -58,26 +45,29 @@ def _wait_state(bus_states: list[str], expected: str, timeout: float = 0.6) -> b
     return False
 
 
-def test_orchestrator_stop_sync_reaches_idle_when_all_services_stopped(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_orchestrator_stop_sync_reaches_idle_when_all_jobs_stopped(monkeypatch: pytest.MonkeyPatch) -> None:
     bus = EventBus()
-    sm = _FakeServiceManager(bus)
-    sm.register(_DummyService(name="svc1"))
-    sm.register(_DummyService(name="svc2"))
 
-    # Capture state transitions from events
+    svc1 = _FakeService(name="svc1", bus=bus)
+    svc2 = _FakeService(name="svc2", bus=bus)
+    sm = _FakeServiceManager({"svc1": svc1, "svc2": svc2})
+
     states: list[str] = []
     bus.subscribe(OrchestratorStateEvent, lambda e: states.append(e.state))
 
-    # Patch profile loader used inside Orchestrator.start()
     from app.orchestrator import orchestrator as orch_mod
 
+    # Both services are jobs in this profile
     monkeypatch.setattr(
         orch_mod,
         "load_profile",
         lambda profile_name: {
             profile_name: {
                 "orchestrator": {"stop_timeout_sec": 2},
-                "services": {"exe_runner": {"path": "cmd", "args": "/c echo hi", "timeout_sec": 1}},
+                "services": {
+                    "svc1": {"role": "job"},
+                    "svc2": {"role": "job"},
+                },
             }
         },
     )
@@ -90,23 +80,23 @@ def test_orchestrator_stop_sync_reaches_idle_when_all_services_stopped(monkeypat
     orch.stop()
     assert _wait_state(states, OrchestratorState.STOPPING.value)
 
-    # Now simulate services confirming STOPPED via ServiceStatusEvent (source of truth)
+    # Now simulate jobs confirming STOPPED via ServiceStatusEvent (source of truth)
     bus.publish(ServiceStatusEvent(service_name="svc1", status=ServiceStatus.STOPPED.value))
     bus.publish(ServiceStatusEvent(service_name="svc2", status=ServiceStatus.STOPPED.value))
 
     assert _wait_state(states, OrchestratorState.IDLE.value)
 
 
-def test_orchestrator_stop_timeout_goes_error_and_logs_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_orchestrator_stop_timeout_goes_error_and_logs_pending_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
     bus = EventBus()
-    sm = _FakeServiceManager(bus)
-    sm.register(_DummyService(name="svc1"))
-    sm.register(_DummyService(name="svc2"))
+
+    svc1 = _FakeService(name="svc1", bus=bus)
+    svc2 = _FakeService(name="svc2", bus=bus)
+    sm = _FakeServiceManager({"svc1": svc1, "svc2": svc2})
 
     states: list[str] = []
     bus.subscribe(OrchestratorStateEvent, lambda e: states.append(e.state))
 
-    # Capture ERROR log message
     errors: list[str] = []
     bus.subscribe(
         LogEvent,
@@ -122,7 +112,10 @@ def test_orchestrator_stop_timeout_goes_error_and_logs_pending(monkeypatch: pyte
         lambda profile_name: {
             profile_name: {
                 "orchestrator": {"stop_timeout_sec": 1},
-                "services": {"exe_runner": {"path": "cmd", "args": "/c echo hi", "timeout_sec": 1}},
+                "services": {
+                    "svc1": {"role": "job"},
+                    "svc2": {"role": "job"},
+                },
             }
         },
     )
@@ -136,10 +129,8 @@ def test_orchestrator_stop_timeout_goes_error_and_logs_pending(monkeypatch: pyte
     assert _wait_state(states, OrchestratorState.STOPPING.value)
 
     # Do NOT publish STOPPED -> expect timeout -> ERROR
-    assert _wait_state(states, OrchestratorState.ERROR.value, timeout=1.5)
+    assert _wait_state(states, OrchestratorState.ERROR.value, timeout=1.6)
 
-    # Must include pending services and timeout_sec per v1
-    # Example: "pending=svc1,svc2 timeout_sec=1"
     joined = "\n".join(errors)
     assert "pending=" in joined
     assert "timeout_sec=1" in joined
@@ -147,8 +138,9 @@ def test_orchestrator_stop_timeout_goes_error_and_logs_pending(monkeypatch: pyte
 
 def test_orchestrator_default_stop_timeout_logs_warning_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     bus = EventBus()
-    sm = _FakeServiceManager(bus)
-    sm.register(_DummyService(name="svc1"))
+
+    svc1 = _FakeService(name="svc1", bus=bus)
+    sm = _FakeServiceManager({"svc1": svc1})
 
     warnings: list[str] = []
     bus.subscribe(
@@ -164,7 +156,9 @@ def test_orchestrator_default_stop_timeout_logs_warning_when_missing(monkeypatch
         "load_profile",
         lambda profile_name: {
             profile_name: {
-                "services": {"exe_runner": {"path": "cmd", "args": "/c echo hi", "timeout_sec": 1}},
+                "services": {
+                    "svc1": {"role": "job"},
+                },
             }
         },
     )

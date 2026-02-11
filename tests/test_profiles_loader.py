@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from app.profiles import loader as loader_mod
+from app.profiles.loader import ProfileError
 
 
 def _write_profile(tmpdir: Path, name: str, yaml_text: str) -> None:
@@ -79,3 +80,63 @@ p_no_timeout:
 
     assert "p_no_timeout" in data
     assert "orchestrator" not in data["p_no_timeout"]
+
+
+def test_profiles_loader_defaults_role_to_job_when_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(loader_mod, "__file__", str(tmp_path / "loader.py"))
+
+    _write_profile(
+        tmp_path,
+        "p_roles_default",
+        f"""
+p_roles_default:
+  services:
+    exe_runner:
+      path: "cmd"
+      args: "/c echo hi"
+      timeout_sec: 3
+{_ballistics_block()}
+    rtsp_health:
+      role: daemon
+      channels:
+        visible: {{ url: "rtsp://x/visible" }}
+        thermal: {{ url: "rtsp://x/thermal" }}
+      probe_timeout_sec: 1
+      period_ok_sec: 1
+      backoff: {{ base_ms: 10, max_ms: 100, jitter_ms: 1 }}
+""".lstrip(),
+    )
+
+    data = loader_mod.load_profile("p_roles_default")
+    root = data["p_roles_default"]
+    assert root["services"]["exe_runner"]["role"] == "job"
+    assert root["services"]["ballistics_model"]["role"] == "job"
+    assert root["services"]["rtsp_health"]["role"] == "daemon"
+
+
+def test_profiles_loader_rejects_invalid_role(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(loader_mod, "__file__", str(tmp_path / "loader.py"))
+
+    _write_profile(
+        tmp_path,
+        "p_bad_role",
+        f"""
+p_bad_role:
+  services:
+    exe_runner:
+      role: "worker"
+      path: "cmd"
+      args: "/c echo hi"
+      timeout_sec: 3
+{_ballistics_block()}
+""".lstrip(),
+    )
+
+    with pytest.raises(ProfileError) as ex:
+        loader_mod.load_profile("p_bad_role")
+
+    assert "service_role_invalid=exe_runner" in str(ex.value)

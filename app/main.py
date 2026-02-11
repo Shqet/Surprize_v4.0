@@ -29,6 +29,7 @@ def main() -> int:
     sm.register(BallisticsModelSubprocessService(bus))  # v2
     sm.register(RtspIngestService(bus))
     sm.register(RtspHealthService(bus))
+
     # orchestrator
     orch = Orchestrator(bus, sm)
 
@@ -41,11 +42,23 @@ def main() -> int:
     emit_log(bus, "INFO", "system", "SYSTEM_START", "v=0")
 
     def _on_quit() -> None:
-        # ensure stop request is issued; v1 will sync STOPPING in worker thread
+        """
+        v4 shutdown semantics:
+          - orch.stop() stops only jobs (run-cycle isolation)
+          - sm.stop_all() best-effort stops all services (jobs + daemons)
+        """
         try:
+            # Stop current job run-cycle (if any)
             orch.stop()
         except Exception:
             pass
+
+        try:
+            # Best-effort: stop all services (including daemons)
+            sm.stop_all()
+        except Exception:
+            pass
+
         emit_log(bus, "INFO", "system", "SYSTEM_STOP", "req=1")
 
     app.aboutToQuit.connect(_on_quit)

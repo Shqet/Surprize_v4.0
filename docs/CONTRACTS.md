@@ -448,3 +448,36 @@ UI-лейаут:
 не содержит логики
 
 наполнение — строго через код
+
+## Service Roles (v4)
+
+Каждый сервис может иметь поле:
+
+services.<name>.role: "job" | "daemon"
+
+markdown
+Копировать код
+
+### Default
+
+Если role отсутствует → "job".
+
+### Semantics
+
+job:
+- участвует в run-cycle
+- его STOPPED завершает run
+- его ERROR переводит Orchestrator в ERROR
+
+daemon:
+- может работать постоянно
+- не влияет на RUNNING/IDLE
+- его ERROR не завершает run-cycle
+
+### Stop Behavior
+
+stop():
+- останавливает только job
+
+shutdown:
+- останавливает все сервисы
