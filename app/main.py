@@ -9,6 +9,8 @@ from app.core.logging_setup import emit_log, setup_logging
 from app.core.ui_bridge import UIBridge
 from app.orchestrator.orchestrator import Orchestrator
 from app.services.exe_runner import ExeRunnerService
+from app.services.rtsp_health_service import RtspHealthService
+from app.services.rtsp_ingest_service import RtspIngestService
 from app.services.service_manager import ServiceManager
 from app.ui.main_window import MainWindow
 
@@ -25,7 +27,8 @@ def main() -> int:
     sm = ServiceManager(bus)
     sm.register(ExeRunnerService(bus))
     sm.register(BallisticsModelSubprocessService(bus))  # v2
-
+    sm.register(RtspIngestService(bus))
+    sm.register(RtspHealthService(bus))
     # orchestrator
     orch = Orchestrator(bus, sm)
 

@@ -45,4 +45,12 @@ class RtspChannelHealthEvent:
     state: str       # "CONNECTED" | "RECONNECTING"
     attempt: int
     last_error: str | None
-
+@dataclass(frozen=True, slots=True)
+class RtspIngestStatsEvent:
+    service: str            # always "rtsp_ingest"
+    channel: str            # e.g. "visible" | "thermal" | any configured key
+    state: str              # "INGESTING" | "RESTARTING" | "STALLED"
+    fps_est: float
+    last_frame_age_sec: float
+    restarts: int
+    ts: float               # unix seconds
