@@ -196,15 +196,44 @@ class Orchestrator:
     # -------------------- v1: Service status tracking --------------------
 
     def _on_service_status_event(self, e: ServiceStatusEvent) -> None:
+        # Diagnostic: raw service status as received (before normalization / transitions)
+        emit_log(
+            self._bus,
+            "INFO",
+            "orchestrator",
+            "ORCH_ON_SERVICE_STATUS",
+            f"state={self.state.value} service={e.service_name} status={e.status}",
+        )
+
         try:
             st = ServiceStatus(e.status)
         except Exception:
             st = ServiceStatus.ERROR
 
+        finish_to: OrchestratorState | None = None
         with self._lock:
             self._service_status[e.service_name] = st
 
+            # BUGFIX: if the main service stops by itself while ORCH is RUNNING,
+            # we must finish the run (otherwise UI keeps seeing RUNNING and blocks next start).
+            if self._state == OrchestratorState.RUNNING and e.service_name == "ballistics_model":
+                if st == ServiceStatus.STOPPED:
+                    finish_to = OrchestratorState.IDLE
+                elif st == ServiceStatus.ERROR:
+                    finish_to = OrchestratorState.ERROR
+
         emit_log(self._bus, "INFO", "orchestrator", "SERVICE_STATUS", f"service={e.service_name} status={st.value}")
+
+        if finish_to is not None:
+            emit_log(
+                self._bus,
+                "INFO",
+                "orchestrator",
+                "ORCH_RUN_FINISHED",
+                f"service={e.service_name} status={st.value} to={finish_to.value}",
+            )
+            self._set_state(finish_to)
+
         self._status_changed.set()
 
     # -------------------- v1: STOPPING synchronization --------------------
