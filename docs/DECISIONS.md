@@ -100,3 +100,6 @@ Orchestrator RUNNING теперь отражает только job run-cycle.
 + Масштабируемость системы
 
 - Появляется необходимость фиксировать role в профилях
+
+At application startup, daemon services may be auto-started via Orchestrator.start_daemons().
+This does not activate RUNNING state and does not start job run-cycle.

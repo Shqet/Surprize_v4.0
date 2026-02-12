@@ -41,6 +41,13 @@ def main() -> int:
 
     emit_log(bus, "INFO", "system", "SYSTEM_START", "v=0")
 
+    # ---- v4: auto-start daemon services (rtsp_health + rtsp_ingest) ----
+    try:
+        orch.start_daemons("default")
+        emit_log(bus, "INFO", "system", "SYSTEM_DAEMONS_STARTED", "ok=1")
+    except Exception as ex:
+        emit_log(bus, "ERROR", "system", "SYSTEM_DAEMONS_START_FAIL", f"error={type(ex).__name__}")
+
     def _on_quit() -> None:
         """
         v4 shutdown semantics:

@@ -191,3 +191,92 @@ def test_stop_stops_jobs_only_daemon_keeps_running(monkeypatch: pytest.MonkeyPat
 
     # STOPPING waiter waits only jobs -> should reach IDLE
     assert _wait_state(states, OrchestratorState.IDLE.value)
+
+
+# ----------------------------------------------------------------------
+# New tests for Orchestrator.start_daemons()
+# ----------------------------------------------------------------------
+
+def test_start_daemons_starts_only_daemons_and_keeps_state_idle(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = EventBus()
+    states = _subscribe_states(bus)
+
+    job1 = _FakeService(name="job1", bus=bus)
+    daemon1 = _FakeService(name="daemon1", bus=bus)
+    daemon2 = _FakeService(name="daemon2", bus=bus)
+    sm = _FakeServiceManager({"job1": job1, "daemon1": daemon1, "daemon2": daemon2})
+
+    from app.orchestrator import orchestrator as orch_mod
+
+    monkeypatch.setattr(
+        orch_mod,
+        "load_profile",
+        lambda profile_name: {
+            profile_name: {
+                "orchestrator": {"stop_timeout_sec": 1},
+                "services": {
+                    "job1": {"role": "job"},
+                    "daemon1": {"role": "daemon"},
+                    "daemon2": {"role": "daemon"},
+                },
+            }
+        },
+    )
+
+    orch = Orchestrator(bus, sm)
+
+    # initial state event is IDLE (published in __init__)
+    assert orch.state == OrchestratorState.IDLE
+    assert states and states[-1] == OrchestratorState.IDLE.value
+
+    orch.start_daemons("p")
+
+    # Daemons started, job not started
+    assert daemon1.start_calls == 1
+    assert daemon2.start_calls == 1
+    assert job1.start_calls == 0
+
+    # Orchestrator remains IDLE (no run-cycle)
+    assert orch.state == OrchestratorState.IDLE
+    assert OrchestratorState.RUNNING.value not in states
+
+
+def test_start_daemons_is_idempotent_when_daemons_already_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = EventBus()
+
+    job1 = _FakeService(name="job1", bus=bus)
+    daemon1 = _FakeService(name="daemon1", bus=bus)
+    daemon2 = _FakeService(name="daemon2", bus=bus)
+    sm = _FakeServiceManager({"job1": job1, "daemon1": daemon1, "daemon2": daemon2})
+
+    from app.orchestrator import orchestrator as orch_mod
+
+    monkeypatch.setattr(
+        orch_mod,
+        "load_profile",
+        lambda profile_name: {
+            profile_name: {
+                "orchestrator": {"stop_timeout_sec": 1},
+                "services": {
+                    "job1": {"role": "job"},
+                    "daemon1": {"role": "daemon"},
+                    "daemon2": {"role": "daemon"},
+                },
+            }
+        },
+    )
+
+    orch = Orchestrator(bus, sm)
+
+    orch.start_daemons("p")
+    assert daemon1.start_calls == 1
+    assert daemon2.start_calls == 1
+    assert job1.start_calls == 0
+
+    # second call should NOT restart RUNNING daemons
+    orch.start_daemons("p")
+    assert daemon1.start_calls == 1
+    assert daemon2.start_calls == 1
+    assert job1.start_calls == 0
+
+    assert orch.state == OrchestratorState.IDLE

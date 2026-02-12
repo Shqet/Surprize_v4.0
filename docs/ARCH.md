@@ -130,7 +130,8 @@ Responsibilities:
 
 Does NOT:
 - знать детали сервисов
-
+At application startup, daemon services may be auto-started via Orchestrator.start_daemons().
+This does not activate RUNNING state and does not start job run-cycle.
 ---
 
 ### ServiceManager

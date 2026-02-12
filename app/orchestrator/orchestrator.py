@@ -230,6 +230,109 @@ class Orchestrator:
 
         self._set_state(OrchestratorState.RUNNING)
 
+    def start_daemons(self, profile_name: str, overrides: dict | None = None) -> None:
+        """
+        Start only daemon services for a profile, without entering RUNNING.
+        Error policy: never crash UI; log per-service failures and continue.
+        """
+
+        with self._lock:
+            if self._state in (
+                    OrchestratorState.PRECHECK,
+                    OrchestratorState.RUNNING,
+                    OrchestratorState.STOPPING,
+            ):
+                return
+
+        emit_log(self._bus, "INFO", "orchestrator", "ORCH_DAEMONS_AUTOSTART", f"profile={profile_name}")
+
+        try:
+            profile_cfg = self._load_profile_with_overrides(profile_name, overrides)
+        except Exception as ex:
+            # Global failure (profile cannot be loaded / overrides invalid)
+            emit_log(
+                self._bus,
+                "ERROR",
+                "system",
+                "SYSTEM_DAEMONS_START_FAIL",
+                f"error={type(ex).__name__}",
+            )
+            emit_log(
+                self._bus,
+                "ERROR",
+                "orchestrator",
+                "SERVICE_ERROR",
+                f"stage=load_profile_daemons profile={profile_name} err={type(ex).__name__}",
+            )
+            return
+
+        root = profile_cfg.get(profile_name)
+        if not isinstance(root, dict):
+            emit_log(self._bus, "ERROR", "system", "SYSTEM_DAEMONS_START_FAIL", "error=profile_root_invalid")
+            emit_log(self._bus, "ERROR", "orchestrator", "SERVICE_ERROR", "stage=profile_root_invalid")
+            return
+
+        services_cfg = root.get("services")
+        if not isinstance(services_cfg, dict):
+            emit_log(self._bus, "ERROR", "system", "SYSTEM_DAEMONS_START_FAIL", "error=services_missing")
+            emit_log(self._bus, "ERROR", "orchestrator", "SERVICE_ERROR", "stage=services_missing")
+            return
+
+        _jobs, daemons = self._compute_roles(profile_cfg, profile_name)
+        daemon_names = list(daemons)
+
+        emit_log(
+            self._bus,
+            "INFO",
+            "orchestrator",
+            "ORCH_DAEMONS_START",
+            f"count={len(daemon_names)} daemons={','.join(sorted(daemon_names))}",
+        )
+
+        services_map = self._sm.get_services()
+
+        already_running = 0
+
+        for name in daemon_names:
+            svc = services_map.get(name)
+            if svc is None:
+                continue
+
+            if self._is_service_running(name):
+                already_running += 1
+                continue
+
+            service_section = services_cfg.get(name, {})
+
+            try:
+                svc.start(service_section)
+            except Exception as ex:
+                # Per-service failure: log as SYSTEM_* and continue
+                emit_log(
+                    self._bus,
+                    "ERROR",
+                    "system",
+                    "SYSTEM_DAEMONS_START_FAIL",
+                    f"service={name} error={type(ex).__name__}",
+                )
+                emit_log(
+                    self._bus,
+                    "ERROR",
+                    "orchestrator",
+                    "SERVICE_ERROR",
+                    f"stage=daemon_start service={name} err={type(ex).__name__}",
+                )
+                # non-fatal
+
+        if already_running:
+            emit_log(
+                self._bus,
+                "INFO",
+                "orchestrator",
+                "ORCH_DAEMONS_ALREADY_RUNNING",
+                f"count={already_running}",
+            )
+
     def stop(self) -> None:
         """
         v4: stop affects only job services from current run-set.
@@ -392,6 +495,47 @@ class Orchestrator:
             self._status_changed.clear()
 
     # -------------------- profile helpers --------------------
+    def _load_profile_with_overrides(self, profile_name: str, overrides: dict | None) -> dict:
+        """
+        Load profile using loader + apply overrides in-memory (deep merge),
+        same approach as start() (but without any state changes).
+        """
+        profile_cfg = load_profile(profile_name)
+
+        if overrides is None:
+            return profile_cfg
+
+        if not isinstance(overrides, dict):
+            raise TypeError("overrides must be dict")
+
+        # profile_cfg in your project is usually: {profile_name: {...}}
+        if isinstance(profile_cfg, dict) and isinstance(profile_cfg.get(profile_name), dict):
+            deep_merge(profile_cfg[profile_name], overrides)
+        elif isinstance(profile_cfg, dict):
+            deep_merge(profile_cfg, overrides)
+        else:
+            raise TypeError("profile_cfg must be dict")
+
+        emit_log(
+            self._bus,
+            "INFO",
+            "orchestrator",
+            "ORCH_PROFILE_OVERRIDES_APPLIED",
+            f"keys={count_leaf_values(overrides)}",
+        )
+
+        # Minimal cfg-check (keep it simple but fail fast)
+        root = None
+        if isinstance(profile_cfg, dict) and isinstance(profile_cfg.get(profile_name), dict):
+            root = profile_cfg[profile_name]
+        elif isinstance(profile_cfg, dict):
+            root = profile_cfg
+
+        services = root.get("services") if isinstance(root, dict) else None
+        if not isinstance(services, dict):
+            raise ValueError("cfg_check services_missing")
+
+        return profile_cfg
 
     def _apply_stop_timeout_from_profile(self, profile_cfg: dict, profile_name: str) -> None:
         default_timeout = 10

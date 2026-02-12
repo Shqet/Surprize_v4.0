@@ -1,6 +1,6 @@
-# app/services/rtsp_probe.py
 from __future__ import annotations
 
+import shutil
 import subprocess
 from dataclasses import dataclass
 from typing import Optional
@@ -16,18 +16,14 @@ class RtspProbeFatal(RuntimeError):
     pass
 
 
-def probe_rtsp_ffprobe(ffprobe_path: str, url: str, timeout_sec: float) -> ProbeResult:
-    cmd = [
-        ffprobe_path,
-        "-hide_banner",
-        "-loglevel", "error",
-        "-rtsp_transport", "tcp",
-        "-stimeout", str(int(timeout_sec * 1_000_000)),
-        "-select_streams", "v:0",
-        "-show_entries", "stream=codec_name,width,height,avg_frame_rate",
-        "-of", "json",
-        url,
-    ]
+def _run_ffprobe(cmd: list[str], timeout_sec: float) -> ProbeResult:
+    """
+    Low-level ffprobe runner.
+
+    - Timeout -> ok=False, error="timeout"
+    - ffprobe missing / permission -> raise RtspProbeFatal
+    - other errors -> ok=False with stderr
+    """
     try:
         r = subprocess.run(
             cmd,
@@ -39,7 +35,6 @@ def probe_rtsp_ffprobe(ffprobe_path: str, url: str, timeout_sec: float) -> Probe
     except subprocess.TimeoutExpired:
         return ProbeResult(ok=False, error="timeout")
     except (FileNotFoundError, PermissionError) as ex:
-        # Fatal: ffprobe исчез / нет прав / не запускается
         raise RtspProbeFatal(type(ex).__name__) from ex
     except Exception as ex:
         return ProbeResult(ok=False, error=type(ex).__name__)
@@ -49,3 +44,64 @@ def probe_rtsp_ffprobe(ffprobe_path: str, url: str, timeout_sec: float) -> Probe
 
     err = (r.stderr or "").strip() or f"ffprobe_exit_{r.returncode}"
     return ProbeResult(ok=False, error=err[:200])
+
+
+def probe_rtsp_ffprobe(bus, url: str, timeout_sec: float, source: str) -> ProbeResult:
+    """
+    Public probe API used by RtspHealthService.
+
+    Signature MUST stay compatible with tests:
+        probe_rtsp_ffprobe(bus, url, timeout_sec, source)
+
+    'bus' and 'source' currently unused here (kept for contract compatibility).
+    """
+
+    ffprobe_path = shutil.which("ffprobe") or "ffprobe"
+
+    stimeout_us = int(float(timeout_sec) * 1_000_000)
+
+    cmd_with_timeout = [
+        ffprobe_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-rtsp_transport",
+        "tcp",
+        "-stimeout",
+        str(stimeout_us),
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=codec_name,width,height,avg_frame_rate",
+        "-of",
+        "json",
+        url,
+    ]
+
+    r = _run_ffprobe(cmd_with_timeout, timeout_sec=timeout_sec)
+
+    # Fallback: some ffprobe builds don't support -stimeout
+    if (
+        not r.ok
+        and r.error
+        and "Option not found" in r.error
+        and "stimeout" in r.error
+    ):
+        cmd_no_timeout = [
+            ffprobe_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-rtsp_transport",
+            "tcp",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=codec_name,width,height,avg_frame_rate",
+            "-of",
+            "json",
+            url,
+        ]
+        return _run_ffprobe(cmd_no_timeout, timeout_sec=timeout_sec)
+
+    return r
