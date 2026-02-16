@@ -215,63 +215,116 @@ class RtspHealthService:
             )
         )
 
-    def _channel_loop(self, ch: _ChannelCfg) -> None:
-        emit_log(
-            self._bus,
-            "INFO",
-            self.name,
-            "WORKER_START",
-            f"service={self.name} channel={ch.name} url={ch.url}",
-        )
+    def _channel_loop(self, channel_name: str, ch_cfg: dict, run_dir: str) -> None:
+        import os
+        import time
+        import subprocess
+        import random
 
-        probe_timeout = self._get_probe_timeout()
-        period_ok = self._get_period_ok()
-        base_ms, max_ms, jitter_ms = self._get_backoff()
+        url = ch_cfg.get("url")
+        snapshot_fps = float(ch_cfg.get("snapshot_fps", 2.0))
+        max_frame_age_sec = float(ch_cfg.get("max_frame_age_sec", 5.0))
+        rtsp_transport = ch_cfg.get("rtsp_transport", "tcp")
 
-        # v1: OFFLINE forbidden, initial is RECONNECTING
-        attempt = 0
-        last_error: Optional[str] = None
-        self._publish_health(ch, state="RECONNECTING", attempt=0, last_error=None)
+        channel_dir = os.path.join(run_dir, channel_name)
+        os.makedirs(channel_dir, exist_ok=True)
+
+        latest_path = os.path.join(channel_dir, "latest.jpg")
+
+        has_ever_written_snapshot = False
+        last_snapshot_mtime = None
+        restart_attempt = 0
 
         while not self._stop_event.is_set():
-            r = probe_rtsp_ffprobe(self._bus, ch.url, timeout_sec=probe_timeout, source=self.name)
 
-            if r.ok:
-                attempt = 0
-                last_error = None
+            cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel", "error",
+                "-rtsp_transport", rtsp_transport,
+                "-i", url,
+                "-vf", f"fps={snapshot_fps}",
+                "-q:v", "2",
+                "-update", "1",
+                latest_path,
+            ]
 
-                emit_log(self._bus, "INFO", self.name, "RTSP_PROBE_OK", f"channel={ch.name} url={ch.url}")
-                self._publish_health(ch, state="CONNECTED", attempt=0, last_error=None)
-
-                time.sleep(period_ok)
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception as e:
+                self._log_error(
+                    f"INGEST_START_FAIL channel={channel_name} error={e}"
+                )
+                time.sleep(2)
                 continue
 
-            # fail => RECONNECTING, service remains RUNNING
-            attempt += 1
-            last_error = r.error or "probe_failed"
-
-            emit_log(
-                self._bus,
-                "WARNING",
-                self.name,
-                "RTSP_PROBE_FAIL",
-                f"channel={ch.name} url={ch.url} error={last_error}",
-            )
-            self._publish_health(ch, state="RECONNECTING", attempt=attempt, last_error=last_error)
-
-            delay_ms = min(max_ms, base_ms * (2 ** min(attempt - 1, 10)))
-            if jitter_ms:
-                delay_ms += random.randint(0, jitter_ms)
-
-            # optional but useful
-            emit_log(
-                self._bus,
-                "DEBUG",
-                self.name,
-                "RTSP_BACKOFF",
-                f"channel={ch.name} delay_ms={delay_ms} attempt={attempt}",
+            self._log_info(
+                f"INGEST_START channel={channel_name} url={url} pid={proc.pid}"
             )
 
-            time.sleep(delay_ms / 1000.0)
+            while not self._stop_event.is_set():
+                time.sleep(1)
 
-        emit_log(self._bus, "INFO", self.name, "WORKER_STOP", f"service={self.name} channel={ch.name}")
+                # process exited?
+                if proc.poll() is not None:
+                    self._log_warning(
+                        f"INGEST_EXIT channel={channel_name} rc={proc.returncode}"
+                    )
+                    break
+
+                now = time.time()
+
+                if os.path.exists(latest_path):
+                    mtime = os.path.getmtime(latest_path)
+
+                    if not has_ever_written_snapshot:
+                        has_ever_written_snapshot = True
+                        last_snapshot_mtime = mtime
+                    else:
+                        if mtime != last_snapshot_mtime:
+                            last_snapshot_mtime = mtime
+
+                    age_sec = now - mtime
+
+                    if age_sec > max_frame_age_sec:
+                        self._log_warning(
+                            f"INGEST_STALLED channel={channel_name} "
+                            f"last_mtime={mtime:.3f} age_sec={age_sec:.2f}"
+                        )
+                        proc.kill()
+                        break
+
+                else:
+                    if not has_ever_written_snapshot:
+                        self._log_warning(
+                            f"INGEST_NO_FRAMES channel={channel_name}"
+                        )
+                    else:
+                        self._log_warning(
+                            f"INGEST_STALLED channel={channel_name} file_missing=1"
+                        )
+                        proc.kill()
+                        break
+
+            # cleanup
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+            if self._stop_event.is_set():
+                break
+
+            restart_attempt += 1
+            delay = min(10, 1 + restart_attempt * 2) + random.uniform(0, 0.5)
+
+            self._log_info(
+                f"INGEST_RESTART channel={channel_name} "
+                f"attempt={restart_attempt} delay_sec={delay:.2f}"
+            )
+
+            time.sleep(delay)
