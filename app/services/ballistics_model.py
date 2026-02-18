@@ -14,6 +14,7 @@ from app.core.event_bus import EventBus
 from app.core.events import ProcessOutputEvent, ServiceStatusEvent
 from app.core.logging_setup import emit_log
 from app.services.base import ServiceStatus
+from app.services.stop_utils import terminate_process
 
 
 @dataclass(frozen=True)
@@ -488,24 +489,13 @@ class BallisticsModelSubprocessService:
             self._set_status(ServiceStatus.STOPPED)
             return
 
-        # terminate is fast
-        try:
-            emit_log(self._bus, "INFO", "ballistics_model", "PROCESS_EXIT", "stage=stop terminate=1")
-            proc.terminate()
-        except Exception as ex:
-            emit_log(self._bus, "ERROR", "ballistics_model", "SERVICE_ERROR", f"stage=stop_terminate err={type(ex).__name__} msg={ex}")
+        def _info(msg: str) -> None:
+            emit_log(self._bus, "INFO", "ballistics_model", "PROCESS_EXIT", msg)
 
-        # wait in this background thread
-        try:
-            proc.wait(timeout=max(1, timeout_sec))
-        except subprocess.TimeoutExpired:
-            try:
-                emit_log(self._bus, "INFO", "ballistics_model", "PROCESS_EXIT", "stage=stop kill=1")
-                proc.kill()
-            except Exception as ex:
-                emit_log(self._bus, "ERROR", "ballistics_model", "SERVICE_ERROR", f"stage=stop_kill err={type(ex).__name__} msg={ex}")
-        except Exception as ex:
-            emit_log(self._bus, "ERROR", "ballistics_model", "SERVICE_ERROR", f"stage=stop_wait err={type(ex).__name__} msg={ex}")
+        def _err(msg: str) -> None:
+            emit_log(self._bus, "ERROR", "ballistics_model", "SERVICE_ERROR", msg)
+
+        terminate_process(proc, timeout_sec=timeout_sec, on_info=_info, on_error=_err)
 
         # Finalize status (if not already ERROR)
         st = self.status()
