@@ -100,6 +100,8 @@ class VideoChannelDaemonService:
         self._preview_stop = threading.Event()
         self._preview_path: Optional[str] = None
         self._preview_period_sec: float = 0.0
+        self._preview_log_every_sec: float = 5.0
+        self._preview_last_log: float = 0.0
 
         self._worker_factory = worker_factory or (lambda **kw: ProcessStreamWorker(**kw))
 
@@ -181,12 +183,16 @@ class VideoChannelDaemonService:
 
             path = self._preview_path
             if path:
-                emit_log(self._bus, "INFO", self._name, "VIDEO_PREVIEW_TICK", f"path={path}")
+                now_mono = time.monotonic()
+                if now_mono - self._preview_last_log >= self._preview_log_every_sec:
+                    emit_log(self._bus, "INFO", self._name, "VIDEO_PREVIEW_TICK", f"path={path}")
+                    self._preview_last_log = now_mono
                 w = self._worker
                 if w is not None and hasattr(w, "send_cmd"):
                     try:
                         w.send_cmd({"cmd": "SAVE_PREVIEW", "path": path})
-                        emit_log(self._bus, "INFO", self._name, "VIDEO_PREVIEW_CMD_SENT", f"path={path}")
+                        if now_mono - self._preview_last_log <= 0.001:
+                            emit_log(self._bus, "INFO", self._name, "VIDEO_PREVIEW_CMD_SENT", f"path={path}")
                     except Exception as ex:
                         emit_log(
                             self._bus,

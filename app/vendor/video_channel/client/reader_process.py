@@ -150,7 +150,6 @@ def main() -> int:
 
                             jpg = _encode_jpg(frame)
                             _write_jpg_atomic_bytes(path, jpg)
-                            wlog(f"VIDEO_PREVIEW_WRITE_OK path={path}")
                             _emit(
                                 {
                                     "type": "evt",
@@ -161,8 +160,6 @@ def main() -> int:
                                 }
                             )
                         except Exception as ex:
-                            wlog(f"VIDEO_PREVIEW_WRITE_FAIL path={path} err={type(ex).__name__}")
-                            wlog(f"VIDEO_PREVIEW_IO_ERROR err={type(ex).__name__}")
                             _emit(
                                 {
                                     "type": "evt",
