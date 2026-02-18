@@ -8,14 +8,11 @@ from app.core.event_bus import EventBus
 from app.core.logging_setup import emit_log, setup_logging
 from app.core.ui_bridge import UIBridge
 from app.orchestrator.orchestrator import Orchestrator
-from app.services.exe_runner import ExeRunnerService
-from app.services.rtsp_health_service import RtspHealthService
-from app.services.rtsp_ingest_service import RtspIngestService
-from app.services.service_manager import ServiceManager
-from app.ui.main_window import MainWindow
-
-# v2: new real service
 from app.services.ballistics_model import BallisticsModelSubprocessService
+from app.services.exe_runner import ExeRunnerService
+from app.services.service_manager import ServiceManager
+from app.services.video_channel import VideoChannelDaemonService
+from app.ui.main_window import MainWindow
 
 
 def main() -> int:
@@ -26,9 +23,11 @@ def main() -> int:
     # services
     sm = ServiceManager(bus)
     sm.register(ExeRunnerService(bus))
-    sm.register(BallisticsModelSubprocessService(bus))  # v2
-    sm.register(RtspIngestService(bus))
-    sm.register(RtspHealthService(bus))
+    sm.register(BallisticsModelSubprocessService(bus))  # job
+
+    # daemons (names MUST match profile keys)
+    sm.register(VideoChannelDaemonService(bus, "video_visible"))
+    sm.register(VideoChannelDaemonService(bus, "video_thermal"))
 
     # orchestrator
     orch = Orchestrator(bus, sm)
@@ -41,7 +40,7 @@ def main() -> int:
 
     emit_log(bus, "INFO", "system", "SYSTEM_START", "v=0")
 
-    # ---- v4: auto-start daemon services (rtsp_health + rtsp_ingest) ----
+    # ---- v4: auto-start daemon services ----
     try:
         orch.start_daemons("default")
         emit_log(bus, "INFO", "system", "SYSTEM_DAEMONS_STARTED", "ok=1")
@@ -55,13 +54,11 @@ def main() -> int:
           - sm.stop_all() best-effort stops all services (jobs + daemons)
         """
         try:
-            # Stop current job run-cycle (if any)
             orch.stop()
         except Exception:
             pass
 
         try:
-            # Best-effort: stop all services (including daemons)
             sm.stop_all()
         except Exception:
             pass

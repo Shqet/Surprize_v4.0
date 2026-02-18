@@ -481,3 +481,212 @@ stop():
 
 shutdown:
 - останавливает все сервисы
+
+
+📄 CONTRACTS — VideoChannelDaemonService v1
+1. Назначение
+
+VideoChannelDaemonService — daemon-сервис Surprize, инкапсулирующий процессный RTSP-клиент (vendor) и обеспечивающий:
+
+непрерывное подключение к RTSP (self-healing),
+
+управление записью видео (start/stop),
+
+публикацию preview (latest.jpg),
+
+публикацию событий и логов через EventBus,
+
+строгую интеграцию в lifecycle Orchestrator v4.
+
+Сервис не содержит UI-логики и не нарушает архитектурные границы.
+
+2. Lifecycle контракт
+2.1 Статусы
+
+Единственный источник истины для статусов —
+ServiceStatus из:
+
+app/services/base.py
+
+
+Допустимые значения:
+
+STARTING
+
+RUNNING
+
+STOPPING
+
+STOPPED
+
+ERROR
+
+2.2 Публикация статусов
+
+Сервис обязан публиковать:
+
+ServiceStatusEvent(
+    service=<name>,
+    status=ServiceStatus.<X>.value  # строка
+)
+
+
+ServiceStatusEvent.status — строка.
+
+Дополнительных enum в events слое не допускается.
+
+3. Fail-Fast контракт
+3.1 start(config)
+
+start() не выбрасывает исключения наружу.
+
+При ошибке конфигурации или зависимостей:
+
+сервис публикует ServiceStatus.ERROR
+
+публикует LogEvent:
+
+SERVICE_ERROR service=<name> error=<text>
+
+
+воркеры не создаются
+
+Исключения внутри метода ловятся и преобразуются в ERROR.
+
+4. stop() контракт
+
+При вызове stop() если сервис активен:
+
+публикуется ServiceStatus.STOPPING
+
+выполняется корректное завершение воркеров/процессов
+
+публикуется ServiceStatus.STOPPED
+
+STOPPING является обязательным промежуточным статусом.
+
+5. Логирование контракт
+
+Сервис обязан публиковать LogEvent через EventBus.
+
+Используется k=v формат.
+
+Минимально обязательные коды:
+
+VIDEO_START
+VIDEO_STOP
+VIDEO_RECORD_START
+VIDEO_RECORD_STOP
+VIDEO_PLACEHOLDER on=1/0
+VIDEO_ERROR
+SERVICE_ERROR
+
+
+Запись в стандартный logging допустима,
+но EventBus-лог обязателен.
+
+6. Worker контракт (vendor integration)
+6.1 Factory
+
+По умолчанию:
+
+self._worker_factory = ProcessStreamWorker
+
+
+Worker создаётся через kwargs:
+
+_worker_factory(
+    stream=...,
+    url=...,
+    log=...,
+    heartbeat_seconds=...,
+    preview_width=...,
+    preview_height=...
+)
+
+
+Тесты могут патчить _worker_factory.
+
+6.2 Контракт стабильности
+
+Набор kwargs считается стабильным API v1.
+
+ProcessWorkerOptions dataclass не используется в v1.
+
+Расширение допускается только backward-compatible.
+
+7. Preview контракт
+7.1 Ответственность
+
+Preview (latest.jpg) — ответственность daemon-сервиса.
+
+Vendor child:
+
+не пишет preview самостоятельно,
+
+предоставляет IPC команду SAVE_PREVIEW.
+
+Daemon:
+
+запускает preview loop (thread),
+
+период 200–500 ms,
+
+вызывает IPC SAVE_PREVIEW,
+
+делает atomic replace (tmp → latest.jpg).
+
+7.2 Пути
+
+Preview хранится в:
+
+outputs/video_preview/<channel>/latest.jpg
+
+
+Путь определяется конфигурацией Surprize,
+vendor не знает о структуре outputs.
+
+8. Recording контракт
+
+Сервис обязан поддерживать:
+
+start_record(...)
+stop_record()
+
+
+Recording:
+
+не прерывается при reconnect,
+
+пишет mkv,
+
+пишет timeline.jsonl,
+
+поддерживает placeholder при потере сигнала.
+
+9. EventBus ограничения
+
+Сервис:
+
+не вызывает UI напрямую
+
+не вызывает другие сервисы напрямую
+
+публикует события только через EventBus
+
+10. Архитектурные ограничения
+
+UI не вызывает subprocess
+
+UI не управляет потоками напрямую
+
+vendor не знает о Surprize
+
+Orchestrator управляет lifecycle
+
+сервис идемпотентен по start/stop
+
+11. Версия
+
+Contract version: VideoChannelDaemonService v1
+Совместим с Orchestrator v4 (roles: daemon)

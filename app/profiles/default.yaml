@@ -48,34 +48,30 @@ default:
           Z0: 1.0
           omega_body: [0.0, 0.0, 100.0]
 
-
-    # Daemon: ingest RTSP -> latest.jpg + stats events
-    # Обязательное: channels + restart_backoff :contentReference[oaicite:1]{index=1}
-    rtsp_ingest:
+    video_visible:
       role: daemon
-      channels:
-        visible:
-          url: "rtsp://192.168.0.170:8554/visible"
-        thermal:
-          url: "rtsp://192.168.0.170:8554/thermal"
+      channel: visible
+      url: "rtsp://192.168.0.170:8554/visible"
+      width: 1280
+      height: 720
+      connect_timeout_sec: 10
+      read_watchdog_sec: 5
+      reconnect_backoff: [1, 2, 5, 10, 20, 30]
+      preview:
+        enabled: true
+        out_path: "outputs/video_preview/visible/latest.jpg"
+        period_ms: 200
 
-      # optional (default: "ffmpeg")
-      ffmpeg_path: "ffmpeg"
-
-      # default: "outputs"
-      out_root: "outputs"
-
-      # как часто обновлять latest.jpg на канал
-      snapshot_fps: 2.0
-
-      # optional; таймаут на запуск/операции (если сервис поддерживает)
-      probe_timeout_sec: 3
-
-      # обязательный backoff (v1)
-      restart_backoff:
-        base_ms: 300
-        max_ms: 5000
-        jitter_ms: 200
-
-      # optional, но рекомендовано: детект "stalled"
-      max_frame_age_sec: 3.0
+    video_thermal:
+      role: daemon
+      channel: thermal
+      url: "rtsp://192.168.0.170:8554/thermal"
+      width: 1280
+      height: 720
+      connect_timeout_sec: 10
+      read_watchdog_sec: 5
+      reconnect_backoff: [1, 2, 5, 10, 20, 30]
+      preview:
+        enabled: true
+        out_path: "outputs/video_preview/thermal/latest.jpg"
+        period_ms: 200

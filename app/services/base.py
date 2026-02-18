@@ -10,6 +10,7 @@ class ServiceStatus(str, Enum):
     RUNNING = "RUNNING"
     STOPPED = "STOPPED"
     ERROR = "ERROR"
+    STOPPING = "STOPPING"
 
 
 class BaseService(Protocol):
