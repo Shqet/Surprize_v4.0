@@ -40,6 +40,7 @@ class ProcessStreamWorker:
 
         self._proc: Optional[subprocess.Popen[str]] = None
         self._reader_thread: Optional[threading.Thread] = None
+        self._send_lock = threading.Lock()
 
         self._health = ProcHealth(state="IDLE", attempt=0, fps=0.0, last_frame_age_ms=-1)
 
@@ -93,6 +94,7 @@ class ProcessStreamWorker:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                stdin=subprocess.PIPE,
                 cwd=cwd,
                 env=env,
             )
@@ -175,6 +177,31 @@ class ProcessStreamWorker:
 
         t = ev.get("type")
         if t == "log":
-            self._log(f"CHILD_LOG stream={self.stream} msg={ev.get('msg','')}")
+            msg = ev.get("msg", "")
+            if isinstance(msg, str) and msg.startswith("VIDEO_"):
+                self._log(msg)
+            else:
+                self._log(f"CHILD_LOG stream={self.stream} msg={msg}")
+        elif t == "evt":
+            evt = ev.get("evt")
+            if evt == "PREVIEW_SAVED":
+                self._log(f"VIDEO_PREVIEW_WRITE_OK stream={self.stream} path={ev.get('path','')}")
+            elif evt == "PREVIEW_SAVE_FAIL":
+                self._log(
+                    f"VIDEO_PREVIEW_WRITE_FAIL stream={self.stream} path={ev.get('path','')} err={ev.get('err','')}"
+                )
+            else:
+                self._log(f"CHILD_EVENT stream={self.stream} ev={json.dumps(ev)}")
         else:
             self._log(f"CHILD_EVENT stream={self.stream} ev={json.dumps(ev)}")
+
+    def send_cmd(self, cmd: dict) -> None:
+        with self._send_lock:
+            with self._lock:
+                proc = self._proc
+
+            if proc is None or proc.stdin is None:
+                raise RuntimeError("child_stdin_unavailable")
+
+            proc.stdin.write(json.dumps(cmd, ensure_ascii=False) + "\n")
+            proc.stdin.flush()

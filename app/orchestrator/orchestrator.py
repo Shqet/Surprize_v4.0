@@ -179,6 +179,12 @@ class Orchestrator:
 
         services_map = self._sm.get_services()
 
+        root = profile_cfg.get(profile_name) if isinstance(profile_cfg, dict) else None
+        root = root if isinstance(root, dict) else (profile_cfg if isinstance(profile_cfg, dict) else None)
+        services_cfg = root.get("services") if isinstance(root, dict) else None
+        if not isinstance(services_cfg, dict):
+            services_cfg = {}
+
         # Start daemons first (only if not already RUNNING)
         daemons_started = 0
         for name in daemons:
@@ -188,7 +194,10 @@ class Orchestrator:
             if self._is_service_running(name):
                 continue
             try:
-                svc.start(profile_cfg)
+                svc_section = services_cfg.get(name, {})
+                if not isinstance(svc_section, dict):
+                    svc_section = {}
+                svc.start(svc_section)
                 daemons_started += 1
             except Exception as ex:
                 emit_log(
@@ -213,7 +222,10 @@ class Orchestrator:
             if svc is None:
                 continue
             try:
-                svc.start(profile_cfg)
+                svc_section = services_cfg.get(name, {})
+                if not isinstance(svc_section, dict):
+                    svc_section = {}
+                svc.start(svc_section)
                 jobs_started += 1
             except Exception as ex:
                 emit_log(

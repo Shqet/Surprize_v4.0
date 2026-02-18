@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import subprocess
+import sys
 
 from app.core.event_bus import EventBus
 from app.core.events import ProcessOutputEvent, ServiceStatusEvent
@@ -174,6 +175,8 @@ class BallisticsModelSubprocessService:
         out_root = Path(req_str("out_root"))
 
         python_exe = req_str("python_exe")
+        if python_exe.lower() in ("python", "python.exe", "py", "py.exe"):
+            python_exe = sys.executable
         calc_entry = req_str("calc_entry")
         plots_entry = req_str("plots_entry")
 

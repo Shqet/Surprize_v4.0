@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
+import os
+import threading
+import time
 from typing import Any, Callable, Optional
 
 from app.core.event_bus import EventBus
@@ -92,6 +96,10 @@ class VideoChannelDaemonService:
 
         self._cfg: Optional[VideoChannelConfig] = None
         self._worker: Optional[Any] = None
+        self._preview_thread: Optional[threading.Thread] = None
+        self._preview_stop = threading.Event()
+        self._preview_path: Optional[str] = None
+        self._preview_period_sec: float = 0.0
 
         self._worker_factory = worker_factory or (lambda **kw: ProcessStreamWorker(**kw))
 
@@ -109,6 +117,86 @@ class VideoChannelDaemonService:
     def _log(self, line: str) -> None:
         # vendor worker пишет строки k=v — прокидываем как LogEvent через общий логгер
         emit_log(self._bus, "INFO", self._name, "VIDEO", line)
+
+    def _log_preview_enabled(self, enabled: bool) -> None:
+        emit_log(
+            self._bus,
+            "INFO",
+            self._name,
+            "VIDEO_PREVIEW_ENABLED",
+            f"value={1 if enabled else 0}",
+        )
+
+    def _parse_preview_cfg(self, section: dict) -> tuple[bool, Optional[str], float]:
+        preview = section.get("preview") if isinstance(section, dict) else None
+        if not isinstance(preview, dict):
+            self._log_preview_enabled(False)
+            return False, None, 0.0
+
+        enabled = bool(preview.get("enabled", False))
+        self._log_preview_enabled(enabled)
+        if not enabled:
+            return False, None, 0.0
+
+        out_path = preview.get("out_path")
+        period_ms = preview.get("period_ms")
+
+        if not isinstance(out_path, str) or not out_path.strip():
+            emit_log(self._bus, "ERROR", self._name, "VIDEO_PREVIEW_CONFIG_INVALID", "missing=out_path")
+            return False, None, 0.0
+        if not isinstance(period_ms, int) or period_ms <= 0:
+            emit_log(self._bus, "ERROR", self._name, "VIDEO_PREVIEW_CONFIG_INVALID", "missing=period_ms")
+            return False, None, 0.0
+
+        abs_path = os.path.abspath(out_path)
+        emit_log(self._bus, "INFO", self._name, "VIDEO_PREVIEW_PATH", f"abs={abs_path}")
+        return True, abs_path, float(period_ms) / 1000.0
+
+    def _start_preview_loop(self) -> None:
+        if not self._preview_path or self._preview_period_sec <= 0:
+            return
+        if self._preview_thread and self._preview_thread.is_alive():
+            return
+
+        self._preview_stop.clear()
+        emit_log(
+            self._bus,
+            "INFO",
+            self._name,
+            "VIDEO_PREVIEW_INIT",
+            f"path={self._preview_path} period_ms={int(self._preview_period_sec * 1000)} file={__file__}",
+        )
+
+        t = threading.Thread(target=self._preview_loop, name=f"preview.{self._name}", daemon=True)
+        self._preview_thread = t
+        t.start()
+
+    def _preview_loop(self) -> None:
+        next_tick = time.monotonic()
+        while not self._preview_stop.is_set():
+            now = time.monotonic()
+            if now < next_tick:
+                time.sleep(min(0.2, next_tick - now))
+                continue
+
+            path = self._preview_path
+            if path:
+                emit_log(self._bus, "INFO", self._name, "VIDEO_PREVIEW_TICK", f"path={path}")
+                w = self._worker
+                if w is not None and hasattr(w, "send_cmd"):
+                    try:
+                        w.send_cmd({"cmd": "SAVE_PREVIEW", "path": path})
+                        emit_log(self._bus, "INFO", self._name, "VIDEO_PREVIEW_CMD_SENT", f"path={path}")
+                    except Exception as ex:
+                        emit_log(
+                            self._bus,
+                            "ERROR",
+                            self._name,
+                            "VIDEO_PREVIEW_CMD_SEND_FAIL",
+                            f"err={type(ex).__name__}",
+                        )
+
+            next_tick = time.monotonic() + max(0.2, self._preview_period_sec)
 
     def start(self, profile_section: dict | None = None) -> None:
         # idempotent
@@ -135,7 +223,6 @@ class VideoChannelDaemonService:
         self._cfg = cfg
         self._publish_status(ServiceStatus.STARTING)
 
-        emit_log(self._bus, "INFO", self._name, "VIDEO_DAEMON_IMPL", "impl=ProcessStreamWorker")
         emit_log(
             self._bus,
             "INFO",
@@ -165,7 +252,29 @@ class VideoChannelDaemonService:
             self._publish_status(ServiceStatus.ERROR)
             return
 
+        impl_name = type(self._worker).__name__ if self._worker is not None else "unknown"
+        impl_file = __file__
+        try:
+            if self._worker is not None:
+                impl_file = inspect.getfile(type(self._worker))
+        except Exception:
+            pass
+        emit_log(
+            self._bus,
+            "INFO",
+            self._name,
+            "VIDEO_DAEMON_IMPL",
+            f"impl={impl_name} file={impl_file}",
+        )
+
         self._publish_status(ServiceStatus.RUNNING)
+
+        # preview loop (optional)
+        enabled, path, period_sec = self._parse_preview_cfg(section)
+        if enabled and path:
+            self._preview_path = path
+            self._preview_period_sec = period_sec
+            self._start_preview_loop()
 
     def stop(self) -> None:
         # idempotent
@@ -190,6 +299,14 @@ class VideoChannelDaemonService:
                     w.stop()
         except Exception as ex:
             emit_log(self._bus, "ERROR", self._name, "VIDEO_DAEMON_STOP_FAILED", f"err={type(ex).__name__}")
+
+        self._preview_stop.set()
+        t = self._preview_thread
+        if t and t.is_alive():
+            t.join(timeout=1.0)
+        self._preview_thread = None
+        self._preview_path = None
+        self._preview_period_sec = 0.0
 
         self._cfg = None
         self._publish_status(ServiceStatus.STOPPED)
