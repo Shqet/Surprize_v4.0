@@ -74,11 +74,11 @@ def test_start_without_overrides_forwards_profile_cfg(monkeypatch: pytest.Monkey
 
     orch.start("default")
 
-    # v4: start() calls svc.start(profile_cfg) per service in profile
+    # v4: start() calls svc.start(service_section) per service in profile
     assert svc_a.start_calls == 1
     assert svc_b.start_calls == 1
-    assert svc_a.last_profile_cfg is base_cfg
-    assert svc_b.last_profile_cfg is base_cfg
+    assert svc_a.last_profile_cfg == {"role": "job", "path": "cmd", "args": "/c echo hi"}
+    assert svc_b.last_profile_cfg == {"role": "job", "config_json": {}}
     assert orch.state == OrchestratorState.RUNNING
     assert any(e.code == "ORCH_START_REQUEST" for e in logs)
 
@@ -118,7 +118,7 @@ def test_start_with_overrides_applies_deep_merge(monkeypatch: pytest.MonkeyPatch
 
     assert svc_a.start_calls == 1
     assert svc_b.start_calls == 1
-    assert svc_b.last_profile_cfg is base_cfg
+    assert svc_b.last_profile_cfg == {"role": "job", "config_json": {"k": 123, "nested": {"x": 1}}}
     assert base_cfg["default"]["services"]["ballistics_model"]["config_json"] == {"k": 123, "nested": {"x": 1}}
     assert orch.state == OrchestratorState.RUNNING
 
