@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Optional, cast
 import copy
-import json
 
 from PyQt6.QtWidgets import QGridLayout, QMainWindow, QPushButton, QVBoxLayout
 
@@ -11,10 +10,12 @@ from app.core.ui_bridge import UIBridge
 from app.orchestrator.orchestrator import Orchestrator
 from app.ui.generated.main_window import Ui_MainWindow
 from app.ui.widgets.config_json_editor import ConfigJsonEditor
+from app.ui.widgets.rtsp_preview import RtspPreviewWidget
 
 from app.ui.trajectory.csv_loader import TrajectoryCsvLoader
 from app.ui.trajectory.trajectory_3d_view import Trajectory3DView
 from app.ui.trajectory.controller import TrajectoryVisController
+from app.ui.trajectory.generate_controller import GenerateController
 
 
 _DEFAULT_CONFIG_JSON: dict[str, Any] = {
@@ -32,14 +33,15 @@ _DEFAULT_CONFIG_JSON: dict[str, Any] = {
     },
 }
 
+_DEFAULT_PREVIEW_VISIBLE = "outputs/video_preview/visible/latest.jpg"
+_DEFAULT_PREVIEW_THERMAL = "outputs/video_preview/thermal/latest.jpg"
+
 
 class MainWindow(QMainWindow):
     def __init__(self, orchestrator: Orchestrator, bridge: UIBridge) -> None:
         super().__init__()
         self._orch = orchestrator
         self._bridge = bridge
-
-        self._bm_running = False
 
         self._initial_config: dict[str, Any] = self._load_initial_config_json()
         self.current_config: dict[str, Any] = copy.deepcopy(self._initial_config)
@@ -49,6 +51,8 @@ class MainWindow(QMainWindow):
 
         self._gl_trajectory_params: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "gl_trajectory_params")
         self._vl_trajectory_visualization: Optional[QVBoxLayout] = self._safe_find_layout(QVBoxLayout, "vl_trajectory_visualization")
+        self._vl_rtsp_visible: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "vl_rtsp_visible")
+        self._vl_rtsp_thermal: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "vl_rtsp_thermal")
 
         self._editor: Optional[ConfigJsonEditor] = None
         self._init_editor()
@@ -57,8 +61,22 @@ class MainWindow(QMainWindow):
         self._traj_view = Trajectory3DView(self)
         self._init_trajectory_view()
 
+        self._init_rtsp_previews()
+
         self._traj_loader = TrajectoryCsvLoader()
         self._traj_ctl = TrajectoryVisController(bridge=self._bridge, view=self._traj_view, loader=self._traj_loader)
+
+        if self._editor is not None:
+            self._gen_ctl = GenerateController(
+                orchestrator=self._orch,
+                editor=self._editor,
+                traj_view=self._traj_view,
+                traj_ctl=self._traj_ctl,
+                set_generate_enabled=self._set_generate_enabled,
+                bus_getter=lambda: getattr(self._bridge, "_bus", None),
+            )
+        else:
+            self._gen_ctl = None
 
         self._connect_actions()
         self._connect_bridge()
@@ -130,16 +148,26 @@ class MainWindow(QMainWindow):
         vl.addWidget(self._traj_view)
         vl.setStretch(0, 1)
 
+    def _init_rtsp_previews(self) -> None:
+        if self._vl_rtsp_visible is not None:
+            w = RtspPreviewWidget(_DEFAULT_PREVIEW_VISIBLE, title="Камера", poll_ms=200, parent=self)
+            self._vl_rtsp_visible.addWidget(w, 0, 0)
+        if self._vl_rtsp_thermal is not None:
+            w = RtspPreviewWidget(_DEFAULT_PREVIEW_THERMAL, title="Термодатчик", poll_ms=200, parent=self)
+            self._vl_rtsp_thermal.addWidget(w, 0, 0)
+
     # ---------------- wiring ----------------
 
     def _connect_actions(self) -> None:
         btn = self._get_generate_button()
         if btn is not None:
-            btn.clicked.connect(self.on_generate_clicked)
+            if self._gen_ctl is not None:
+                btn.clicked.connect(self._gen_ctl.on_generate_clicked)
 
     def _connect_bridge(self) -> None:
         try:
-            self._bridge.service_status_event.connect(self._on_service_status_event)
+            if self._gen_ctl is not None:
+                self._bridge.service_status_event.connect(self._gen_ctl.on_service_status_event)
         except Exception:
             pass
         try:
@@ -154,70 +182,6 @@ class MainWindow(QMainWindow):
         btn = self._get_generate_button()
         if btn is not None:
             btn.setEnabled(enabled)
-
-    # ---------------- events ----------------
-
-    def _on_service_status_event(self, e: object) -> None:
-        service_name = getattr(e, "service_name", None)
-        status = getattr(e, "status", None)
-        if service_name != "ballistics_model":
-            return
-
-        if status == "RUNNING":
-            self._bm_running = True
-            self._set_generate_enabled(False)
-            self._traj_view.set_status("Computing…")
-            return
-
-        if status in ("STOPPED", "ERROR"):
-            self._bm_running = False
-            self._set_generate_enabled(True)
-
-        # delegate STOPPED/ERROR handling to controller (it also emits UI_VIS_* logs)
-        self._traj_ctl.on_service_status(e)
-
-    def on_generate_clicked(self) -> None:
-        bus = getattr(self._bridge, "_bus", None)
-        if bus is None:
-            return
-
-        if self._bm_running:
-            emit_log(bus, level="INFO", source="ui", code="UI_RUN_ALREADY_RUNNING", message="Generate ignored: already RUNNING")
-            return
-
-        emit_log(bus, level="INFO", source="ui", code="UI_GENERATE_CLICKED", message="Нажата кнопка генерации траектории")
-
-        if self._editor is None:
-            emit_log(bus, level="ERROR", source="ui", code="UI_CONFIG_INVALID", message="Редактор config_json не найден")
-            return
-
-        cfg = copy.deepcopy(self._editor.get_config())
-        if not isinstance(cfg, dict):
-            emit_log(bus, level="ERROR", source="ui", code="UI_CONFIG_INVALID", message="config_json должен быть dict")
-            return
-
-        try:
-            json_str = json.dumps(cfg, ensure_ascii=False, indent=None)
-        except Exception as e:
-            emit_log(bus, level="ERROR", source="ui", code="UI_CONFIG_INVALID", message=f"config_json не сериализуется: {e!r}")
-            return
-
-        emit_log(bus, level="INFO", source="ui", code="UI_RUN_REQUESTED", message=f"service=ballistics_model bytes={len(json_str.encode('utf-8'))}")
-
-        overrides = {"services": {"ballistics_model": {"config_json": cfg, "make_plots": False}}}
-
-        self._bm_running = True
-        self._set_generate_enabled(False)
-
-        # stale protection + show computing
-        self._traj_ctl.new_run_started()
-
-        try:
-            self._orch.start("default", overrides=overrides)
-        except Exception as e:
-            self._bm_running = False
-            self._set_generate_enabled(True)
-            emit_log(bus, level="ERROR", source="ui", code="UI_RUN_START_FAILED", message=f"Не удалось запустить orchestrator: {e!r}")
 
     # ---------------- logging helpers ----------------
 

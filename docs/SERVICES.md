@@ -2,7 +2,11 @@
 
 Name | Status | Description
 -----|--------|------------
-ExeRunnerService | planned | Run external exe
+ExeRunnerService | implemented | Run external exe
+VideoChannelDaemonService | implemented | RTSP daemon (ProcessStreamWorker) with preview loop
+BallisticsModelSubprocessService | implemented | Run external ballistics model via subprocess
+rtsp_health | planned | Monitor RTSP availability (not present in current code)
+rtsp_ingest | planned | RTSP ingest via ffmpeg (not present in current code)
 Service name: ballistics_model
 Implementation: app/services/ballistics_model.py
 
@@ -22,7 +26,7 @@ calc_entry: файл расчёта, по умолчанию run_vkr.py
 
 plots_entry: файл визуализации, по умолчанию visualization.py (optional)
 
-out_root: корневая папка для запусков, например outputs/ballistics
+out_root: корневая папка для запусков, например outputs
 
 timeout_sec: таймаут расчёта (subprocess terminate/kill)
 
@@ -34,7 +38,7 @@ config_json: dict, который сериализуется 1:1 в vkr_config.j
 
 Outputs
 
-Файлы в run_dir:
+Файлы в run_dir (run_dir = <out_root>/ballistics/<run_id>):
 
 trajectory.csv
 
@@ -88,7 +92,7 @@ subprocess exit!=0 → ERROR
 stop во время расчёта → корректно завершает процесс и выдаёт STOPPED/ERROR
 
 Service name: rtsp_health
-Implementation: app/hw/video/service.py
+Implementation: not present in current codebase
 
 Purpose
 Monitor availability of RTSP mounts (/visible, /thermal)

@@ -280,3 +280,33 @@ def test_start_daemons_is_idempotent_when_daemons_already_running(monkeypatch: p
     assert job1.start_calls == 0
 
     assert orch.state == OrchestratorState.IDLE
+
+
+def test_start_passes_service_section_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = EventBus()
+
+    job1 = _FakeService(name="job1", bus=bus)
+    daemon1 = _FakeService(name="daemon1", bus=bus)
+    sm = _FakeServiceManager({"job1": job1, "daemon1": daemon1})
+
+    from app.orchestrator import orchestrator as orch_mod
+
+    monkeypatch.setattr(
+        orch_mod,
+        "load_profile",
+        lambda profile_name: {
+            profile_name: {
+                "orchestrator": {"stop_timeout_sec": 1},
+                "services": {
+                    "job1": {"role": "job", "foo": 1},
+                    "daemon1": {"role": "daemon", "bar": 2},
+                },
+            }
+        },
+    )
+
+    orch = Orchestrator(bus, sm)
+    orch.start("p")
+
+    assert job1.last_profile_cfg == {"role": "job", "foo": 1}
+    assert daemon1.last_profile_cfg == {"role": "daemon", "bar": 2}

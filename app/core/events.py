@@ -36,15 +36,6 @@ class RtspChannelHealthEvent:
     state: str            # "CONNECTED" | "RECONNECTING" | "OFFLINE"
     attempt: int
     last_error: str | None
-
-@dataclass(frozen=True, slots=True)
-class RtspChannelHealthEvent:
-    service_name: str
-    channel: str     # "visible" | "thermal"
-    url: str
-    state: str       # "CONNECTED" | "RECONNECTING"
-    attempt: int
-    last_error: str | None
 @dataclass(frozen=True, slots=True)
 class RtspIngestStatsEvent:
     service: str            # always "rtsp_ingest"

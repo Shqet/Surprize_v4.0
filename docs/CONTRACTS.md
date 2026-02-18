@@ -5,7 +5,7 @@
 Methods:
 - start()
 - stop()
-- get_status()
+- status()
 
 ---
 
@@ -16,6 +16,7 @@ STARTING
 RUNNING
 ERROR
 STOPPED
+STOPPING
 
 ---
 
@@ -51,6 +52,8 @@ UI и другие клиенты не имеют права модифицир�
 
 LogEvent:
   level
+  source
+  code
   message
 
 ServiceStatusEvent:
@@ -64,7 +67,7 @@ RtspChannelHealthEvent:
   service_name: str
   channel: "visible" | "thermal"
   url: str
-  state: "CONNECTED" | "RECONNECTING" | "OFFLINE"
+  state: "CONNECTED" | "RECONNECTING"
   attempt: int
   last_error: str | None
 
@@ -75,7 +78,7 @@ RtspChannelHealthEvent:
 **Потребители:** UI и любые наблюдатели (без управления сервисом напрямую).
 
 **Обязательные поля:**
-- `service: str` — всегда `"rtsp_health"`
+- `service_name: str` — всегда `"rtsp_health"`
 - `channel: str` — идентификатор канала (например `"visible"`, `"thermal"`)
 - `state: str` — одно из: `CONNECTED | RECONNECTING`
 - `attempt: int` — номер попытки переподключения (0 при CONNECTED)
@@ -167,6 +170,8 @@ Rules:
 
 ### LogEvent
 - level: str
+- source: str
+- code: str
 - message: str
 
 ### ServiceStatusEvent
@@ -187,7 +192,7 @@ Rules:
 
 - start(profile_name: str) -> None
 - stop() -> None
-- get_state() -> OrchestratorState
+- state: OrchestratorState (property)
 
 ---
 
@@ -618,13 +623,13 @@ ProcessWorkerOptions dataclass не используется в v1.
 7. Preview контракт
 7.1 Ответственность
 
-Preview (latest.jpg) — ответственность daemon-сервиса.
+Preview (latest.jpg) — ответственность daemon-сервиса, но фактическая запись выполняется child-процессом.
 
 Vendor child:
 
 не пишет preview самостоятельно,
 
-предоставляет IPC команду SAVE_PREVIEW.
+получает IPC команду SAVE_PREVIEW и выполняет atomic replace (tmp → latest.jpg).
 
 Daemon:
 
@@ -632,9 +637,7 @@ Daemon:
 
 период 200–500 ms,
 
-вызывает IPC SAVE_PREVIEW,
-
-делает atomic replace (tmp → latest.jpg).
+вызывает IPC SAVE_PREVIEW.
 
 7.2 Пути
 
