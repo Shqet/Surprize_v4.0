@@ -123,7 +123,7 @@ Ctrl+C → корректное завершение
 
 CLI-инструменты
 1️⃣ Только подготовка NMEA
-python -m tools.test_gps_prepare \
+python -m tools.gps_prepare \
   --input app\trajectory.csv \
   --origin-lat 55 \
   --origin-lon 37 \
@@ -131,7 +131,7 @@ python -m tools.test_gps_prepare \
   --static-sec 200
 
 2️⃣ Генерация IQ
-python -m tools.test_gps_sim \
+python -m tools.gps_sim \
   --input app\trajectory.csv \
   --origin-lat 55 \
   --origin-lon 37 \
@@ -142,14 +142,14 @@ python -m tools.test_gps_sim \
   --bit-depth 16
 
 3️⃣ Запуск PlutoPlayer
-python -m tools.test_pluto_player \
+python -m tools.pluto_player \
   --run-id gps_20260219_093650_257ef8d7 \
   --tx-atten-db -20.0 \
   --rf-bw-mhz 3.0 \
   --hold-sec 20
 
 4️⃣ Полный pipeline одной командой
-python -m tools.test_full_pipeline \
+python -m tools.full_pipeline \
   --input app\trajectory.csv \
   --origin-lat 55 \
   --origin-lon 37 \
