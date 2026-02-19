@@ -70,6 +70,7 @@ class GpsSdrSimService:
         self._worker: Optional[threading.Thread] = None
         self._proc: Optional[ProcessHandle] = None
         self._terminate_thread: Optional[threading.Thread] = None
+        self._grace_sec: float = 5.0
 
     def status(self) -> ServiceStatus:
         with self._lock:
@@ -101,6 +102,7 @@ class GpsSdrSimService:
             return
 
         self._stop_requested.clear()
+        self._grace_sec = float(cfg.grace_sec)
         self._set_status(ServiceStatus.STARTING)
 
         t = threading.Thread(
@@ -273,6 +275,7 @@ class GpsSdrSimService:
             write_run_meta(paths.run_meta_json, meta)
             if cfg.copy_input:
                 paths.input_trajectory_copy.write_bytes(cfg.input_csv.read_bytes())
+            emit_log(self._bus, "INFO", "gps_sdr_sim", "PROCESS_EXIT", "stage=prepare_nmea rc=0")
         except Exception as ex:
             emit_log(self._bus, "ERROR", "gps_sdr_sim", "SERVICE_ERROR", f"stage=prepare_nmea err={type(ex).__name__} msg={ex}")
             self._set_status(ServiceStatus.ERROR)
@@ -324,6 +327,7 @@ class GpsSdrSimService:
             stderr_path=paths.stderr_gps_sdr_sim_log,
             on_stdout=lambda line: self._publish_output("stdout", line),
             on_stderr=lambda line: self._publish_output("stderr", line),
+            thread_label="gps_sdr_sim.gps",
         )
         with self._lock:
             self._proc = handle
@@ -388,6 +392,7 @@ class GpsSdrSimService:
             stderr_path=paths.stderr_pluto_log,
             on_stdout=lambda line: self._publish_output("stdout", line),
             on_stderr=lambda line: self._publish_output("stderr", line),
+            thread_label="gps_sdr_sim.pluto",
         )
         with self._lock:
             self._proc = handle
@@ -454,7 +459,7 @@ class GpsSdrSimService:
                 self._proc = None
 
     def _terminate_sequence(self) -> None:
-        self._terminate_current(timeout_sec=5.0)
+        self._terminate_current(timeout_sec=self._grace_sec)
         st = self.status()
         if st != ServiceStatus.ERROR:
             self._set_status(ServiceStatus.STOPPED)

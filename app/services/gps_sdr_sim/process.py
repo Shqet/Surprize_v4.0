@@ -52,6 +52,7 @@ def start_process(
     stderr_path: Path,
     on_stdout: Optional[LineCallback] = None,
     on_stderr: Optional[LineCallback] = None,
+    thread_label: str = "gps_sdr_sim",
 ) -> ProcessHandle:
     """
     Start process with live line readers, streaming to files and optional callbacks.
@@ -75,7 +76,7 @@ def start_process(
     if proc.stdout is not None:
         t = threading.Thread(
             target=_reader_worker,
-            name="gps_sdr_sim.stdout",
+            name=f"{thread_label}.stdout",
             args=(proc.stdout, stdout_path, on_stdout),
             daemon=True,
         )
@@ -84,7 +85,7 @@ def start_process(
     if proc.stderr is not None:
         t = threading.Thread(
             target=_reader_worker,
-            name="gps_sdr_sim.stderr",
+            name=f"{thread_label}.stderr",
             args=(proc.stderr, stderr_path, on_stderr),
             daemon=True,
         )
