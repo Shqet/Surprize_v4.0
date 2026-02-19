@@ -116,6 +116,11 @@ def main() -> int:
                 print("STAGE: bin->plutoplayer (pluto)")
         elif ev.code == "SERVICE_STATUS":
             print(f"STAGE: done {ev.message}")
+            # Also highlight run_id and key artifacts if present in message
+            parts = ev.message.split()
+            for p in parts:
+                if p.startswith("run_id=") or p.startswith("out_dir=") or p.startswith("nmea=") or p.startswith("iq="):
+                    print(f"  {p}")
 
     bus.subscribe(LogEvent, _on_log)
     svc = GpsSdrSimService(bus)
