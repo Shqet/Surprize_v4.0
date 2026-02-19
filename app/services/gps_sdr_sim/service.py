@@ -259,6 +259,7 @@ class GpsSdrSimService:
 
         # Step1: CSV -> NMEA
         try:
+            emit_log(self._bus, "INFO", "gps_sdr_sim", "PROCESS_START", "stage=prepare_nmea")
             meta = prepare_nmea_input(
                 input_trajectory_csv=cfg.input_csv,
                 out_nmea_txt=paths.nmea_strings_txt,

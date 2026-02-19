@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from app.core.event_bus import EventBus
+from app.core.events import LogEvent
 from app.services.base import ServiceStatus
 from app.services.gps_sdr_sim.service import GpsSdrSimService
 
@@ -102,6 +103,21 @@ def main() -> int:
     print(f"  hold_sec={'<wait>' if args.hold_sec is None else args.hold_sec}")
 
     bus = EventBus()
+
+    def _on_log(ev: LogEvent) -> None:
+        if ev.source != "gps_sdr_sim":
+            return
+        if ev.code == "PROCESS_START":
+            if "stage=prepare_nmea" in ev.message:
+                print("STAGE: csv->txt (prepare_nmea)")
+            elif "stage=gps_sdr_sim" in ev.message:
+                print("STAGE: txt->bin (gps_sdr_sim)")
+            elif "stage=pluto" in ev.message:
+                print("STAGE: bin->plutoplayer (pluto)")
+        elif ev.code == "SERVICE_STATUS":
+            print(f"STAGE: done {ev.message}")
+
+    bus.subscribe(LogEvent, _on_log)
     svc = GpsSdrSimService(bus)
     print("STAGE: start service")
     svc.start(profile_section=cfg)
