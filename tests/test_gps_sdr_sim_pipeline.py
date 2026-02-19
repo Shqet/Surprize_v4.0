@@ -22,11 +22,11 @@ def _find_repo_root(start: Path) -> Path:
     raise RuntimeError("cannot find repo root")
 
 
-@pytest.mark.integration
+@pytest.mark.smoke
 def test_gps_sdr_sim_pipeline(tmp_path: Path) -> None:
     # Explicit opt-in: this test runs external binaries and may require hardware.
-    if os.getenv("GPS_SDR_SIM_INTEGRATION") != "1":
-        pytest.skip("set GPS_SDR_SIM_INTEGRATION=1 to run this integration test")
+    if os.getenv("GPS_SDR_SIM_SMOKE") != "1":
+        pytest.skip("set GPS_SDR_SIM_SMOKE=1 to run this smoke test")
 
     repo_root = _find_repo_root(Path(__file__).resolve().parent)
     gps_exe = repo_root / "bin" / "gps_sdr_sim" / "gps-sdr-sim.exe"

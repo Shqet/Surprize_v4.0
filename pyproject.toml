@@ -38,3 +38,8 @@ disallow_untyped_defs = false
 no_implicit_optional = true
 check_untyped_defs = true
 mypy_path = ["app"]
+
+[tool.pytest.ini_options]
+markers = [
+  "smoke: runs external binaries/hardware-dependent gps_sdr_sim pipeline",
+]
