@@ -10,6 +10,7 @@ from app.core.ui_bridge import UIBridge
 from app.orchestrator.orchestrator import Orchestrator
 from app.services.ballistics_model import BallisticsModelSubprocessService
 from app.services.exe_runner import ExeRunnerService
+from app.services.gps_sdr_sim.service import GpsSdrSimService
 from app.services.service_manager import ServiceManager
 from app.services.video_channel import VideoChannelDaemonService
 from app.ui.main_window import MainWindow
@@ -24,6 +25,7 @@ def main() -> int:
     sm = ServiceManager(bus)
     sm.register(ExeRunnerService(bus))
     sm.register(BallisticsModelSubprocessService(bus))  # job
+    sm.register(GpsSdrSimService(bus))  # job (start by orchestrator)
 
     # daemons (names MUST match profile keys)
     sm.register(VideoChannelDaemonService(bus, "video_visible"))
