@@ -275,6 +275,15 @@ class MayakSpindleService:
         }
 
         self._last_tel: Dict[str, Tuple] = {}
+        self._spindle_state: Dict[str, str] = {"sp1": "UNKNOWN", "sp2": "UNKNOWN"}
+        self._spindle_fault: Dict[str, bool] = {"sp1": False, "sp2": False}
+        self._spindle_connected: Dict[str, Optional[bool]] = {"sp1": None, "sp2": None}
+        self._last_error_code: int = 0
+        self._rpm_moving_threshold = 5
+
+        self._io_error_streak = 0
+        self._io_error_threshold = 5
+        self._io_backoff_s = 0.0
 
     # -----------------
     # Required public API
@@ -369,6 +378,20 @@ class MayakSpindleService:
             raise ValueError("direction must be -1, 0, or 1")
         if rpm < 0:
             raise ValueError("rpm must be >= 0")
+        if self.status() != ServiceStatus.RUNNING:
+            raise RuntimeError("service is not RUNNING")
+
+        with self._lock:
+            ge = self._global_enable
+            connected = self._spindle_connected.get(sp)
+            fault = self._spindle_fault.get(sp, False)
+            err_code = self._last_error_code
+        if ge is False:
+            raise RuntimeError("global_enable is OFF")
+        if connected is False:
+            raise RuntimeError(f"{sp} is not connected")
+        if fault or err_code != 0:
+            raise RuntimeError(f"{sp} is in FAULT")
 
         target = int(rpm * direction)
         cw = 0x0000 if direction == 0 else 0x0006
@@ -386,6 +409,54 @@ class MayakSpindleService:
         self.set_spindle_speed(spindle, direction=0, rpm=0)
 
     # -----------------
+    # Readiness API (v2)
+    # -----------------
+    def get_spindle_state(self, spindle: str) -> str:
+        sp = spindle.lower().strip()
+        if sp not in ("sp1", "sp2"):
+            raise ValueError("spindle must be 'sp1' or 'sp2'")
+        with self._lock:
+            return self._spindle_state.get(sp, "UNKNOWN")
+
+    def spindle_ready(self, spindle: str) -> bool:
+        st = self.get_spindle_state(spindle)
+        return st in ("READY", "MOVING", "STARTING", "STOPPING")
+
+    def is_ready(self) -> bool:
+        with self._lock:
+            if self._state != ServiceStatus.RUNNING:
+                return False
+            if self._global_enable is False:
+                return False
+            if self._last_error_code != 0:
+                return False
+            io_bad = self._io_error_streak >= self._io_error_threshold
+            sp1 = self._spindle_state.get("sp1", "UNKNOWN")
+            sp2 = self._spindle_state.get("sp2", "UNKNOWN")
+        if io_bad:
+            return False
+        return sp1 in ("READY", "MOVING", "STARTING", "STOPPING") and sp2 in (
+            "READY",
+            "MOVING",
+            "STARTING",
+            "STOPPING",
+        )
+
+    def get_health_snapshot(self) -> Dict[str, object]:
+        with self._lock:
+            return {
+                "service_status": self._state.value,
+                "global_enable": self._global_enable,
+                "error_code": self._last_error_code,
+                "io_error_streak": self._io_error_streak,
+                "io_degraded": self._io_error_streak >= self._io_error_threshold,
+                "sp1_state": self._spindle_state.get("sp1", "UNKNOWN"),
+                "sp2_state": self._spindle_state.get("sp2", "UNKNOWN"),
+                "sp1_connected": self._spindle_connected.get("sp1"),
+                "sp2_connected": self._spindle_connected.get("sp2"),
+            }
+
+    # -----------------
     # Worker loop
     # -----------------
     def _worker(self) -> None:
@@ -401,6 +472,8 @@ class MayakSpindleService:
         ]
 
         while not self._stop_evt.is_set():
+            if self._io_backoff_s > 0:
+                time.sleep(self._io_backoff_s)
             out: Dict[str, int] = {}
             with self._lock:
                 ge = self._global_enable
@@ -443,22 +516,33 @@ class MayakSpindleService:
                     self._tr.write_cells(out)
                 except Exception as e:
                     self._emit_log("ERROR", "MAYAK_TX_ERROR", _kv(service=self.name, error=str(e)))
+                    self._on_io_error()
 
             try:
                 vals = self._tr.read_cells(in_cells)
             except Exception as e:
                 self._emit_log("ERROR", "MAYAK_RX_ERROR", _kv(service=self.name, error=str(e)))
+                self._on_io_error()
                 time.sleep(period_s)
                 continue
+            self._on_io_success()
 
             sim_time = int(vals.get(d.sim_time, 0))
             err = int(vals.get(d.error_code, 0))
+            with self._lock:
+                self._last_error_code = err
 
+            sp1_connected = bool(vals.get(d.sp1_connected, 0))
+            sp2_connected = bool(vals.get(d.sp2_connected, 0))
+            sp1_sw = int(vals.get(d.sp1_sw, 0))
+            sp2_sw = int(vals.get(d.sp2_sw, 0))
+            sp1_act = int(vals.get(d.sp1_act, 0))
+            sp2_act = int(vals.get(d.sp2_act, 0))
             self._publish_tel(
                 spindle="sp1",
-                connected=bool(vals.get(d.sp1_connected, 0)),
-                status_word=int(vals.get(d.sp1_sw, 0)),
-                actual_speed=int(vals.get(d.sp1_act, 0)),
+                connected=sp1_connected,
+                status_word=sp1_sw,
+                actual_speed=sp1_act,
                 actual_torque=int(vals.get(d.sp1_torque, 0)),
                 angle=int(vals.get(d.sp1_angle, 0)),
                 sim_time=sim_time,
@@ -467,16 +551,81 @@ class MayakSpindleService:
 
             self._publish_tel(
                 spindle="sp2",
-                connected=bool(vals.get(d.sp2_connected, 0)),
-                status_word=int(vals.get(d.sp2_sw, 0)),
-                actual_speed=int(vals.get(d.sp2_act, 0)),
+                connected=sp2_connected,
+                status_word=sp2_sw,
+                actual_speed=sp2_act,
                 actual_torque=int(vals.get(d.sp2_torque, 0)),
                 angle=None,
                 sim_time=sim_time,
                 error_code=err,
             )
+            with self._lock:
+                sp1_tgt = self._sp_cmd["sp1"][1] or 0
+                sp2_tgt = self._sp_cmd["sp2"][1] or 0
+                self._spindle_connected["sp1"] = sp1_connected
+                self._spindle_connected["sp2"] = sp2_connected
+                self._spindle_fault["sp1"] = bool(err != 0 or (sp1_sw & 0x0008))
+                self._spindle_fault["sp2"] = bool(err != 0 or (sp2_sw & 0x0008))
+                self._spindle_state["sp1"] = self._derive_spindle_state(
+                    connected=sp1_connected,
+                    status_word=sp1_sw,
+                    actual_speed=sp1_act,
+                    target_speed=sp1_tgt,
+                    error_code=err,
+                )
+                self._spindle_state["sp2"] = self._derive_spindle_state(
+                    connected=sp2_connected,
+                    status_word=sp2_sw,
+                    actual_speed=sp2_act,
+                    target_speed=sp2_tgt,
+                    error_code=err,
+                )
 
             time.sleep(period_s)
+
+    def _on_io_error(self) -> None:
+        with self._lock:
+            self._io_error_streak += 1
+            streak = self._io_error_streak
+            self._io_backoff_s = min(1.0, max(0.05, self._io_backoff_s * 2 if self._io_backoff_s > 0 else 0.05))
+        if streak == self._io_error_threshold:
+            self._emit_log("ERROR", "MAYAK_IO_DEGRADED", _kv(service=self.name, streak=streak))
+
+    def _on_io_success(self) -> None:
+        with self._lock:
+            had_errors = self._io_error_streak >= self._io_error_threshold
+            self._io_error_streak = 0
+            self._io_backoff_s = 0.0
+        if had_errors:
+            self._emit_log("INFO", "MAYAK_IO_RECOVERED", _kv(service=self.name))
+
+    def _derive_spindle_state(
+        self,
+        *,
+        connected: bool,
+        status_word: int,
+        actual_speed: int,
+        target_speed: int,
+        error_code: int,
+    ) -> str:
+        if not connected:
+            return "OFFLINE"
+        if error_code != 0 or (status_word & 0x0008):
+            return "FAULT"
+
+        op_enabled = bool(status_word & 0x0004)
+        moving = abs(int(actual_speed)) >= self._rpm_moving_threshold
+        wants_move = abs(int(target_speed)) > 0
+
+        if not op_enabled:
+            return "ENABLING" if wants_move else "DISABLED"
+        if wants_move and not moving:
+            return "STARTING"
+        if not wants_move and moving:
+            return "STOPPING"
+        if moving:
+            return "MOVING"
+        return "READY"
 
     def _publish_tel(
         self,

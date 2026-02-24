@@ -108,3 +108,56 @@ def test_fail_fast_invalid_config():
 
     svc.start({"publish_period_ms": 10})
     assert svc.status() == ServiceStatus.ERROR
+
+
+def test_readiness_and_state_api():
+    bus = _Bus(events=[])
+    tr = DictTransport(initial={
+        "D1050": 1, "D1051": 1,
+        "D1002": 0x0004, "D1012": 0x0004,
+        "D1003": 0, "D1013": 0,
+        "D1020": 0, "D1021": 0,
+        "D1022": 0,
+        "D1091": 0, "D1092": 0,
+    })
+    svc = MayakSpindleService(bus=bus, transport=tr)
+    svc.start(_profile())
+    time.sleep(0.05)
+
+    assert svc.is_ready() is True
+    assert svc.spindle_ready("sp1") is True
+    assert svc.get_spindle_state("sp1") in ("READY", "STARTING", "MOVING", "STOPPING")
+    snap = svc.get_health_snapshot()
+    assert snap["io_degraded"] is False
+
+    tr.write_cells({"D1092": 777})
+    time.sleep(0.05)
+    assert svc.is_ready() is False
+    assert svc.get_spindle_state("sp1") == "FAULT"
+    assert svc.get_spindle_state("sp2") == "FAULT"
+    svc.stop()
+
+
+def test_guard_blocks_command_when_global_disabled():
+    bus = _Bus(events=[])
+    tr = DictTransport(initial={
+        "D1050": 1, "D1051": 1,
+        "D1002": 0x0004, "D1012": 0x0004,
+        "D1003": 0, "D1013": 0,
+        "D1020": 0, "D1021": 0,
+        "D1022": 0,
+        "D1091": 0, "D1092": 0,
+    })
+    svc = MayakSpindleService(bus=bus, transport=tr)
+    prof = _profile()
+    prof["global_enable"] = False
+    svc.start(prof)
+    time.sleep(0.03)
+
+    try:
+        svc.set_spindle_speed("sp1", direction=1, rpm=100)
+        assert False, "expected RuntimeError for global_enable OFF"
+    except RuntimeError:
+        pass
+    finally:
+        svc.stop()
