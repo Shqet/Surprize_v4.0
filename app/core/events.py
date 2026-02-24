@@ -55,6 +55,7 @@ class MayakHealthEvent:
     error_code: int
     io_error_streak: int
     io_degraded: bool
+    degraded_reason: str
     sp1_state: str
     sp2_state: str
     sp1_connected: bool | None

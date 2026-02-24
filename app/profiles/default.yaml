@@ -1,6 +1,7 @@
 default:
   orchestrator:
     stop_timeout_sec: 10
+    mayak_ready_timeout_sec: 2.0
 
   services:
     exe_runner:
@@ -80,6 +81,18 @@ default:
       role: daemon
       publish_period_ms: 50
       global_enable: true
+      runtime:
+        command_timeout_ms: 1500
+      limits:
+        max_rpm_sp1: 6000
+        max_rpm_sp2: 6000
+        max_accel_rpm_s: 0.0
+        max_torque: 100000
+      watchdog:
+        cell: "D1093"
+        max_packet_age_sec: 1.0
+      metrics:
+        log_period_sec: 2.0
       transport:
         cnc_host: "127.0.0.1"
         cnc_port: 12346

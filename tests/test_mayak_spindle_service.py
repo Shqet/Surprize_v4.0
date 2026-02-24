@@ -255,3 +255,93 @@ def test_io_degraded_then_recovered_logs():
     assert "MAYAK_IO_DEGRADED" in codes
     assert "MAYAK_IO_RECOVERED" in codes
     assert snap["io_degraded"] is False
+
+
+def test_fault_reset_writes_reset_controlword():
+    bus = _Bus(events=[])
+    tr = DictTransport(initial={
+        "D1050": 1, "D1051": 1,
+        "D1002": 0x0008, "D1012": 0x0004,  # sp1 fault
+        "D1003": 0, "D1013": 0,
+        "D1020": 0, "D1021": 0,
+        "D1022": 0,
+        "D1091": 0, "D1092": 0,
+    })
+    svc = MayakSpindleService(bus=bus, transport=tr)
+    svc.start(_profile())
+    time.sleep(0.03)
+    svc.fault_reset("sp1")
+    time.sleep(0.03)
+    snap = tr.snapshot()
+    svc.stop()
+    assert snap["D1000"] in (0x0080, 0x0007, 0x000F)
+
+
+def test_rpm_limit_enforced():
+    bus = _Bus(events=[])
+    tr = DictTransport(initial={
+        "D1050": 1, "D1051": 1,
+        "D1002": 0x0004, "D1012": 0x0004,
+        "D1003": 0, "D1013": 0,
+        "D1020": 0, "D1021": 0,
+        "D1022": 0,
+        "D1091": 0, "D1092": 0,
+    })
+    svc = MayakSpindleService(bus=bus, transport=tr)
+    prof = _profile()
+    prof["limits"] = {"max_rpm_sp1": 200, "max_rpm_sp2": 200}
+    svc.start(prof)
+    time.sleep(0.03)
+    try:
+        svc.set_spindle_speed("sp1", direction=1, rpm=500)
+        assert False, "expected ValueError for rpm limit"
+    except ValueError:
+        pass
+    finally:
+        svc.stop()
+
+
+def test_command_timeout_sets_fault_and_logs():
+    bus = _Bus(events=[])
+    tr = DictTransport(initial={
+        "D1050": 1, "D1051": 1,
+        "D1002": 0x0004, "D1012": 0x0004,
+        "D1003": 0, "D1013": 0,
+        "D1020": 0, "D1021": 0,
+        "D1022": 0,
+        "D1091": 0, "D1092": 0,
+    })
+    svc = MayakSpindleService(bus=bus, transport=tr)
+    prof = _profile()
+    prof["runtime"] = {"command_timeout_ms": 150}
+    svc.start(prof)
+    time.sleep(0.03)
+    svc.set_spindle_speed("sp2", direction=1, rpm=100)
+    # Force no movement so command cannot satisfy MOVE expectation.
+    tr.write_cells({"D1013": 0, "D1012": 0x0000})
+    time.sleep(0.35)
+    hs = svc.get_health_snapshot()
+    svc.stop()
+    logs = [e for e in bus.events if isinstance(e, LogEvent)]
+    assert any(e.code == "MAYAK_CMD_TIMEOUT" for e in logs)
+    assert hs["error_code"] != 0
+
+
+def test_metrics_log_emitted():
+    bus = _Bus(events=[])
+    tr = DictTransport(initial={
+        "D1050": 1, "D1051": 1,
+        "D1002": 0x0004, "D1012": 0x0004,
+        "D1003": 0, "D1013": 0,
+        "D1020": 0, "D1021": 0,
+        "D1022": 0,
+        "D1091": 0, "D1092": 0,
+    })
+    svc = MayakSpindleService(bus=bus, transport=tr)
+    prof = _profile()
+    prof["metrics"] = {"log_period_sec": 0.1}
+    svc.start(prof)
+    time.sleep(0.25)
+    svc.stop()
+    logs = [e for e in bus.events if isinstance(e, LogEvent)]
+    assert any(e.code == "MAYAK_METRICS" for e in logs)

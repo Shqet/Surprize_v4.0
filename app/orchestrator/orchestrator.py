@@ -212,7 +212,7 @@ class Orchestrator:
         emit_log(self._bus, "INFO", "orchestrator", "ORCH_DAEMONS_START", f"count={daemons_started}")
 
         # v5 policy: mayak spindle daemon must be ready before starting jobs.
-        if not self._check_mayak_readiness_before_jobs(services_map):
+        if not self._check_mayak_readiness_before_jobs(services_map, profile_cfg, profile_name):
             self._set_state(OrchestratorState.ERROR)
             return
 
@@ -593,7 +593,12 @@ class Orchestrator:
         with self._lock:
             return self._service_status.get(service_name) == ServiceStatus.RUNNING
 
-    def _check_mayak_readiness_before_jobs(self, services_map: dict[str, object]) -> bool:
+    def _check_mayak_readiness_before_jobs(
+        self,
+        services_map: dict[str, object],
+        profile_cfg: dict,
+        profile_name: str,
+    ) -> bool:
         svc = services_map.get("mayak_spindle")
         if svc is None:
             return True
@@ -602,7 +607,11 @@ class Orchestrator:
         if not callable(is_ready):
             return True
 
-        timeout_sec = 2.0
+        root = profile_cfg.get(profile_name) if isinstance(profile_cfg, dict) else None
+        root = root if isinstance(root, dict) else (profile_cfg if isinstance(profile_cfg, dict) else {})
+        orch = root.get("orchestrator", {}) if isinstance(root, dict) else {}
+        timeout_val = orch.get("mayak_ready_timeout_sec") if isinstance(orch, dict) else None
+        timeout_sec = float(timeout_val) if isinstance(timeout_val, (int, float)) and float(timeout_val) > 0 else 2.0
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
             try:
@@ -625,7 +634,7 @@ class Orchestrator:
             "ERROR",
             "orchestrator",
             "SERVICE_ERROR",
-            "stage=precheck service=mayak_spindle err=not_ready",
+            f"stage=precheck service=mayak_spindle err=not_ready timeout_sec={timeout_sec:.2f}",
         )
         return False
 

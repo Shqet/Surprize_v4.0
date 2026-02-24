@@ -331,7 +331,7 @@ def test_start_fails_when_mayak_not_ready(monkeypatch: pytest.MonkeyPatch) -> No
         "load_profile",
         lambda profile_name: {
             profile_name: {
-                "orchestrator": {"stop_timeout_sec": 1},
+                "orchestrator": {"stop_timeout_sec": 1, "mayak_ready_timeout_sec": 0.1},
                 "services": {
                     "mayak_spindle": {"role": "daemon"},
                     "job1": {"role": "job"},

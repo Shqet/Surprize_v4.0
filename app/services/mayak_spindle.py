@@ -22,6 +22,7 @@ class MayakTransport(Protocol):
 
     def read_cells(self, names: Iterable[str]) -> Dict[str, int]: ...
     def write_cells(self, values: Dict[str, int]) -> None: ...
+    def last_packet_age_sec(self) -> float: ...
 
 
 class DictTransport:
@@ -44,6 +45,9 @@ class DictTransport:
     def snapshot(self) -> Dict[str, int]:
         with self._lock:
             return dict(self._cells)
+
+    def last_packet_age_sec(self) -> float:
+        return 0.0
 
 
 def _crc16_ones_complement_22b(first_22: bytes) -> int:
@@ -91,6 +95,7 @@ class MayakUdpTransport:
         self._rx_sock.settimeout(float(recv_timeout_sec))
 
         self._tx_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._last_rx_ts = time.monotonic()
 
         self._rx_thread = threading.Thread(target=self._rx_loop, name="mayak_udp_rx", daemon=True)
         self._rx_thread.start()
@@ -133,6 +138,7 @@ class MayakUdpTransport:
                 self._cells[name] = int(value)
                 if name not in self._indices:
                     self._indices[name] = int(index)
+                self._last_rx_ts = time.monotonic()
 
     def read_cells(self, names: Iterable[str]) -> Dict[str, int]:
         with self._lock:
@@ -159,6 +165,10 @@ class MayakUdpTransport:
             pass
         if self._rx_thread.is_alive():
             self._rx_thread.join(timeout=0.5)
+
+    def last_packet_age_sec(self) -> float:
+        with self._lock:
+            return max(0.0, time.monotonic() - self._last_rx_ts)
 
     def __del__(self) -> None:
         try:
@@ -309,6 +319,24 @@ class MayakSpindleService:
         self._io_backoff_s = 0.0
         self._last_health_event_key: Optional[Tuple[object, ...]] = None
         self._last_ready: Optional[bool] = None
+        self._last_packet_age_sec: float = 0.0
+
+        self._max_rpm: Dict[str, int] = {"sp1": 6000, "sp2": 6000}
+        self._max_accel_rpm_s: float = 0.0
+        self._max_torque: int = 100000
+        self._command_timeout_ms: int = 1500
+        self._pending_deadline: Dict[str, Optional[float]] = {"sp1": None, "sp2": None}
+        self._pending_expect: Dict[str, str] = {"sp1": "", "sp2": ""}
+        self._last_cmd_ts: Dict[str, Optional[float]] = {"sp1": None, "sp2": None}
+        self._last_cmd_target: Dict[str, int] = {"sp1": 0, "sp2": 0}
+        self._sp_force_cw: Dict[str, Optional[int]] = {"sp1": None, "sp2": None}
+
+        self._watchdog_cell: Optional[str] = None
+        self._watchdog_counter: int = 0
+        self._watchdog_max_packet_age_sec: float = 1.0
+
+        self._metrics_log_period_sec: float = 2.0
+        self._metrics_last_log_ts: float = time.monotonic()
 
     # -----------------
     # Required public API
@@ -347,6 +375,35 @@ class MayakSpindleService:
             if "global_enable" in profile_section:
                 self._global_enable = bool(profile_section["global_enable"])
 
+            limits = _as_dict(profile_section.get("limits"))
+            self._max_rpm["sp1"] = int(limits.get("max_rpm_sp1", 6000))
+            self._max_rpm["sp2"] = int(limits.get("max_rpm_sp2", 6000))
+            self._max_accel_rpm_s = float(limits.get("max_accel_rpm_s", 0.0))
+            self._max_torque = int(limits.get("max_torque", 100000))
+            if self._max_rpm["sp1"] <= 0 or self._max_rpm["sp2"] <= 0:
+                raise ValueError("max_rpm must be > 0")
+            if self._max_accel_rpm_s < 0:
+                raise ValueError("max_accel_rpm_s must be >= 0")
+            if self._max_torque <= 0:
+                raise ValueError("max_torque must be > 0")
+
+            runtime = _as_dict(profile_section.get("runtime"))
+            self._command_timeout_ms = int(runtime.get("command_timeout_ms", 1500))
+            if self._command_timeout_ms <= 0:
+                raise ValueError("command_timeout_ms must be > 0")
+
+            watchdog = _as_dict(profile_section.get("watchdog"))
+            wcell = watchdog.get("cell")
+            self._watchdog_cell = str(wcell) if isinstance(wcell, str) and wcell.strip() else None
+            self._watchdog_max_packet_age_sec = float(watchdog.get("max_packet_age_sec", 1.0))
+            if self._watchdog_max_packet_age_sec <= 0:
+                raise ValueError("watchdog.max_packet_age_sec must be > 0")
+
+            metrics = _as_dict(profile_section.get("metrics"))
+            self._metrics_log_period_sec = float(metrics.get("log_period_sec", 2.0))
+            if self._metrics_log_period_sec <= 0:
+                raise ValueError("metrics.log_period_sec must be > 0")
+
         except Exception as e:
             if created_transport and self._tr is not None:
                 close = getattr(self._tr, "close", None)
@@ -363,6 +420,9 @@ class MayakSpindleService:
             return
 
         self._stop_evt.clear()
+        self._pending_deadline = {"sp1": None, "sp2": None}
+        self._pending_expect = {"sp1": "", "sp2": ""}
+        self._sp_force_cw = {"sp1": None, "sp2": None}
         self._thr = threading.Thread(target=self._worker, name="mayak_spindle_worker", daemon=True)
         self._thr.start()
 
@@ -424,6 +484,8 @@ class MayakSpindleService:
             raise ValueError("direction must be -1, 0, or 1")
         if rpm < 0:
             raise ValueError("rpm must be >= 0")
+        if rpm > self._max_rpm[sp]:
+            raise ValueError(f"rpm exceeds limit for {sp}: {self._max_rpm[sp]}")
         if self.status() != ServiceStatus.RUNNING:
             raise RuntimeError("service is not RUNNING")
 
@@ -432,19 +494,37 @@ class MayakSpindleService:
             connected = self._spindle_connected.get(sp)
             fault = self._spindle_fault.get(sp, False)
             err_code = self._last_error_code
+            last_cmd_ts = self._last_cmd_ts.get(sp)
+            last_target = self._last_cmd_target.get(sp, 0)
+            last_tel = self._last_tel.get(sp)
         if ge is False:
             raise RuntimeError("global_enable is OFF")
         if connected is False:
             raise RuntimeError(f"{sp} is not connected")
         if fault or err_code != 0:
             raise RuntimeError(f"{sp} is in FAULT")
+        if last_tel is not None:
+            torque = int(last_tel[3])
+            if abs(torque) > self._max_torque:
+                raise RuntimeError(f"{sp} torque limit exceeded")
 
         target = int(rpm * direction)
+        now = time.monotonic()
+        if self._max_accel_rpm_s > 0 and last_cmd_ts is not None:
+            dt = max(1e-3, now - last_cmd_ts)
+            accel = abs(target - int(last_target)) / dt
+            if accel > self._max_accel_rpm_s:
+                raise ValueError("command acceleration limit exceeded")
         cw = 0x0000 if direction == 0 else 0x0006
 
         with self._lock:
             self._sp_cmd[sp] = (cw, target)
             self._sp_stage[sp] = 0 if direction == 0 else 1
+            self._sp_force_cw[sp] = None
+            self._last_cmd_ts[sp] = now
+            self._last_cmd_target[sp] = target
+            self._pending_deadline[sp] = time.monotonic() + (float(self._command_timeout_ms) / 1000.0)
+            self._pending_expect[sp] = "STOP" if direction == 0 else "MOVE"
 
         self._bus.publish(MayakSpindleCommandEvent(
             service=self.name, spindle=sp,
@@ -453,6 +533,34 @@ class MayakSpindleService:
 
     def stop_spindle(self, spindle: str) -> None:
         self.set_spindle_speed(spindle, direction=0, rpm=0)
+
+    def fault_reset(self, spindle: str) -> None:
+        sp = spindle.lower().strip()
+        if sp not in ("sp1", "sp2"):
+            raise ValueError("spindle must be 'sp1' or 'sp2'")
+        if self.status() != ServiceStatus.RUNNING:
+            raise RuntimeError("service is not RUNNING")
+        with self._lock:
+            self._sp_cmd[sp] = (0x0000, 0)
+            self._sp_force_cw[sp] = 0x0080
+            self._sp_stage[sp] = 1
+            self._spindle_fault[sp] = False
+            if self._last_error_code >= 9000:
+                self._last_error_code = 0
+            self._last_cmd_ts[sp] = time.monotonic()
+            self._last_cmd_target[sp] = 0
+            self._pending_deadline[sp] = time.monotonic() + (float(self._command_timeout_ms) / 1000.0)
+            self._pending_expect[sp] = "RESET"
+        self._bus.publish(
+            MayakSpindleCommandEvent(
+                service=self.name,
+                spindle=sp,
+                global_enable=None,
+                control_word=0x0080,
+                target_speed_rpm=0,
+                ts=time.time(),
+            )
+        )
 
     # -----------------
     # Readiness API (v2)
@@ -490,16 +598,19 @@ class MayakSpindleService:
 
     def get_health_snapshot(self) -> Dict[str, object]:
         with self._lock:
+            degraded_reason = self._degraded_reason_locked()
             return {
                 "service_status": self._state.value,
                 "global_enable": self._global_enable,
                 "error_code": self._last_error_code,
                 "io_error_streak": self._io_error_streak,
                 "io_degraded": self._io_error_streak >= self._io_error_threshold,
+                "degraded_reason": degraded_reason,
                 "sp1_state": self._spindle_state.get("sp1", "UNKNOWN"),
                 "sp2_state": self._spindle_state.get("sp2", "UNKNOWN"),
                 "sp1_connected": self._spindle_connected.get("sp1"),
                 "sp2_connected": self._spindle_connected.get("sp2"),
+                "last_packet_age_ms": int(self._last_packet_age_sec * 1000.0),
             }
 
     # -----------------
@@ -523,8 +634,12 @@ class MayakSpindleService:
             d.sp1_connected, d.sp2_connected,
             d.sim_time, d.error_code,
         ]
+        if self._watchdog_cell is not None:
+            in_cells.append(self._watchdog_cell)
 
+        last_loop_ts = time.monotonic()
         while not self._stop_evt.is_set():
+            loop_start = time.monotonic()
             if self._io_backoff_s > 0:
                 time.sleep(self._io_backoff_s)
             out: Dict[str, int] = {}
@@ -534,23 +649,29 @@ class MayakSpindleService:
                 sp2_cw, sp2_tgt = self._sp_cmd["sp2"]
                 sp1_stage = self._sp_stage["sp1"]
                 sp2_stage = self._sp_stage["sp2"]
+                sp1_force = self._sp_force_cw["sp1"]
+                sp2_force = self._sp_force_cw["sp2"]
 
-                if sp1_stage == 1:
-                    sp1_cw = 0x0007
-                    self._sp_cmd["sp1"] = (sp1_cw, sp1_tgt)
+                if sp1_force is not None:
+                    sp1_cw = sp1_force
+                    self._sp_force_cw["sp1"] = None
+
+                if sp1_force is None and sp1_stage == 1:
+                    self._sp_cmd["sp1"] = (0x0007, sp1_tgt)
                     self._sp_stage["sp1"] = 2
-                elif sp1_stage == 2:
-                    sp1_cw = 0x000F
-                    self._sp_cmd["sp1"] = (sp1_cw, sp1_tgt)
+                elif sp1_force is None and sp1_stage == 2:
+                    self._sp_cmd["sp1"] = (0x000F, sp1_tgt)
                     self._sp_stage["sp1"] = 0
 
-                if sp2_stage == 1:
-                    sp2_cw = 0x0007
-                    self._sp_cmd["sp2"] = (sp2_cw, sp2_tgt)
+                if sp2_force is not None:
+                    sp2_cw = sp2_force
+                    self._sp_force_cw["sp2"] = None
+
+                if sp2_force is None and sp2_stage == 1:
+                    self._sp_cmd["sp2"] = (0x0007, sp2_tgt)
                     self._sp_stage["sp2"] = 2
-                elif sp2_stage == 2:
-                    sp2_cw = 0x000F
-                    self._sp_cmd["sp2"] = (sp2_cw, sp2_tgt)
+                elif sp2_force is None and sp2_stage == 2:
+                    self._sp_cmd["sp2"] = (0x000F, sp2_tgt)
                     self._sp_stage["sp2"] = 0
 
             if ge is not None:
@@ -563,6 +684,9 @@ class MayakSpindleService:
                 out[d.sp2_cw] = int(sp2_cw)
             if sp2_tgt is not None:
                 out[d.sp2_tgt] = int(sp2_tgt)
+            if self._watchdog_cell is not None:
+                self._watchdog_counter = (self._watchdog_counter + 1) & 0x7FFFFFFF
+                out[self._watchdog_cell] = int(self._watchdog_counter)
 
             if out:
                 try:
@@ -579,11 +703,17 @@ class MayakSpindleService:
                 time.sleep(period_s)
                 continue
             self._on_io_success()
+            self._last_packet_age_sec = float(getattr(tr, "last_packet_age_sec", lambda: 0.0)())
+            if self._last_packet_age_sec > self._watchdog_max_packet_age_sec:
+                self._on_io_error()
 
             sim_time = int(vals.get(d.sim_time, 0))
             err = int(vals.get(d.error_code, 0))
             with self._lock:
-                self._last_error_code = err
+                if err != 0:
+                    self._last_error_code = err
+                elif self._last_error_code < 9000:
+                    self._last_error_code = 0
 
             sp1_connected = bool(vals.get(d.sp1_connected, 0))
             sp2_connected = bool(vals.get(d.sp2_connected, 0))
@@ -640,6 +770,9 @@ class MayakSpindleService:
                     ),
                 )
             self._publish_health_event()
+            self._evaluate_command_deadlines()
+            self._log_metrics(loop_start=loop_start, last_loop_ts=last_loop_ts)
+            last_loop_ts = loop_start
 
             time.sleep(period_s)
 
@@ -689,6 +822,76 @@ class MayakSpindleService:
             return "MOVING"
         return "READY"
 
+    def _degraded_reason_locked(self) -> str:
+        if self._io_error_streak >= self._io_error_threshold:
+            return "io_errors"
+        if self._last_packet_age_sec > self._watchdog_max_packet_age_sec:
+            return "packet_age"
+        if self._last_error_code != 0:
+            return "fault_code"
+        if self._spindle_connected.get("sp1") is False or self._spindle_connected.get("sp2") is False:
+            return "offline_spindle"
+        return "none"
+
+    def _evaluate_command_deadlines(self) -> None:
+        now = time.monotonic()
+        for sp in ("sp1", "sp2"):
+            with self._lock:
+                deadline = self._pending_deadline.get(sp)
+                expect = self._pending_expect.get(sp, "")
+                state = self._spindle_state.get(sp, "UNKNOWN")
+                err = self._last_error_code
+
+            if deadline is None:
+                continue
+
+            success = False
+            if expect == "MOVE":
+                success = state in ("STARTING", "MOVING")
+            elif expect == "STOP":
+                success = state in ("READY", "STOPPING", "DISABLED")
+            elif expect == "RESET":
+                success = state in ("READY", "DISABLED") and err == 0
+
+            if success:
+                with self._lock:
+                    self._pending_deadline[sp] = None
+                    self._pending_expect[sp] = ""
+                continue
+
+            if now > deadline:
+                should_state_fault = False
+                with self._lock:
+                    self._pending_deadline[sp] = None
+                    self._pending_expect[sp] = ""
+                    if self._last_error_code == 0:
+                        self._last_error_code = 9001
+                    self._spindle_fault[sp] = True
+                    should_state_fault = True
+                if should_state_fault:
+                    self._set_spindle_state(sp, "FAULT")
+                self._emit_log("ERROR", "MAYAK_CMD_TIMEOUT", _kv(service=self.name, spindle=sp, expect=expect))
+                self._publish_health_event()
+
+    def _log_metrics(self, *, loop_start: float, last_loop_ts: float) -> None:
+        if (loop_start - self._metrics_last_log_ts) < self._metrics_log_period_sec:
+            return
+        self._metrics_last_log_ts = loop_start
+        loop_period_ms = (loop_start - last_loop_ts) * 1000.0
+        target_ms = float(self._publish_period_ms)
+        rx_jitter_ms = abs(loop_period_ms - target_ms)
+        last_packet_age_ms = self._last_packet_age_sec * 1000.0
+        self._emit_log(
+            "INFO",
+            "MAYAK_METRICS",
+            _kv(
+                service=self.name,
+                loop_period_ms=f"{loop_period_ms:.1f}",
+                rx_jitter_ms=f"{rx_jitter_ms:.1f}",
+                last_packet_age_ms=f"{last_packet_age_ms:.1f}",
+            ),
+        )
+
     def _set_spindle_state(self, spindle: str, state: str) -> None:
         prev = self._spindle_state.get(spindle)
         if prev == state:
@@ -704,6 +907,7 @@ class MayakSpindleService:
             snapshot["error_code"],
             snapshot["io_error_streak"],
             snapshot["io_degraded"],
+            snapshot["degraded_reason"],
             snapshot["sp1_state"],
             snapshot["sp2_state"],
             snapshot["sp1_connected"],
@@ -724,6 +928,7 @@ class MayakSpindleService:
                 error_code=int(snapshot["error_code"]),
                 io_error_streak=int(snapshot["io_error_streak"]),
                 io_degraded=bool(snapshot["io_degraded"]),
+                degraded_reason=str(snapshot["degraded_reason"]),
                 sp1_state=str(snapshot["sp1_state"]),
                 sp2_state=str(snapshot["sp2_state"]),
                 sp1_connected=snapshot["sp1_connected"],  # type: ignore[arg-type]

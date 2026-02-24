@@ -192,7 +192,11 @@ class MainWindow(QMainWindow):
             sp1 = str(getattr(e, "sp1_state", "UNKNOWN"))
             sp2 = str(getattr(e, "sp2_state", "UNKNOWN"))
             err = int(getattr(e, "error_code", 0))
-            self.statusBar().showMessage(f"Mayak ready={1 if ready else 0} sp1={sp1} sp2={sp2} err={err}", 3000)
+            reason = str(getattr(e, "degraded_reason", "none"))
+            self.statusBar().showMessage(
+                f"Mayak ready={1 if ready else 0} sp1={sp1} sp2={sp2} err={err} reason={reason}",
+                3000,
+            )
         except Exception:
             pass
 

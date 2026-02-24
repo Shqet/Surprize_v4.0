@@ -41,5 +41,5 @@ mypy_path = ["app"]
 
 [tool.pytest.ini_options]
 markers = [
-  "smoke: runs external binaries/hardware-dependent gps_sdr_sim pipeline",
+  "smoke: runs external binaries/hardware-dependent integration scenarios",
 ]
