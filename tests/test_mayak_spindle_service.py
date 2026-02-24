@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass
 from typing import List
 
-from app.core.events import MayakHealthEvent
+from app.core.events import LogEvent, MayakHealthEvent
 from app.services.mayak_spindle import MayakSpindleService, DictTransport
 from app.services.base import ServiceStatus
 
@@ -182,3 +182,76 @@ def test_publishes_mayak_health_event():
     health = [e for e in bus.events if isinstance(e, MayakHealthEvent)]
     assert health, "expected MayakHealthEvent publication"
     assert health[-1].service_name == "mayak_spindle"
+
+
+def test_restart_recreates_owned_transport_via_factory():
+    bus = _Bus(events=[])
+    created: list["_ClosableTransport"] = []
+
+    class _ClosableTransport(DictTransport):
+        def __init__(self):
+            super().__init__(initial={
+                "D1050": 1, "D1051": 1,
+                "D1002": 0x0004, "D1012": 0x0004,
+                "D1003": 0, "D1013": 0,
+                "D1020": 0, "D1021": 0,
+                "D1022": 0,
+                "D1091": 0, "D1092": 0,
+            })
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    def _factory(_profile_section: dict):
+        tr = _ClosableTransport()
+        created.append(tr)
+        return tr
+
+    svc = MayakSpindleService(bus=bus, transport_factory=_factory)
+    svc.start(_profile())
+    time.sleep(0.03)
+    svc.stop()
+
+    svc.start(_profile())
+    time.sleep(0.03)
+    svc.stop()
+
+    assert len(created) == 2
+    assert created[0].closed is True
+    assert created[1].closed is True
+
+
+def test_io_degraded_then_recovered_logs():
+    bus = _Bus(events=[])
+
+    class _FlakyTransport(DictTransport):
+        def __init__(self):
+            super().__init__(initial={
+                "D1050": 1, "D1051": 1,
+                "D1002": 0x0004, "D1012": 0x0004,
+                "D1003": 0, "D1013": 0,
+                "D1020": 0, "D1021": 0,
+                "D1022": 0,
+                "D1091": 0, "D1092": 0,
+            })
+            self.fail_reads = 5
+
+        def read_cells(self, names):
+            if self.fail_reads > 0:
+                self.fail_reads -= 1
+                raise RuntimeError("simulated_rx_error")
+            return super().read_cells(names)
+
+    tr = _FlakyTransport()
+    svc = MayakSpindleService(bus=bus, transport=tr)
+    svc.start(_profile())
+    time.sleep(1.8)
+    snap = svc.get_health_snapshot()
+    svc.stop()
+
+    logs = [e for e in bus.events if isinstance(e, LogEvent)]
+    codes = [e.code for e in logs]
+    assert "MAYAK_IO_DEGRADED" in codes
+    assert "MAYAK_IO_RECOVERED" in codes
+    assert snap["io_degraded"] is False

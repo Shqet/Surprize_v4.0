@@ -5,7 +5,7 @@ import struct
 import threading
 import time
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, Protocol, Tuple
+from typing import Callable, Dict, Iterable, Optional, Protocol, Tuple
 
 from app.core.events import MayakHealthEvent, ServiceStatusEvent
 from app.core.logging_setup import emit_log
@@ -184,6 +184,10 @@ def _require(profile: dict, key: str):
         raise ValueError(f"missing required field: {key}")
 
 
+def _as_dict(v: object) -> dict:
+    return v if isinstance(v, dict) else {}
+
+
 @dataclass(frozen=True, slots=True)
 class _DMap:
     # Commands (OUT)
@@ -239,6 +243,18 @@ class _DMap:
         )
 
 
+def _transport_from_profile(profile_section: dict) -> MayakTransport:
+    tcfg = _as_dict(profile_section.get("transport"))
+    return MayakUdpTransport(
+        cnc_host=str(tcfg.get("cnc_host", "127.0.0.1")),
+        cnc_port=int(tcfg.get("cnc_port", 12346)),
+        listen_host=str(tcfg.get("listen_host", "0.0.0.0")),
+        listen_port=int(tcfg.get("listen_port", 12345)),
+        machine_size=int(tcfg.get("machine_size", 850592)),
+        recv_timeout_sec=float(tcfg.get("recv_timeout_sec", 0.2)),
+    )
+
+
 class MayakSpindleService:
     """Spindle control + telemetry for 'Маяк' (v1).
 
@@ -250,9 +266,16 @@ class MayakSpindleService:
 
     name = "mayak_spindle"
 
-    def __init__(self, bus: EventBus, transport: MayakTransport):
+    def __init__(
+        self,
+        bus: EventBus,
+        transport: Optional[MayakTransport] = None,
+        transport_factory: Optional[Callable[[dict], MayakTransport]] = None,
+    ):
         self._bus = bus
-        self._tr = transport
+        self._tr: Optional[MayakTransport] = transport
+        self._transport_factory = transport_factory
+        self._owns_transport = transport is None
 
         self._lock = threading.Lock()
         self._state: ServiceStatus = ServiceStatus.STOPPED
@@ -285,6 +308,7 @@ class MayakSpindleService:
         self._io_error_threshold = 5
         self._io_backoff_s = 0.0
         self._last_health_event_key: Optional[Tuple[object, ...]] = None
+        self._last_ready: Optional[bool] = None
 
     # -----------------
     # Required public API
@@ -298,7 +322,16 @@ class MayakSpindleService:
         self._emit_status(ServiceStatus.STARTING)
         self._emit_log("INFO", "SERVICE_START", _kv(service=self.name))
 
+        created_transport = False
         try:
+            if self._tr is None:
+                if self._transport_factory is not None:
+                    self._tr = self._transport_factory(profile_section)
+                else:
+                    self._tr = _transport_from_profile(profile_section)
+                self._owns_transport = True
+                created_transport = True
+
             _require(profile_section, "d_map")
             d_map = profile_section["d_map"]
             if not isinstance(d_map, dict):
@@ -315,6 +348,14 @@ class MayakSpindleService:
                 self._global_enable = bool(profile_section["global_enable"])
 
         except Exception as e:
+            if created_transport and self._tr is not None:
+                close = getattr(self._tr, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
+                self._tr = None
             with self._lock:
                 self._state = ServiceStatus.ERROR
             self._emit_status(ServiceStatus.ERROR)
@@ -329,6 +370,7 @@ class MayakSpindleService:
             self._state = ServiceStatus.RUNNING
         self._emit_status(ServiceStatus.RUNNING)
         self._emit_log("INFO", "SERVICE_RUNNING", _kv(service=self.name, period_ms=self._publish_period_ms))
+        self._publish_health_event()
 
     def stop(self) -> None:
         with self._lock:
@@ -348,12 +390,15 @@ class MayakSpindleService:
                 self._state = ServiceStatus.STOPPED
         self._emit_status(ServiceStatus.STOPPED)
         self._emit_log("INFO", "SERVICE_STOPPED", _kv(service=self.name))
-        close = getattr(self._tr, "close", None)
-        if callable(close):
-            try:
-                close()
-            except Exception:
-                self._emit_log("ERROR", "SERVICE_ERROR", _kv(service=self.name, error="transport_close_failed"))
+        if self._owns_transport and self._tr is not None:
+            close = getattr(self._tr, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    self._emit_log("ERROR", "SERVICE_ERROR", _kv(service=self.name, error="transport_close_failed"))
+            self._tr = None
+        self._publish_health_event()
 
     def status(self) -> ServiceStatus:
         with self._lock:
@@ -463,6 +508,13 @@ class MayakSpindleService:
     def _worker(self) -> None:
         assert self._d is not None
         d = self._d
+        tr = self._tr
+        if tr is None:
+            self._emit_log("ERROR", "SERVICE_ERROR", _kv(service=self.name, error="transport_none"))
+            with self._lock:
+                self._state = ServiceStatus.ERROR
+            self._emit_status(ServiceStatus.ERROR)
+            return
         period_s = self._publish_period_ms / 1000.0
 
         in_cells = [
@@ -514,13 +566,13 @@ class MayakSpindleService:
 
             if out:
                 try:
-                    self._tr.write_cells(out)
+                    tr.write_cells(out)
                 except Exception as e:
                     self._emit_log("ERROR", "MAYAK_TX_ERROR", _kv(service=self.name, error=str(e)))
                     self._on_io_error()
 
             try:
-                vals = self._tr.read_cells(in_cells)
+                vals = tr.read_cells(in_cells)
             except Exception as e:
                 self._emit_log("ERROR", "MAYAK_RX_ERROR", _kv(service=self.name, error=str(e)))
                 self._on_io_error()
@@ -567,19 +619,25 @@ class MayakSpindleService:
                 self._spindle_connected["sp2"] = sp2_connected
                 self._spindle_fault["sp1"] = bool(err != 0 or (sp1_sw & 0x0008))
                 self._spindle_fault["sp2"] = bool(err != 0 or (sp2_sw & 0x0008))
-                self._spindle_state["sp1"] = self._derive_spindle_state(
-                    connected=sp1_connected,
-                    status_word=sp1_sw,
-                    actual_speed=sp1_act,
-                    target_speed=sp1_tgt,
-                    error_code=err,
+                self._set_spindle_state(
+                    "sp1",
+                    self._derive_spindle_state(
+                        connected=sp1_connected,
+                        status_word=sp1_sw,
+                        actual_speed=sp1_act,
+                        target_speed=sp1_tgt,
+                        error_code=err,
+                    ),
                 )
-                self._spindle_state["sp2"] = self._derive_spindle_state(
-                    connected=sp2_connected,
-                    status_word=sp2_sw,
-                    actual_speed=sp2_act,
-                    target_speed=sp2_tgt,
-                    error_code=err,
+                self._set_spindle_state(
+                    "sp2",
+                    self._derive_spindle_state(
+                        connected=sp2_connected,
+                        status_word=sp2_sw,
+                        actual_speed=sp2_act,
+                        target_speed=sp2_tgt,
+                        error_code=err,
+                    ),
                 )
             self._publish_health_event()
 
@@ -631,6 +689,13 @@ class MayakSpindleService:
             return "MOVING"
         return "READY"
 
+    def _set_spindle_state(self, spindle: str, state: str) -> None:
+        prev = self._spindle_state.get(spindle)
+        if prev == state:
+            return
+        self._spindle_state[spindle] = state
+        self._emit_log("INFO", "MAYAK_SPINDLE_STATE", _kv(spindle=spindle, prev=prev, new=state))
+
     def _publish_health_event(self) -> None:
         snapshot = self.get_health_snapshot()
         key: Tuple[object, ...] = (
@@ -647,10 +712,14 @@ class MayakSpindleService:
         if key == self._last_health_event_key:
             return
         self._last_health_event_key = key
+        ready = bool(self.is_ready())
+        if self._last_ready is None or self._last_ready != ready:
+            self._last_ready = ready
+            self._emit_log("INFO", "MAYAK_READY_STATE", _kv(service=self.name, ready=1 if ready else 0))
         self._bus.publish(
             MayakHealthEvent(
                 service_name=self.name,
-                ready=bool(self.is_ready()),
+                ready=ready,
                 global_enable=snapshot["global_enable"],  # type: ignore[arg-type]
                 error_code=int(snapshot["error_code"]),
                 io_error_streak=int(snapshot["io_error_streak"]),

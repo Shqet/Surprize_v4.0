@@ -45,6 +45,7 @@ class MainWindow(QMainWindow):
 
         self._initial_config: dict[str, Any] = self._load_initial_config_json()
         self.current_config: dict[str, Any] = copy.deepcopy(self._initial_config)
+        self._last_mayak_ready: Optional[bool] = None
 
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
@@ -172,6 +173,26 @@ class MainWindow(QMainWindow):
             pass
         try:
             self._bridge.log_event.connect(self._traj_ctl.on_log_event)
+        except Exception:
+            pass
+        try:
+            self._bridge.mayak_health_event.connect(self._on_mayak_health_event)
+        except Exception:
+            pass
+
+    def _on_mayak_health_event(self, e: object) -> None:
+        service_name = getattr(e, "service_name", "")
+        if service_name != "mayak_spindle":
+            return
+        ready = bool(getattr(e, "ready", False))
+        if self._last_mayak_ready is None or self._last_mayak_ready != ready:
+            self._last_mayak_ready = ready
+            self._log_info("UI_MAYAK_READY", f"ready={1 if ready else 0}")
+        try:
+            sp1 = str(getattr(e, "sp1_state", "UNKNOWN"))
+            sp2 = str(getattr(e, "sp2_state", "UNKNOWN"))
+            err = int(getattr(e, "error_code", 0))
+            self.statusBar().showMessage(f"Mayak ready={1 if ready else 0} sp1={sp1} sp2={sp2} err={err}", 3000)
         except Exception:
             pass
 

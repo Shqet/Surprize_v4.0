@@ -80,6 +80,13 @@ default:
       role: daemon
       publish_period_ms: 50
       global_enable: true
+      transport:
+        cnc_host: "127.0.0.1"
+        cnc_port: 12346
+        listen_host: "0.0.0.0"
+        listen_port: 12345
+        machine_size: 850592
+        recv_timeout_sec: 0.2
       d_map:
         SP1_ControlWord: "D1000"
         SP1_TargetSpeed: "D1001"
