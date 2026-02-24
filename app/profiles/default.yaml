@@ -75,3 +75,29 @@ default:
         enabled: true
         out_path: "outputs/video_preview/thermal/latest.jpg"
         period_ms: 200
+
+    mayak_spindle:
+      role: daemon
+      publish_period_ms: 50
+      global_enable: true
+      d_map:
+        SP1_ControlWord: "D1000"
+        SP1_TargetSpeed: "D1001"
+        SP1_StatusWord: "D1002"
+        SP1_ActualSpeed: "D1003"
+
+        SP2_ControlWord: "D1010"
+        SP2_TargetSpeed: "D1011"
+        SP2_StatusWord: "D1012"
+        SP2_ActualSpeed: "D1013"
+
+        SP1_ActualTorque: "D1020"
+        SP2_ActualTorque: "D1021"
+        SP1_Angle: "D1022"
+
+        SP1_Connected: "D1050"
+        SP2_Connected: "D1051"
+
+        Global_Enable: "D1090"
+        Sim_Time: "D1091"
+        Error_Code: "D1092"
