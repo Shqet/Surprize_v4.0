@@ -45,3 +45,18 @@ class RtspIngestStatsEvent:
     last_frame_age_sec: float
     restarts: int
     ts: float               # unix seconds
+
+
+@dataclass(frozen=True, slots=True)
+class MayakHealthEvent:
+    service_name: str
+    ready: bool
+    global_enable: bool | None
+    error_code: int
+    io_error_streak: int
+    io_degraded: bool
+    sp1_state: str
+    sp2_state: str
+    sp1_connected: bool | None
+    sp2_connected: bool | None
+    ts: float

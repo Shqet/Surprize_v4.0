@@ -211,6 +211,11 @@ class Orchestrator:
 
         emit_log(self._bus, "INFO", "orchestrator", "ORCH_DAEMONS_START", f"count={daemons_started}")
 
+        # v5 policy: mayak spindle daemon must be ready before starting jobs.
+        if not self._check_mayak_readiness_before_jobs(services_map):
+            self._set_state(OrchestratorState.ERROR)
+            return
+
         # New run-cycle job set
         with self._lock:
             self._run_jobs = set(jobs)
@@ -587,6 +592,42 @@ class Orchestrator:
     def _is_service_running(self, service_name: str) -> bool:
         with self._lock:
             return self._service_status.get(service_name) == ServiceStatus.RUNNING
+
+    def _check_mayak_readiness_before_jobs(self, services_map: dict[str, object]) -> bool:
+        svc = services_map.get("mayak_spindle")
+        if svc is None:
+            return True
+
+        is_ready = getattr(svc, "is_ready", None)
+        if not callable(is_ready):
+            return True
+
+        timeout_sec = 2.0
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            try:
+                if bool(is_ready()):
+                    emit_log(self._bus, "INFO", "orchestrator", "ORCH_PRECHECK_OK", "service=mayak_spindle ready=1")
+                    return True
+            except Exception as ex:
+                emit_log(
+                    self._bus,
+                    "ERROR",
+                    "orchestrator",
+                    "SERVICE_ERROR",
+                    f"stage=precheck service=mayak_spindle err={type(ex).__name__}",
+                )
+                return False
+            time.sleep(0.05)
+
+        emit_log(
+            self._bus,
+            "ERROR",
+            "orchestrator",
+            "SERVICE_ERROR",
+            "stage=precheck service=mayak_spindle err=not_ready",
+        )
+        return False
 
     # -------------------- internals --------------------
 

@@ -18,6 +18,7 @@ class _FakeService:
     name: str
     bus: EventBus
     stop_emits_stopped: bool = True
+    ready: bool = True
 
     start_calls: int = 0
     stop_calls: int = 0
@@ -33,6 +34,9 @@ class _FakeService:
         self.stop_calls += 1
         if self.stop_emits_stopped:
             self.bus.publish(ServiceStatusEvent(service_name=self.name, status=ServiceStatus.STOPPED.value))
+
+    def is_ready(self) -> bool:
+        return bool(self.ready)
 
 
 class _FakeServiceManager:
@@ -310,3 +314,36 @@ def test_start_passes_service_section_only(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert job1.last_profile_cfg == {"role": "job", "foo": 1}
     assert daemon1.last_profile_cfg == {"role": "daemon", "bar": 2}
+
+
+def test_start_fails_when_mayak_not_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = EventBus()
+    states = _subscribe_states(bus)
+
+    job1 = _FakeService(name="job1", bus=bus)
+    mayak = _FakeService(name="mayak_spindle", bus=bus, ready=False)
+    sm = _FakeServiceManager({"job1": job1, "mayak_spindle": mayak})
+
+    from app.orchestrator import orchestrator as orch_mod
+
+    monkeypatch.setattr(
+        orch_mod,
+        "load_profile",
+        lambda profile_name: {
+            profile_name: {
+                "orchestrator": {"stop_timeout_sec": 1},
+                "services": {
+                    "mayak_spindle": {"role": "daemon"},
+                    "job1": {"role": "job"},
+                },
+            }
+        },
+    )
+
+    orch = Orchestrator(bus, sm)
+    orch.start("p")
+
+    assert orch.state == OrchestratorState.ERROR
+    assert mayak.start_calls == 1
+    assert job1.start_calls == 0
+    assert states and states[-1] == OrchestratorState.ERROR.value

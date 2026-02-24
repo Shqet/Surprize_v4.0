@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Protocol, Tuple
 
-from app.core.events import ServiceStatusEvent
+from app.core.events import MayakHealthEvent, ServiceStatusEvent
 from app.core.logging_setup import emit_log
 from app.events.mayak_spindle_events import MayakSpindleCommandEvent, MayakSpindleTelemetryEvent
 from app.services.base import ServiceStatus
@@ -284,6 +284,7 @@ class MayakSpindleService:
         self._io_error_streak = 0
         self._io_error_threshold = 5
         self._io_backoff_s = 0.0
+        self._last_health_event_key: Optional[Tuple[object, ...]] = None
 
     # -----------------
     # Required public API
@@ -580,6 +581,7 @@ class MayakSpindleService:
                     target_speed=sp2_tgt,
                     error_code=err,
                 )
+            self._publish_health_event()
 
             time.sleep(period_s)
 
@@ -590,6 +592,7 @@ class MayakSpindleService:
             self._io_backoff_s = min(1.0, max(0.05, self._io_backoff_s * 2 if self._io_backoff_s > 0 else 0.05))
         if streak == self._io_error_threshold:
             self._emit_log("ERROR", "MAYAK_IO_DEGRADED", _kv(service=self.name, streak=streak))
+        self._publish_health_event()
 
     def _on_io_success(self) -> None:
         with self._lock:
@@ -598,6 +601,7 @@ class MayakSpindleService:
             self._io_backoff_s = 0.0
         if had_errors:
             self._emit_log("INFO", "MAYAK_IO_RECOVERED", _kv(service=self.name))
+        self._publish_health_event()
 
     def _derive_spindle_state(
         self,
@@ -626,6 +630,38 @@ class MayakSpindleService:
         if moving:
             return "MOVING"
         return "READY"
+
+    def _publish_health_event(self) -> None:
+        snapshot = self.get_health_snapshot()
+        key: Tuple[object, ...] = (
+            snapshot["service_status"],
+            snapshot["global_enable"],
+            snapshot["error_code"],
+            snapshot["io_error_streak"],
+            snapshot["io_degraded"],
+            snapshot["sp1_state"],
+            snapshot["sp2_state"],
+            snapshot["sp1_connected"],
+            snapshot["sp2_connected"],
+        )
+        if key == self._last_health_event_key:
+            return
+        self._last_health_event_key = key
+        self._bus.publish(
+            MayakHealthEvent(
+                service_name=self.name,
+                ready=bool(self.is_ready()),
+                global_enable=snapshot["global_enable"],  # type: ignore[arg-type]
+                error_code=int(snapshot["error_code"]),
+                io_error_streak=int(snapshot["io_error_streak"]),
+                io_degraded=bool(snapshot["io_degraded"]),
+                sp1_state=str(snapshot["sp1_state"]),
+                sp2_state=str(snapshot["sp2_state"]),
+                sp1_connected=snapshot["sp1_connected"],  # type: ignore[arg-type]
+                sp2_connected=snapshot["sp2_connected"],  # type: ignore[arg-type]
+                ts=time.time(),
+            )
+        )
 
     def _publish_tel(
         self,

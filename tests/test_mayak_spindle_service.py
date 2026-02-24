@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass
 from typing import List
 
+from app.core.events import MayakHealthEvent
 from app.services.mayak_spindle import MayakSpindleService, DictTransport
 from app.services.base import ServiceStatus
 
@@ -161,3 +162,23 @@ def test_guard_blocks_command_when_global_disabled():
         pass
     finally:
         svc.stop()
+
+
+def test_publishes_mayak_health_event():
+    bus = _Bus(events=[])
+    tr = DictTransport(initial={
+        "D1050": 1, "D1051": 1,
+        "D1002": 0x0004, "D1012": 0x0004,
+        "D1003": 0, "D1013": 0,
+        "D1020": 0, "D1021": 0,
+        "D1022": 0,
+        "D1091": 0, "D1092": 0,
+    })
+    svc = MayakSpindleService(bus=bus, transport=tr)
+    svc.start(_profile())
+    time.sleep(0.05)
+    svc.stop()
+
+    health = [e for e in bus.events if isinstance(e, MayakHealthEvent)]
+    assert health, "expected MayakHealthEvent publication"
+    assert health[-1].service_name == "mayak_spindle"
