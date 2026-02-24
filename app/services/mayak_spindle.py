@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import socket
+import struct
 import threading
 import time
 from dataclasses import dataclass
@@ -42,6 +44,127 @@ class DictTransport:
     def snapshot(self) -> Dict[str, int]:
         with self._lock:
             return dict(self._cells)
+
+
+def _crc16_ones_complement_22b(first_22: bytes) -> int:
+    if len(first_22) != 22:
+        raise ValueError("CRC computed over 22 bytes")
+    total = 0
+    for i in range(0, 22, 2):
+        word = first_22[i] | (first_22[i + 1] << 8)
+        total += word
+        total = (total & 0xFFFF) + (total >> 16)
+    return (~total) & 0xFFFF
+
+
+def _pack_d_packet(machine_size: int, index: int, value: int, name: str) -> bytes:
+    name_b = name.encode("ascii", errors="ignore")[:10].ljust(10, b"\x00")
+    header = struct.pack("<IIi10s", int(machine_size), int(index), int(value), name_b)
+    crc = _crc16_ones_complement_22b(header)
+    return header + struct.pack("<H", crc)
+
+
+class MayakUdpTransport:
+    """UDP transport compatible with majak_sim/emulator.py packet format."""
+
+    def __init__(
+        self,
+        *,
+        cnc_host: str = "127.0.0.1",
+        cnc_port: int = 12346,
+        listen_host: str = "0.0.0.0",
+        listen_port: int = 12345,
+        machine_size: int = 850592,
+        recv_timeout_sec: float = 0.2,
+    ) -> None:
+        self._lock = threading.Lock()
+        self._cells: Dict[str, int] = {}
+        self._indices: Dict[str, int] = {}
+        self._next_index = 20000
+        self._machine_size = int(machine_size)
+        self._target = (str(cnc_host), int(cnc_port))
+
+        self._stop_evt = threading.Event()
+        self._rx_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._rx_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._rx_sock.bind((str(listen_host), int(listen_port)))
+        self._rx_sock.settimeout(float(recv_timeout_sec))
+
+        self._tx_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        self._rx_thread = threading.Thread(target=self._rx_loop, name="mayak_udp_rx", daemon=True)
+        self._rx_thread.start()
+
+    def _allocate_index(self, name: str) -> int:
+        with self._lock:
+            idx = self._indices.get(name)
+            if idx is not None:
+                return idx
+            idx = self._next_index
+            self._next_index += 4
+            self._indices[name] = idx
+            return idx
+
+    def _rx_loop(self) -> None:
+        while not self._stop_evt.is_set():
+            try:
+                data, _addr = self._rx_sock.recvfrom(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+
+            if len(data) != 24:
+                continue
+
+            try:
+                machine_size, index, value, name_b, crc = struct.unpack("<IIi10sH", data)
+            except struct.error:
+                continue
+
+            if crc != _crc16_ones_complement_22b(data[:22]):
+                continue
+
+            name = name_b.rstrip(b"\x00").decode("ascii", errors="ignore")
+            if not name:
+                continue
+
+            with self._lock:
+                self._cells[name] = int(value)
+                if name not in self._indices:
+                    self._indices[name] = int(index)
+
+    def read_cells(self, names: Iterable[str]) -> Dict[str, int]:
+        with self._lock:
+            return {n: int(self._cells.get(n, 0)) for n in names}
+
+    def write_cells(self, values: Dict[str, int]) -> None:
+        for name, value in values.items():
+            n = str(name)
+            idx = self._allocate_index(n)
+            pkt = _pack_d_packet(self._machine_size, idx, int(value), n)
+            self._tx_sock.sendto(pkt, self._target)
+            with self._lock:
+                self._cells[n] = int(value)
+
+    def close(self) -> None:
+        self._stop_evt.set()
+        try:
+            self._rx_sock.close()
+        except Exception:
+            pass
+        try:
+            self._tx_sock.close()
+        except Exception:
+            pass
+        if self._rx_thread.is_alive():
+            self._rx_thread.join(timeout=0.5)
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 def _kv(**kwargs) -> str:
@@ -215,6 +338,12 @@ class MayakSpindleService:
                 self._state = ServiceStatus.STOPPED
         self._emit_status(ServiceStatus.STOPPED)
         self._emit_log("INFO", "SERVICE_STOPPED", _kv(service=self.name))
+        close = getattr(self._tr, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                self._emit_log("ERROR", "SERVICE_ERROR", _kv(service=self.name, error="transport_close_failed"))
 
     def status(self) -> ServiceStatus:
         with self._lock:

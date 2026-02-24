@@ -11,7 +11,7 @@ from app.orchestrator.orchestrator import Orchestrator
 from app.services.ballistics_model import BallisticsModelSubprocessService
 from app.services.exe_runner import ExeRunnerService
 from app.services.gps_sdr_sim.service import GpsSdrSimService
-from app.services.mayak_spindle import DictTransport, MayakSpindleService
+from app.services.mayak_spindle import MayakSpindleService, MayakUdpTransport
 from app.services.service_manager import ServiceManager
 from app.services.video_channel import VideoChannelDaemonService
 from app.ui.main_window import MainWindow
@@ -27,7 +27,7 @@ def main() -> int:
     sm.register(ExeRunnerService(bus))
     sm.register(BallisticsModelSubprocessService(bus))  # job
     sm.register(GpsSdrSimService(bus))  # job (start by orchestrator)
-    sm.register(MayakSpindleService(bus, DictTransport()))  # daemon (emulator-first)
+    sm.register(MayakSpindleService(bus, MayakUdpTransport()))  # daemon (UDP emulator)
 
     # daemons (names MUST match profile keys)
     sm.register(VideoChannelDaemonService(bus, "video_visible"))
