@@ -55,3 +55,33 @@ Architectural Compliance Checklist:
 [x] Proper logging (k=v via LogEvent)
 [x] Backoff safe (no restart storm; simple periodic loop)
 [x] Tests green (no Qt / no network / no orchestrator)
+
+---
+
+Update 2026-02-25 (post-review hardening)
+
+What changed
+- Readiness logic hardened:
+  - `is_ready()` now depends on `degraded_reason == "none"` (not only io-error streak).
+  - Packet-age watchdog now affects health/readiness consistently.
+- Health contract extended:
+  - `MayakHealthEvent` now includes:
+    - `last_packet_age_ms`
+    - `effective_max_rpm_sp1`
+    - `effective_max_rpm_sp2`
+    - `effective_max_accel_rpm_s`
+    - `effective_max_torque`
+- Health dedup key updated:
+  - Effective limits and packet-age fields are included, so UI/subscribers receive events when limits change.
+- Operator/hard limits behavior documented:
+  - Effective limits = `min(hard, operator)`.
+  - Hard updates require privileged access.
+
+Verification
+- Unit/integration tests for mayak service and transport were updated.
+- Smoke with real emulator is green:
+  - `python -m pytest -q tests/test_mayak_spindle_smoke.py::test_mayak_spindle_with_real_emulator -s`
+  - Result: `1 passed`
+- Marker smoke suite:
+  - `python -m pytest -q -m smoke -s`
+  - Result: `1 passed, 1 skipped, 42 deselected`

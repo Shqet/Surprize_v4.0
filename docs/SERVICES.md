@@ -5,6 +5,7 @@ Name | Status | Description
 ExeRunnerService | implemented | Run external exe
 VideoChannelDaemonService | implemented | RTSP daemon (ProcessStreamWorker) with preview loop
 BallisticsModelSubprocessService | implemented | Run external ballistics model via subprocess
+MayakSpindleService | implemented | Spindle domain service with UDP transport, readiness/health and operator/hard limits
 rtsp_health | planned | Monitor RTSP availability (not present in current code)
 rtsp_ingest | planned | RTSP ingest via ffmpeg (not present in current code)
 Service name: ballistics_model
