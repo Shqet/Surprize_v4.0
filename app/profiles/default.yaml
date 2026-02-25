@@ -83,9 +83,14 @@ default:
       global_enable: true
       runtime:
         command_timeout_ms: 1500
-      limits:
+      hard_limits:
         max_rpm_sp1: 6000
         max_rpm_sp2: 6000
+        max_accel_rpm_s: 0.0
+        max_torque: 100000
+      operator_limits:
+        max_rpm_sp1: 3000
+        max_rpm_sp2: 3000
         max_accel_rpm_s: 0.0
         max_torque: 100000
       watchdog:

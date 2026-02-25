@@ -21,6 +21,18 @@ def _profile():
     return {
         "publish_period_ms": 10,
         "global_enable": True,
+        "hard_limits": {
+            "max_rpm_sp1": 6000,
+            "max_rpm_sp2": 6000,
+            "max_accel_rpm_s": 0.0,
+            "max_torque": 100000,
+        },
+        "operator_limits": {
+            "max_rpm_sp1": 6000,
+            "max_rpm_sp2": 6000,
+            "max_accel_rpm_s": 0.0,
+            "max_torque": 100000,
+        },
         "d_map": {
             "SP1_ControlWord": "D1000",
             "SP1_TargetSpeed": "D1001",
@@ -289,7 +301,8 @@ def test_rpm_limit_enforced():
     })
     svc = MayakSpindleService(bus=bus, transport=tr)
     prof = _profile()
-    prof["limits"] = {"max_rpm_sp1": 200, "max_rpm_sp2": 200}
+    prof["hard_limits"] = {"max_rpm_sp1": 200, "max_rpm_sp2": 200, "max_accel_rpm_s": 0.0, "max_torque": 100000}
+    prof["operator_limits"] = {"max_rpm_sp1": 200, "max_rpm_sp2": 200, "max_accel_rpm_s": 0.0, "max_torque": 100000}
     svc.start(prof)
     time.sleep(0.03)
     try:
@@ -345,3 +358,72 @@ def test_metrics_log_emitted():
     svc.stop()
     logs = [e for e in bus.events if isinstance(e, LogEvent)]
     assert any(e.code == "MAYAK_METRICS" for e in logs)
+
+
+def test_operator_limits_cannot_exceed_hard():
+    bus = _Bus(events=[])
+    tr = DictTransport(initial={
+        "D1050": 1, "D1051": 1,
+        "D1002": 0x0004, "D1012": 0x0004,
+        "D1003": 0, "D1013": 0,
+        "D1020": 0, "D1021": 0,
+        "D1022": 0,
+        "D1091": 0, "D1092": 0,
+    })
+    svc = MayakSpindleService(bus=bus, transport=tr)
+    svc.start(_profile())
+    time.sleep(0.03)
+    try:
+        svc.set_operator_limits(max_rpm_sp1=7000)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    finally:
+        svc.stop()
+
+
+def test_hard_limits_require_privileged():
+    bus = _Bus(events=[])
+    tr = DictTransport(initial={
+        "D1050": 1, "D1051": 1,
+        "D1002": 0x0004, "D1012": 0x0004,
+        "D1003": 0, "D1013": 0,
+        "D1020": 0, "D1021": 0,
+        "D1022": 0,
+        "D1091": 0, "D1092": 0,
+    })
+    svc = MayakSpindleService(bus=bus, transport=tr)
+    svc.start(_profile())
+    time.sleep(0.03)
+    try:
+        svc.set_hard_limits(max_rpm_sp1=2000)
+        assert False, "expected PermissionError"
+    except PermissionError:
+        pass
+    finally:
+        svc.stop()
+
+
+def test_operator_limits_update_effective_limit():
+    bus = _Bus(events=[])
+    tr = DictTransport(initial={
+        "D1050": 1, "D1051": 1,
+        "D1002": 0x0004, "D1012": 0x0004,
+        "D1003": 0, "D1013": 0,
+        "D1020": 0, "D1021": 0,
+        "D1022": 0,
+        "D1091": 0, "D1092": 0,
+    })
+    svc = MayakSpindleService(bus=bus, transport=tr)
+    svc.start(_profile())
+    time.sleep(0.03)
+    svc.set_operator_limits(max_rpm_sp1=100)
+    hs = svc.get_health_snapshot()
+    assert int(hs["effective_max_rpm_sp1"]) == 100
+    try:
+        svc.set_spindle_speed("sp1", direction=1, rpm=120)
+        assert False, "expected ValueError for effective operator limit"
+    except ValueError:
+        pass
+    finally:
+        svc.stop()

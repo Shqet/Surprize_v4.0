@@ -321,9 +321,12 @@ class MayakSpindleService:
         self._last_ready: Optional[bool] = None
         self._last_packet_age_sec: float = 0.0
 
-        self._max_rpm: Dict[str, int] = {"sp1": 6000, "sp2": 6000}
-        self._max_accel_rpm_s: float = 0.0
-        self._max_torque: int = 100000
+        self._hard_max_rpm: Dict[str, int] = {"sp1": 6000, "sp2": 6000}
+        self._operator_max_rpm: Dict[str, int] = {"sp1": 6000, "sp2": 6000}
+        self._hard_max_accel_rpm_s: float = 0.0
+        self._operator_max_accel_rpm_s: float = 0.0
+        self._hard_max_torque: int = 100000
+        self._operator_max_torque: int = 100000
         self._command_timeout_ms: int = 1500
         self._pending_deadline: Dict[str, Optional[float]] = {"sp1": None, "sp2": None}
         self._pending_expect: Dict[str, str] = {"sp1": "", "sp2": ""}
@@ -375,17 +378,37 @@ class MayakSpindleService:
             if "global_enable" in profile_section:
                 self._global_enable = bool(profile_section["global_enable"])
 
-            limits = _as_dict(profile_section.get("limits"))
-            self._max_rpm["sp1"] = int(limits.get("max_rpm_sp1", 6000))
-            self._max_rpm["sp2"] = int(limits.get("max_rpm_sp2", 6000))
-            self._max_accel_rpm_s = float(limits.get("max_accel_rpm_s", 0.0))
-            self._max_torque = int(limits.get("max_torque", 100000))
-            if self._max_rpm["sp1"] <= 0 or self._max_rpm["sp2"] <= 0:
-                raise ValueError("max_rpm must be > 0")
-            if self._max_accel_rpm_s < 0:
-                raise ValueError("max_accel_rpm_s must be >= 0")
-            if self._max_torque <= 0:
-                raise ValueError("max_torque must be > 0")
+            hard = _as_dict(profile_section.get("hard_limits"))
+            self._hard_max_rpm["sp1"] = int(hard.get("max_rpm_sp1", 6000))
+            self._hard_max_rpm["sp2"] = int(hard.get("max_rpm_sp2", 6000))
+            self._hard_max_accel_rpm_s = float(hard.get("max_accel_rpm_s", 0.0))
+            self._hard_max_torque = int(hard.get("max_torque", 100000))
+            self._validate_positive_limits(
+                max_rpm_sp1=self._hard_max_rpm["sp1"],
+                max_rpm_sp2=self._hard_max_rpm["sp2"],
+                max_accel_rpm_s=self._hard_max_accel_rpm_s,
+                max_torque=self._hard_max_torque,
+            )
+
+            operator = _as_dict(profile_section.get("operator_limits"))
+            self._operator_max_rpm["sp1"] = int(operator.get("max_rpm_sp1", self._hard_max_rpm["sp1"]))
+            self._operator_max_rpm["sp2"] = int(operator.get("max_rpm_sp2", self._hard_max_rpm["sp2"]))
+            self._operator_max_accel_rpm_s = float(operator.get("max_accel_rpm_s", self._hard_max_accel_rpm_s))
+            self._operator_max_torque = int(operator.get("max_torque", self._hard_max_torque))
+            self._validate_positive_limits(
+                max_rpm_sp1=self._operator_max_rpm["sp1"],
+                max_rpm_sp2=self._operator_max_rpm["sp2"],
+                max_accel_rpm_s=self._operator_max_accel_rpm_s,
+                max_torque=self._operator_max_torque,
+            )
+            if self._operator_max_rpm["sp1"] > self._hard_max_rpm["sp1"]:
+                raise ValueError("operator max_rpm_sp1 exceeds hard max")
+            if self._operator_max_rpm["sp2"] > self._hard_max_rpm["sp2"]:
+                raise ValueError("operator max_rpm_sp2 exceeds hard max")
+            if self._operator_max_accel_rpm_s > self._hard_max_accel_rpm_s:
+                raise ValueError("operator max_accel_rpm_s exceeds hard max")
+            if self._operator_max_torque > self._hard_max_torque:
+                raise ValueError("operator max_torque exceeds hard max")
 
             runtime = _as_dict(profile_section.get("runtime"))
             self._command_timeout_ms = int(runtime.get("command_timeout_ms", 1500))
@@ -484,8 +507,11 @@ class MayakSpindleService:
             raise ValueError("direction must be -1, 0, or 1")
         if rpm < 0:
             raise ValueError("rpm must be >= 0")
-        if rpm > self._max_rpm[sp]:
-            raise ValueError(f"rpm exceeds limit for {sp}: {self._max_rpm[sp]}")
+        with self._lock:
+            eff_rpm_sp1, eff_rpm_sp2, eff_accel, eff_torque = self._effective_limits_locked()
+        eff_rpm = eff_rpm_sp1 if sp == "sp1" else eff_rpm_sp2
+        if rpm > eff_rpm:
+            raise ValueError(f"rpm exceeds limit for {sp}: {eff_rpm}")
         if self.status() != ServiceStatus.RUNNING:
             raise RuntimeError("service is not RUNNING")
 
@@ -505,15 +531,15 @@ class MayakSpindleService:
             raise RuntimeError(f"{sp} is in FAULT")
         if last_tel is not None:
             torque = int(last_tel[3])
-            if abs(torque) > self._max_torque:
+            if abs(torque) > eff_torque:
                 raise RuntimeError(f"{sp} torque limit exceeded")
 
         target = int(rpm * direction)
         now = time.monotonic()
-        if self._max_accel_rpm_s > 0 and last_cmd_ts is not None:
+        if eff_accel > 0 and last_cmd_ts is not None:
             dt = max(1e-3, now - last_cmd_ts)
             accel = abs(target - int(last_target)) / dt
-            if accel > self._max_accel_rpm_s:
+            if accel > eff_accel:
                 raise ValueError("command acceleration limit exceeded")
         cw = 0x0000 if direction == 0 else 0x0006
 
@@ -562,6 +588,90 @@ class MayakSpindleService:
             )
         )
 
+    def set_operator_limits(
+        self,
+        *,
+        max_rpm_sp1: Optional[int] = None,
+        max_rpm_sp2: Optional[int] = None,
+        max_accel_rpm_s: Optional[float] = None,
+        max_torque: Optional[int] = None,
+    ) -> None:
+        with self._lock:
+            v_rpm_sp1 = int(max_rpm_sp1) if max_rpm_sp1 is not None else self._operator_max_rpm["sp1"]
+            v_rpm_sp2 = int(max_rpm_sp2) if max_rpm_sp2 is not None else self._operator_max_rpm["sp2"]
+            v_accel = float(max_accel_rpm_s) if max_accel_rpm_s is not None else self._operator_max_accel_rpm_s
+            v_torque = int(max_torque) if max_torque is not None else self._operator_max_torque
+            self._validate_positive_limits(
+                max_rpm_sp1=v_rpm_sp1,
+                max_rpm_sp2=v_rpm_sp2,
+                max_accel_rpm_s=v_accel,
+                max_torque=v_torque,
+            )
+            if v_rpm_sp1 > self._hard_max_rpm["sp1"] or v_rpm_sp2 > self._hard_max_rpm["sp2"]:
+                raise ValueError("operator max_rpm cannot exceed hard limits")
+            if v_accel > self._hard_max_accel_rpm_s:
+                raise ValueError("operator max_accel_rpm_s cannot exceed hard limit")
+            if v_torque > self._hard_max_torque:
+                raise ValueError("operator max_torque cannot exceed hard limit")
+            self._operator_max_rpm["sp1"] = v_rpm_sp1
+            self._operator_max_rpm["sp2"] = v_rpm_sp2
+            self._operator_max_accel_rpm_s = v_accel
+            self._operator_max_torque = v_torque
+        self._emit_log(
+            "INFO",
+            "MAYAK_OPERATOR_LIMITS",
+            _kv(
+                max_rpm_sp1=v_rpm_sp1,
+                max_rpm_sp2=v_rpm_sp2,
+                max_accel_rpm_s=v_accel,
+                max_torque=v_torque,
+            ),
+        )
+        self._publish_health_event()
+
+    def set_hard_limits(
+        self,
+        *,
+        max_rpm_sp1: Optional[int] = None,
+        max_rpm_sp2: Optional[int] = None,
+        max_accel_rpm_s: Optional[float] = None,
+        max_torque: Optional[int] = None,
+        privileged: bool = False,
+    ) -> None:
+        if not privileged:
+            raise PermissionError("hard limits require privileged access")
+        with self._lock:
+            v_rpm_sp1 = int(max_rpm_sp1) if max_rpm_sp1 is not None else self._hard_max_rpm["sp1"]
+            v_rpm_sp2 = int(max_rpm_sp2) if max_rpm_sp2 is not None else self._hard_max_rpm["sp2"]
+            v_accel = float(max_accel_rpm_s) if max_accel_rpm_s is not None else self._hard_max_accel_rpm_s
+            v_torque = int(max_torque) if max_torque is not None else self._hard_max_torque
+            self._validate_positive_limits(
+                max_rpm_sp1=v_rpm_sp1,
+                max_rpm_sp2=v_rpm_sp2,
+                max_accel_rpm_s=v_accel,
+                max_torque=v_torque,
+            )
+            self._hard_max_rpm["sp1"] = v_rpm_sp1
+            self._hard_max_rpm["sp2"] = v_rpm_sp2
+            self._hard_max_accel_rpm_s = v_accel
+            self._hard_max_torque = v_torque
+            # Clamp operator limits to new hard limits
+            self._operator_max_rpm["sp1"] = min(self._operator_max_rpm["sp1"], self._hard_max_rpm["sp1"])
+            self._operator_max_rpm["sp2"] = min(self._operator_max_rpm["sp2"], self._hard_max_rpm["sp2"])
+            self._operator_max_accel_rpm_s = min(self._operator_max_accel_rpm_s, self._hard_max_accel_rpm_s)
+            self._operator_max_torque = min(self._operator_max_torque, self._hard_max_torque)
+        self._emit_log(
+            "INFO",
+            "MAYAK_HARD_LIMITS",
+            _kv(
+                max_rpm_sp1=v_rpm_sp1,
+                max_rpm_sp2=v_rpm_sp2,
+                max_accel_rpm_s=v_accel,
+                max_torque=v_torque,
+            ),
+        )
+        self._publish_health_event()
+
     # -----------------
     # Readiness API (v2)
     # -----------------
@@ -599,6 +709,7 @@ class MayakSpindleService:
     def get_health_snapshot(self) -> Dict[str, object]:
         with self._lock:
             degraded_reason = self._degraded_reason_locked()
+            eff_max_rpm_sp1, eff_max_rpm_sp2, eff_max_accel, eff_max_torque = self._effective_limits_locked()
             return {
                 "service_status": self._state.value,
                 "global_enable": self._global_enable,
@@ -611,7 +722,27 @@ class MayakSpindleService:
                 "sp1_connected": self._spindle_connected.get("sp1"),
                 "sp2_connected": self._spindle_connected.get("sp2"),
                 "last_packet_age_ms": int(self._last_packet_age_sec * 1000.0),
+                "effective_max_rpm_sp1": eff_max_rpm_sp1,
+                "effective_max_rpm_sp2": eff_max_rpm_sp2,
+                "effective_max_accel_rpm_s": eff_max_accel,
+                "effective_max_torque": eff_max_torque,
             }
+
+    def _effective_limits_locked(self) -> tuple[int, int, float, int]:
+        return (
+            min(self._hard_max_rpm["sp1"], self._operator_max_rpm["sp1"]),
+            min(self._hard_max_rpm["sp2"], self._operator_max_rpm["sp2"]),
+            min(self._hard_max_accel_rpm_s, self._operator_max_accel_rpm_s),
+            min(self._hard_max_torque, self._operator_max_torque),
+        )
+
+    def _validate_positive_limits(self, *, max_rpm_sp1: int, max_rpm_sp2: int, max_accel_rpm_s: float, max_torque: int) -> None:
+        if max_rpm_sp1 <= 0 or max_rpm_sp2 <= 0:
+            raise ValueError("max_rpm must be > 0")
+        if max_accel_rpm_s < 0:
+            raise ValueError("max_accel_rpm_s must be >= 0")
+        if max_torque <= 0:
+            raise ValueError("max_torque must be > 0")
 
     # -----------------
     # Worker loop
