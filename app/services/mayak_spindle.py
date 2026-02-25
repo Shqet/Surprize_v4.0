@@ -694,10 +694,10 @@ class MayakSpindleService:
                 return False
             if self._last_error_code != 0:
                 return False
-            io_bad = self._io_error_streak >= self._io_error_threshold
+            degraded_reason = self._degraded_reason_locked()
             sp1 = self._spindle_state.get("sp1", "UNKNOWN")
             sp2 = self._spindle_state.get("sp2", "UNKNOWN")
-        if io_bad:
+        if degraded_reason != "none":
             return False
         return sp1 in ("READY", "MOVING", "STARTING", "STOPPING") and sp2 in (
             "READY",
@@ -710,12 +710,13 @@ class MayakSpindleService:
         with self._lock:
             degraded_reason = self._degraded_reason_locked()
             eff_max_rpm_sp1, eff_max_rpm_sp2, eff_max_accel, eff_max_torque = self._effective_limits_locked()
+            io_degraded = degraded_reason in ("io_errors", "packet_age")
             return {
                 "service_status": self._state.value,
                 "global_enable": self._global_enable,
                 "error_code": self._last_error_code,
                 "io_error_streak": self._io_error_streak,
-                "io_degraded": self._io_error_streak >= self._io_error_threshold,
+                "io_degraded": io_degraded,
                 "degraded_reason": degraded_reason,
                 "sp1_state": self._spindle_state.get("sp1", "UNKNOWN"),
                 "sp2_state": self._spindle_state.get("sp2", "UNKNOWN"),
@@ -833,10 +834,11 @@ class MayakSpindleService:
                 self._on_io_error()
                 time.sleep(period_s)
                 continue
-            self._on_io_success()
             self._last_packet_age_sec = float(getattr(tr, "last_packet_age_sec", lambda: 0.0)())
             if self._last_packet_age_sec > self._watchdog_max_packet_age_sec:
                 self._on_io_error()
+            else:
+                self._on_io_success()
 
             sim_time = int(vals.get(d.sim_time, 0))
             err = int(vals.get(d.error_code, 0))
@@ -1043,6 +1045,11 @@ class MayakSpindleService:
             snapshot["sp2_state"],
             snapshot["sp1_connected"],
             snapshot["sp2_connected"],
+            snapshot["last_packet_age_ms"],
+            snapshot["effective_max_rpm_sp1"],
+            snapshot["effective_max_rpm_sp2"],
+            snapshot["effective_max_accel_rpm_s"],
+            snapshot["effective_max_torque"],
         )
         if key == self._last_health_event_key:
             return
@@ -1064,6 +1071,11 @@ class MayakSpindleService:
                 sp2_state=str(snapshot["sp2_state"]),
                 sp1_connected=snapshot["sp1_connected"],  # type: ignore[arg-type]
                 sp2_connected=snapshot["sp2_connected"],  # type: ignore[arg-type]
+                last_packet_age_ms=int(snapshot["last_packet_age_ms"]),
+                effective_max_rpm_sp1=int(snapshot["effective_max_rpm_sp1"]),
+                effective_max_rpm_sp2=int(snapshot["effective_max_rpm_sp2"]),
+                effective_max_accel_rpm_s=float(snapshot["effective_max_accel_rpm_s"]),
+                effective_max_torque=int(snapshot["effective_max_torque"]),
                 ts=time.time(),
             )
         )

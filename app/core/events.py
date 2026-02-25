@@ -60,4 +60,9 @@ class MayakHealthEvent:
     sp2_state: str
     sp1_connected: bool | None
     sp2_connected: bool | None
+    last_packet_age_ms: int
+    effective_max_rpm_sp1: int
+    effective_max_rpm_sp2: int
+    effective_max_accel_rpm_s: float
+    effective_max_torque: int
     ts: float

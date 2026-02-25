@@ -194,6 +194,8 @@ def test_publishes_mayak_health_event():
     health = [e for e in bus.events if isinstance(e, MayakHealthEvent)]
     assert health, "expected MayakHealthEvent publication"
     assert health[-1].service_name == "mayak_spindle"
+    assert isinstance(health[-1].effective_max_rpm_sp1, int)
+    assert isinstance(health[-1].effective_max_rpm_sp2, int)
 
 
 def test_restart_recreates_owned_transport_via_factory():
@@ -427,3 +429,60 @@ def test_operator_limits_update_effective_limit():
         pass
     finally:
         svc.stop()
+
+
+def test_packet_age_degrades_readiness_until_recovered():
+    bus = _Bus(events=[])
+
+    class _AgingTransport(DictTransport):
+        def __init__(self):
+            super().__init__(initial={
+                "D1050": 1, "D1051": 1,
+                "D1002": 0x0004, "D1012": 0x0004,
+                "D1003": 0, "D1013": 0,
+                "D1020": 0, "D1021": 0,
+                "D1022": 0,
+                "D1091": 0, "D1092": 0,
+            })
+            self.stale = True
+
+        def last_packet_age_sec(self) -> float:
+            return 10.0 if self.stale else 0.0
+
+    tr = _AgingTransport()
+    svc = MayakSpindleService(bus=bus, transport=tr)
+    svc.start(_profile())
+    time.sleep(0.06)
+    hs = svc.get_health_snapshot()
+    assert hs["degraded_reason"] == "packet_age"
+    assert hs["io_degraded"] is True
+    assert svc.is_ready() is False
+
+    tr.stale = False
+    time.sleep(0.06)
+    hs2 = svc.get_health_snapshot()
+    assert hs2["degraded_reason"] == "none"
+    assert svc.is_ready() is True
+    svc.stop()
+
+
+def test_health_event_published_on_effective_limits_change():
+    bus = _Bus(events=[])
+    tr = DictTransport(initial={
+        "D1050": 1, "D1051": 1,
+        "D1002": 0x0004, "D1012": 0x0004,
+        "D1003": 0, "D1013": 0,
+        "D1020": 0, "D1021": 0,
+        "D1022": 0,
+        "D1091": 0, "D1092": 0,
+    })
+    svc = MayakSpindleService(bus=bus, transport=tr)
+    svc.start(_profile())
+    time.sleep(0.03)
+
+    before = len([e for e in bus.events if isinstance(e, MayakHealthEvent)])
+    svc.set_operator_limits(max_rpm_sp1=111)
+    after_events = [e for e in bus.events if isinstance(e, MayakHealthEvent)]
+    assert len(after_events) > before
+    assert after_events[-1].effective_max_rpm_sp1 == 111
+    svc.stop()
