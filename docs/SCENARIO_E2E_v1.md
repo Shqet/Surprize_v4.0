@@ -21,6 +21,26 @@
 
 ---
 
+## 1.1 Mayak Command Contract (v1)
+
+UI не управляет транспортом/`D`-ячейками напрямую.  
+UI отправляет команды в Orchestrator, Orchestrator проксирует их в `mayak_spindle`.
+
+Команды v1:
+1. `set_speed(spindle, rpm, direction)`
+2. `stop_spindle(spindle)`
+3. `emergency_stop()`
+4. `apply_profile_linear(spindle, from_rpm, to_rpm, duration_sec)`
+
+Минимальная семантика:
+- `spindle`: `"sp1" | "sp2"`
+- `direction`: `-1 | 0 | 1`
+- `rpm` и профиль ограничиваются effective лимитами сервиса
+- все команды должны логироваться (source=`orchestrator|mayak_spindle`, code=`MAYAK_*`)
+- обратная связь в UI только через события (`MayakHealthEvent`, telemetry, `ServiceStatusEvent`)
+
+---
+
 ## 2. Preconditions
 
 1. Профиль `default` валиден и содержит `services.mayak_spindle`, `video_visible`, `video_thermal`, `ballistics_model`.
@@ -134,4 +154,3 @@
 1. завести task-list по UI (state panel + mayak health panel + scenario timeline panel),
 2. добавить генерацию `scenario_id` и запись `timeline.jsonl`,
 3. провести первый формальный `full-e2e` прогон с фиксацией артефактов.
-

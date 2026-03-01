@@ -14,6 +14,25 @@ It hides raw D-cell protocol and exposes spindle-oriented API:
 - operator limit update: `set_operator_limits(...)`
 - privileged hard-limit update: `set_hard_limits(..., privileged=True)`
 
+### Command Contract v1 (UI/Orchestrator-facing)
+
+The following command set is fixed for v1:
+- `set_speed(spindle, rpm, direction)`
+- `stop_spindle(spindle)`
+- `emergency_stop()`
+- `apply_profile_linear(spindle, from_rpm, to_rpm, duration_sec)`
+
+Mapping notes:
+- `set_speed` maps to immediate target update for spindle control cells.
+- `stop_spindle` maps to controlled spindle stop (target rpm to 0 + stop control word).
+- `emergency_stop` is global fail-safe stop (both spindles, highest priority).
+- `apply_profile_linear` is handled by service-side scheduler/loop and writes D-cells stepwise.
+
+Contract constraints:
+- UI must call these commands through Orchestrator (no direct service/transport control from UI).
+- Commands are idempotent/best-effort; service emits final observable state via events.
+- All command executions must be traceable in logs with `MAYAK_*` codes.
+
 ### Config (`services.mayak_spindle`)
 - `d_map: dict[str, str]` required:
   - `SP1_ControlWord`, `SP1_TargetSpeed`, `SP1_StatusWord`, `SP1_ActualSpeed`
