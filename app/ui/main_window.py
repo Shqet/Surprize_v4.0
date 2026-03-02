@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import copy
+import os
 from typing import Any, Optional, cast
 
 from PyQt6.QtWidgets import (
@@ -59,6 +60,12 @@ class MainWindow(QMainWindow):
         self.current_config: dict[str, Any] = copy.deepcopy(self._initial_config)
         self._last_mayak_ready: Optional[bool] = None
         self._last_mayak_health_event: Optional[object] = None
+        self._ui_debug: bool = str(os.getenv("SURPRIZE_UI_DEBUG", "0")).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
 
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
@@ -251,40 +258,46 @@ class MainWindow(QMainWindow):
         status_box = QGroupBox("Состояние Маяка", panel)
         status_form = QFormLayout(status_box)
         self._lbl_mayak_ready = QLabel("-", status_box)
-        self._lbl_mayak_connected = QLabel("-", status_box)
         self._lbl_mayak_state = QLabel("-", status_box)
-        self._lbl_mayak_error = QLabel("-", status_box)
-        self._lbl_mayak_reason = QLabel("-", status_box)
         status_form.addRow("Готов", self._lbl_mayak_ready)
-        status_form.addRow("Связь", self._lbl_mayak_connected)
         status_form.addRow("Состояние", self._lbl_mayak_state)
-        status_form.addRow("Ошибка", self._lbl_mayak_error)
-        status_form.addRow("Причина", self._lbl_mayak_reason)
+        if self._ui_debug:
+            self._lbl_mayak_connected = QLabel("-", status_box)
+            self._lbl_mayak_error = QLabel("-", status_box)
+            self._lbl_mayak_reason = QLabel("-", status_box)
+            status_form.addRow("Связь", self._lbl_mayak_connected)
+            status_form.addRow("Ошибка", self._lbl_mayak_error)
+            status_form.addRow("Причина", self._lbl_mayak_reason)
 
-        telemetry_box = QGroupBox("Телеметрия Маяка", panel)
-        telemetry_grid = QGridLayout(telemetry_box)
-        telemetry_grid.addWidget(QLabel("Шпиндель", telemetry_box), 0, 0)
-        telemetry_grid.addWidget(QLabel("RPM", telemetry_box), 0, 1)
-        telemetry_grid.addWidget(QLabel("Момент", telemetry_box), 0, 2)
-        telemetry_grid.addWidget(QLabel("Угол", telemetry_box), 0, 3)
+            telemetry_box = QGroupBox("Телеметрия Маяка", panel)
+            telemetry_grid = QGridLayout(telemetry_box)
+            telemetry_grid.addWidget(QLabel("Шпиндель", telemetry_box), 0, 0)
+            telemetry_grid.addWidget(QLabel("RPM", telemetry_box), 0, 1)
+            telemetry_grid.addWidget(QLabel("Момент", telemetry_box), 0, 2)
+            telemetry_grid.addWidget(QLabel("Угол", telemetry_box), 0, 3)
 
-        for row, sp, title in ((1, "sp1", "Головной"), (2, "sp2", "Хвостовой")):
-            telemetry_grid.addWidget(QLabel(title, telemetry_box), row, 0)
-            lbl_rpm = QLabel("-", telemetry_box)
-            lbl_torque = QLabel("-", telemetry_box)
-            lbl_angle = QLabel("-", telemetry_box)
-            telemetry_grid.addWidget(lbl_rpm, row, 1)
-            telemetry_grid.addWidget(lbl_torque, row, 2)
-            telemetry_grid.addWidget(lbl_angle, row, 3)
-            self._mayak_tel_labels[sp] = {
-                "rpm": lbl_rpm,
-                "torque": lbl_torque,
-                "angle": lbl_angle,
-            }
+            for row, sp, title in ((1, "sp1", "Головной"), (2, "sp2", "Хвостовой")):
+                telemetry_grid.addWidget(QLabel(title, telemetry_box), row, 0)
+                lbl_rpm = QLabel("-", telemetry_box)
+                lbl_torque = QLabel("-", telemetry_box)
+                lbl_angle = QLabel("-", telemetry_box)
+                telemetry_grid.addWidget(lbl_rpm, row, 1)
+                telemetry_grid.addWidget(lbl_torque, row, 2)
+                telemetry_grid.addWidget(lbl_angle, row, 3)
+                self._mayak_tel_labels[sp] = {
+                    "rpm": lbl_rpm,
+                    "torque": lbl_torque,
+                    "angle": lbl_angle,
+                }
+        else:
+            self._lbl_mayak_connected = None
+            self._lbl_mayak_error = None
+            self._lbl_mayak_reason = None
 
         root.addWidget(control_box)
         root.addWidget(status_box)
-        root.addWidget(telemetry_box)
+        if self._ui_debug:
+            root.addWidget(telemetry_box)
         root.addStretch(1)
 
         vl.addWidget(panel)
@@ -343,22 +356,24 @@ class MainWindow(QMainWindow):
             sp1 = str(getattr(e, "sp1_state", "UNKNOWN"))
             sp2 = str(getattr(e, "sp2_state", "UNKNOWN"))
             self._lbl_mayak_state.setText(f"Головной={sp1}, Хвостовой={sp2}")
-        if self._lbl_mayak_error is not None:
-            self._lbl_mayak_error.setText(str(int(getattr(e, "error_code", 0))))
-        if self._lbl_mayak_reason is not None:
-            self._lbl_mayak_reason.setText(str(getattr(e, "degraded_reason", "none")))
+        if self._ui_debug:
+            if self._lbl_mayak_error is not None:
+                self._lbl_mayak_error.setText(str(int(getattr(e, "error_code", 0))))
+            if self._lbl_mayak_reason is not None:
+                self._lbl_mayak_reason.setText(str(getattr(e, "degraded_reason", "none")))
 
         self._update_mayak_rpm_limits_from_health(e)
 
         try:
             sp1 = str(getattr(e, "sp1_state", "UNKNOWN"))
             sp2 = str(getattr(e, "sp2_state", "UNKNOWN"))
-            err = int(getattr(e, "error_code", 0))
-            reason = str(getattr(e, "degraded_reason", "none"))
-            self.statusBar().showMessage(
-                f"Маяк готов={1 if ready else 0} головной={sp1} хвостовой={sp2} err={err} reason={reason}",
-                3000,
-            )
+            if self._ui_debug:
+                err = int(getattr(e, "error_code", 0))
+                reason = str(getattr(e, "degraded_reason", "none"))
+                msg = f"Маяк готов={1 if ready else 0} головной={sp1} хвостовой={sp2} err={err} reason={reason}"
+            else:
+                msg = f"Маяк: готов={1 if ready else 0}, головной={sp1}, хвостовой={sp2}"
+            self.statusBar().showMessage(msg, 3000)
         except Exception:
             pass
 
