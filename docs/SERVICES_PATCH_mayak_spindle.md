@@ -17,19 +17,20 @@ It hides raw D-cell protocol and exposes spindle-oriented API:
 ### Command Contract v1 (UI/Orchestrator-facing)
 
 The following command set is fixed for v1:
-- `set_speed(spindle, rpm, direction)`
-- `stop_spindle(spindle)`
+- `start_mayak_test(head_start_rpm, head_end_rpm, tail_start_rpm, tail_end_rpm, profile_type, duration_sec)`
+- `stop_mayak_test()`
 - `emergency_stop()`
-- `apply_profile_linear(spindle, from_rpm, to_rpm, duration_sec)`
 
 Mapping notes:
-- `set_speed` maps to immediate target update for spindle control cells.
-- `stop_spindle` maps to controlled spindle stop (target rpm to 0 + stop control word).
-- `emergency_stop` is global fail-safe stop (both spindles, highest priority).
-- `apply_profile_linear` is handled by service-side scheduler/loop and writes D-cells stepwise.
+- `head_*` parameters map to spindle `sp1`; `tail_*` map to spindle `sp2`.
+- `profile_type` selects the speed-law on Mayak side (`linear`, `step`, ...).
+- `duration_sec` defines test window for profile execution.
+- `stop_mayak_test` performs controlled stop for both spindles.
+- `emergency_stop` is global fail-safe stop (highest priority).
 
 Contract constraints:
 - UI must call these commands through Orchestrator (no direct service/transport control from UI).
+- Speed-law algorithm lives in Mayak; UI/Orchestrator only pass parameters and control start/stop.
 - Commands are idempotent/best-effort; service emits final observable state via events.
 - All command executions must be traceable in logs with `MAYAK_*` codes.
 

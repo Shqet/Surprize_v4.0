@@ -21,23 +21,26 @@
 
 ---
 
-## 1.1 Mayak Command Contract (v1)
+## 1.1 Mayak Test Contract (v1)
 
 UI не управляет транспортом/`D`-ячейками напрямую.  
-UI отправляет команды в Orchestrator, Orchestrator проксирует их в `mayak_spindle`.
+UI передаёт параметры теста в Orchestrator, Orchestrator проксирует их в `mayak_spindle`.
 
 Команды v1:
-1. `set_speed(spindle, rpm, direction)`
-2. `stop_spindle(spindle)`
+1. `start_mayak_test(head_start_rpm, head_end_rpm, tail_start_rpm, tail_end_rpm, profile_type, duration_sec)`
+2. `stop_mayak_test()`
 3. `emergency_stop()`
-4. `apply_profile_linear(spindle, from_rpm, to_rpm, duration_sec)`
 
-Минимальная семантика:
-- `spindle`: `"sp1" | "sp2"`
-- `direction`: `-1 | 0 | 1`
-- `rpm` и профиль ограничиваются effective лимитами сервиса
-- все команды должны логироваться (source=`orchestrator|mayak_spindle`, code=`MAYAK_*`)
-- обратная связь в UI только через события (`MayakHealthEvent`, telemetry, `ServiceStatusEvent`)
+Параметры теста:
+- `head_start_rpm`, `head_end_rpm` — стартовая/конечная скорость головного шпинделя
+- `tail_start_rpm`, `tail_end_rpm` — стартовая/конечная скорость хвостового шпинделя
+- `profile_type` — тип закона изменения (`linear`, `step`, ...)
+- `duration_sec` — длительность теста (обычно определяется из траектории)
+
+Ключевое правило:
+- алгоритм изменения скорости выполняется на стороне Маяка;
+- UI/Orchestrator только задают параметры и командуют старт/стоп;
+- обратная связь в UI только через события (`MayakHealthEvent`, `MayakSpindleTelemetryEvent`, `ServiceStatusEvent`).
 
 ---
 
