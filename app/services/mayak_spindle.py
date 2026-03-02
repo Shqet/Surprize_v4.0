@@ -219,6 +219,16 @@ class _DMap:
     sp2_connected: str
     sim_time: str
     error_code: str
+    test_start: Optional[str]
+    limit_max_rpm_sp1: Optional[str]
+    limit_max_rpm_sp2: Optional[str]
+    limit_max_torque: Optional[str]
+    test_profile_type: Optional[str]
+    test_head_start_rpm: Optional[str]
+    test_head_end_rpm: Optional[str]
+    test_tail_start_rpm: Optional[str]
+    test_tail_end_rpm: Optional[str]
+    test_duration_sec: Optional[str]
 
     @staticmethod
     def from_profile(d_map: Dict[str, str]) -> "_DMap":
@@ -250,6 +260,16 @@ class _DMap:
             sp2_connected=d_map["SP2_Connected"],
             sim_time=d_map["Sim_Time"],
             error_code=d_map["Error_Code"],
+            test_start=d_map.get("Test_Start"),
+            limit_max_rpm_sp1=d_map.get("Limit_MaxRpm_SP1"),
+            limit_max_rpm_sp2=d_map.get("Limit_MaxRpm_SP2"),
+            limit_max_torque=d_map.get("Limit_MaxTorque"),
+            test_profile_type=d_map.get("Test_ProfileType"),
+            test_head_start_rpm=d_map.get("Test_Head_StartRpm"),
+            test_head_end_rpm=d_map.get("Test_Head_EndRpm"),
+            test_tail_start_rpm=d_map.get("Test_Tail_StartRpm"),
+            test_tail_end_rpm=d_map.get("Test_Tail_EndRpm"),
+            test_duration_sec=d_map.get("Test_DurationSec"),
         )
 
 
@@ -333,6 +353,8 @@ class MayakSpindleService:
         self._last_cmd_ts: Dict[str, Optional[float]] = {"sp1": None, "sp2": None}
         self._last_cmd_target: Dict[str, int] = {"sp1": 0, "sp2": 0}
         self._sp_force_cw: Dict[str, Optional[int]] = {"sp1": None, "sp2": None}
+        self._pending_d_writes: Dict[str, int] = {}
+        self._test_start_pulse_stage: int = 0
 
         self._watchdog_cell: Optional[str] = None
         self._watchdog_counter: int = 0
@@ -446,6 +468,9 @@ class MayakSpindleService:
         self._pending_deadline = {"sp1": None, "sp2": None}
         self._pending_expect = {"sp1": "", "sp2": ""}
         self._sp_force_cw = {"sp1": None, "sp2": None}
+        self._pending_d_writes = {}
+        self._test_start_pulse_stage = 0
+        self._queue_limit_writes()
         self._thr = threading.Thread(target=self._worker, name="mayak_spindle_worker", daemon=True)
         self._thr.start()
 
@@ -486,6 +511,20 @@ class MayakSpindleService:
     def status(self) -> ServiceStatus:
         with self._lock:
             return self._state
+
+    def _queue_optional_write_locked(self, cell: Optional[str], value: int) -> None:
+        if isinstance(cell, str) and cell:
+            self._pending_d_writes[cell] = int(value)
+
+    def _queue_limit_writes(self) -> None:
+        with self._lock:
+            d = self._d
+            if d is None:
+                return
+            eff_sp1, eff_sp2, _eff_accel, eff_torque = self._effective_limits_locked()
+            self._queue_optional_write_locked(d.limit_max_rpm_sp1, eff_sp1)
+            self._queue_optional_write_locked(d.limit_max_rpm_sp2, eff_sp2)
+            self._queue_optional_write_locked(d.limit_max_torque, eff_torque)
 
     # -----------------
     # Command API (service-specific)
@@ -560,6 +599,85 @@ class MayakSpindleService:
     def stop_spindle(self, spindle: str) -> None:
         self.set_spindle_speed(spindle, direction=0, rpm=0)
 
+    def start_test(
+        self,
+        *,
+        head_start_rpm: int,
+        head_end_rpm: int,
+        tail_start_rpm: int,
+        tail_end_rpm: int,
+        profile_type: str,
+        duration_sec: float,
+    ) -> None:
+        if self.status() != ServiceStatus.RUNNING:
+            raise RuntimeError("service is not RUNNING")
+        if head_start_rpm < 0 or head_end_rpm < 0 or tail_start_rpm < 0 or tail_end_rpm < 0:
+            raise ValueError("rpm must be >= 0")
+        if float(duration_sec) <= 0:
+            raise ValueError("duration_sec must be > 0")
+
+        normalized = str(profile_type).strip().lower()
+        if normalized in ("linear", "линейный", "линейно"):
+            profile_code = 1
+        elif normalized in ("step", "ступень", "ступенчатый"):
+            profile_code = 2
+        else:
+            raise ValueError(f"unsupported profile_type={profile_type}")
+
+        with self._lock:
+            eff_sp1, eff_sp2, _eff_accel, _eff_torque = self._effective_limits_locked()
+            if head_start_rpm > eff_sp1 or head_end_rpm > eff_sp1:
+                raise ValueError(f"head rpm exceeds limit: {eff_sp1}")
+            if tail_start_rpm > eff_sp2 or tail_end_rpm > eff_sp2:
+                raise ValueError(f"tail rpm exceeds limit: {eff_sp2}")
+            d = self._d
+            if d is None:
+                raise RuntimeError("d_map is not initialized")
+            if d.test_start is None:
+                raise RuntimeError("d_map missing Test_Start")
+
+            self._queue_optional_write_locked(d.test_profile_type, profile_code)
+            self._queue_optional_write_locked(d.test_head_start_rpm, int(head_start_rpm))
+            self._queue_optional_write_locked(d.test_head_end_rpm, int(head_end_rpm))
+            self._queue_optional_write_locked(d.test_tail_start_rpm, int(tail_start_rpm))
+            self._queue_optional_write_locked(d.test_tail_end_rpm, int(tail_end_rpm))
+            self._queue_optional_write_locked(d.test_duration_sec, int(round(float(duration_sec))))
+            self._test_start_pulse_stage = 1
+
+        self._emit_log(
+            "INFO",
+            "MAYAK_TEST_START",
+            _kv(
+                service=self.name,
+                profile=normalized,
+                duration_sec=f"{float(duration_sec):.2f}",
+                head_start=head_start_rpm,
+                head_end=head_end_rpm,
+                tail_start=tail_start_rpm,
+                tail_end=tail_end_rpm,
+            ),
+        )
+
+    def stop_test(self) -> None:
+        self.stop_spindle("sp1")
+        self.stop_spindle("sp2")
+        self._emit_log("INFO", "MAYAK_TEST_STOP", _kv(service=self.name))
+
+    def emergency_stop(self) -> None:
+        if self.status() != ServiceStatus.RUNNING:
+            raise RuntimeError("service is not RUNNING")
+        with self._lock:
+            self._global_enable = False
+            for sp in ("sp1", "sp2"):
+                self._sp_cmd[sp] = (0x0000, 0)
+                self._sp_stage[sp] = 0
+                self._sp_force_cw[sp] = 0x0000
+                self._last_cmd_ts[sp] = time.monotonic()
+                self._last_cmd_target[sp] = 0
+                self._pending_deadline[sp] = None
+                self._pending_expect[sp] = ""
+        self._emit_log("WARNING", "MAYAK_TEST_ABORT", _kv(service=self.name, reason="emergency_stop"))
+
     def fault_reset(self, spindle: str) -> None:
         sp = spindle.lower().strip()
         if sp not in ("sp1", "sp2"):
@@ -617,6 +735,7 @@ class MayakSpindleService:
             self._operator_max_rpm["sp2"] = v_rpm_sp2
             self._operator_max_accel_rpm_s = v_accel
             self._operator_max_torque = v_torque
+        self._queue_limit_writes()
         self._emit_log(
             "INFO",
             "MAYAK_OPERATOR_LIMITS",
@@ -660,6 +779,7 @@ class MayakSpindleService:
             self._operator_max_rpm["sp2"] = min(self._operator_max_rpm["sp2"], self._hard_max_rpm["sp2"])
             self._operator_max_accel_rpm_s = min(self._operator_max_accel_rpm_s, self._hard_max_accel_rpm_s)
             self._operator_max_torque = min(self._operator_max_torque, self._hard_max_torque)
+        self._queue_limit_writes()
         self._emit_log(
             "INFO",
             "MAYAK_HARD_LIMITS",
@@ -806,6 +926,16 @@ class MayakSpindleService:
                     self._sp_cmd["sp2"] = (0x000F, sp2_tgt)
                     self._sp_stage["sp2"] = 0
 
+                queued_d_writes = dict(self._pending_d_writes)
+                self._pending_d_writes.clear()
+                pulse_stage = self._test_start_pulse_stage
+                if pulse_stage == 1 and d.test_start is not None:
+                    queued_d_writes[d.test_start] = 1
+                    self._test_start_pulse_stage = 2
+                elif pulse_stage == 2 and d.test_start is not None:
+                    queued_d_writes[d.test_start] = 0
+                    self._test_start_pulse_stage = 0
+
             if ge is not None:
                 out[d.global_enable] = 1 if ge else 0
             if sp1_cw is not None:
@@ -819,6 +949,8 @@ class MayakSpindleService:
             if self._watchdog_cell is not None:
                 self._watchdog_counter = (self._watchdog_counter + 1) & 0x7FFFFFFF
                 out[self._watchdog_cell] = int(self._watchdog_counter)
+            if queued_d_writes:
+                out.update(queued_d_writes)
 
             if out:
                 try:

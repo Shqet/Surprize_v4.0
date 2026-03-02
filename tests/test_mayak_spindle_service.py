@@ -54,6 +54,16 @@ def _profile():
             "Global_Enable": "D1090",
             "Sim_Time": "D1091",
             "Error_Code": "D1092",
+            "Test_Start": "D1200",
+            "Test_ProfileType": "D1201",
+            "Test_Head_StartRpm": "D1202",
+            "Test_Head_EndRpm": "D1203",
+            "Test_Tail_StartRpm": "D1204",
+            "Test_Tail_EndRpm": "D1205",
+            "Test_DurationSec": "D1206",
+            "Limit_MaxRpm_SP1": "D1210",
+            "Limit_MaxRpm_SP2": "D1211",
+            "Limit_MaxTorque": "D1212",
         },
     }
 
@@ -110,6 +120,45 @@ def test_commands_written_to_cells():
     snap = tr.snapshot()
     assert snap["D1010"] == 0
     assert snap["D1011"] == 0
+
+    svc.stop()
+
+
+def test_start_test_writes_program_params_and_pulses_start():
+    bus = _Bus(events=[])
+    tr = DictTransport(initial={
+        "D1050": 1, "D1051": 1,
+        "D1002": 0x0004, "D1012": 0x0004,
+        "D1003": 0, "D1013": 0,
+        "D1020": 0, "D1021": 0,
+        "D1022": 0,
+        "D1091": 0, "D1092": 0,
+    })
+    svc = MayakSpindleService(bus=bus, transport=tr)
+    svc.start(_profile())
+    time.sleep(0.02)
+
+    svc.start_test(
+        head_start_rpm=120,
+        head_end_rpm=900,
+        tail_start_rpm=130,
+        tail_end_rpm=950,
+        profile_type="linear",
+        duration_sec=12.0,
+    )
+    time.sleep(0.06)
+
+    snap = tr.snapshot()
+    assert snap["D1201"] == 1
+    assert snap["D1202"] == 120
+    assert snap["D1203"] == 900
+    assert snap["D1204"] == 130
+    assert snap["D1205"] == 950
+    assert snap["D1206"] == 12
+    assert snap["D1200"] == 0  # pulse must return to 0
+    assert snap["D1210"] == 6000
+    assert snap["D1211"] == 6000
+    assert snap["D1212"] == 100000
 
     svc.stop()
 
@@ -459,8 +508,11 @@ def test_packet_age_degrades_readiness_until_recovered():
     assert svc.is_ready() is False
 
     tr.stale = False
-    time.sleep(0.06)
+    deadline = time.monotonic() + 0.6
     hs2 = svc.get_health_snapshot()
+    while hs2["degraded_reason"] != "none" and time.monotonic() < deadline:
+        time.sleep(0.02)
+        hs2 = svc.get_health_snapshot()
     assert hs2["degraded_reason"] == "none"
     assert svc.is_ready() is True
     svc.stop()

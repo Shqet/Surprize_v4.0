@@ -23,6 +23,9 @@ class _MayakLikeService:
     stop_calls: list[str] = field(default_factory=list)
     ge_calls: list[bool] = field(default_factory=list)
     profile_calls: list[tuple[str, int, int, float]] = field(default_factory=list)
+    start_test_calls: list[tuple[int, int, int, int, str, float]] = field(default_factory=list)
+    stop_test_calls: int = 0
+    emergency_calls: int = 0
 
     def set_spindle_speed(self, spindle: str, *, direction: int, rpm: int) -> None:
         self.set_speed_calls.append((spindle, direction, rpm))
@@ -36,6 +39,26 @@ class _MayakLikeService:
     def apply_profile_linear(self, spindle: str, *, from_rpm: int, to_rpm: int, duration_sec: float) -> None:
         self.profile_calls.append((spindle, from_rpm, to_rpm, duration_sec))
 
+    def start_test(
+        self,
+        *,
+        head_start_rpm: int,
+        head_end_rpm: int,
+        tail_start_rpm: int,
+        tail_end_rpm: int,
+        profile_type: str,
+        duration_sec: float,
+    ) -> None:
+        self.start_test_calls.append(
+            (head_start_rpm, head_end_rpm, tail_start_rpm, tail_end_rpm, profile_type, duration_sec)
+        )
+
+    def stop_test(self) -> None:
+        self.stop_test_calls += 1
+
+    def emergency_stop(self) -> None:
+        self.emergency_calls += 1
+
 
 def test_set_speed_routes_to_mayak_service() -> None:
     bus = EventBus()
@@ -48,7 +71,7 @@ def test_set_speed_routes_to_mayak_service() -> None:
     assert mayak.set_speed_calls == [("sp1", 1, 1200)]
 
 
-def test_emergency_stop_uses_fallback_when_method_missing() -> None:
+def test_emergency_stop_routes_to_service_method() -> None:
     bus = EventBus()
     mayak = _MayakLikeService()
     sm = _FakeServiceManager({"mayak_spindle": mayak})
@@ -56,8 +79,7 @@ def test_emergency_stop_uses_fallback_when_method_missing() -> None:
 
     orch.emergency_stop()
 
-    assert mayak.stop_calls == ["sp1", "sp2"]
-    assert mayak.ge_calls == [False]
+    assert mayak.emergency_calls == 1
 
 
 def test_apply_profile_linear_raises_when_service_does_not_support_it() -> None:
@@ -100,10 +122,7 @@ def test_start_mayak_test_runs_both_spindles_with_linear_profile() -> None:
         duration_sec=5.0,
     )
 
-    assert ("sp1", 1, 100) in mayak.set_speed_calls
-    assert ("sp2", 1, 200) in mayak.set_speed_calls
-    assert ("sp1", 100, 500, 5.0) in mayak.profile_calls
-    assert ("sp2", 200, 600, 5.0) in mayak.profile_calls
+    assert mayak.start_test_calls == [(100, 500, 200, 600, "linear", 5.0)]
 
 
 def test_stop_mayak_test_stops_both_spindles() -> None:
@@ -114,4 +133,4 @@ def test_stop_mayak_test_stops_both_spindles() -> None:
 
     orch.stop_mayak_test()
 
-    assert mayak.stop_calls == ["sp1", "sp2"]
+    assert mayak.stop_test_calls == 1

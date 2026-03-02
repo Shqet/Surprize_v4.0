@@ -485,60 +485,32 @@ class Orchestrator:
             raise
 
     def emergency_stop(self) -> None:
-        """
-        Best-effort emergency command:
-        - if service provides emergency_stop(), use it
-        - else fallback to stop_spindle(sp1/sp2) and global_enable=False when supported
-        """
         emit_log(self._bus, "INFO", "orchestrator", "MAYAK_CMD", "cmd=emergency_stop")
         svc = self._resolve_mayak_service()
 
         fn = getattr(svc, "emergency_stop", None)
-        if callable(fn):
-            try:
-                fn()
-                emit_log(self._bus, "INFO", "orchestrator", "MAYAK_CMD", "cmd=emergency_stop status=ok")
-                return
-            except Exception as ex:
-                emit_log(
-                    self._bus,
-                    "ERROR",
-                    "orchestrator",
-                    "SERVICE_ERROR",
-                    f"stage=mayak_cmd cmd=emergency_stop err={type(ex).__name__}",
-                )
-                raise
-
-        # Fallback for current service versions without explicit emergency_stop().
-        errors: list[str] = []
-        stop_fn = getattr(svc, "stop_spindle", None)
-        if callable(stop_fn):
-            for sp in ("sp1", "sp2"):
-                try:
-                    stop_fn(sp)
-                except Exception as ex:
-                    errors.append(f"{sp}:{type(ex).__name__}")
-        else:
-            errors.append("stop_spindle:unsupported")
-
-        ge_fn = getattr(svc, "set_global_enable", None)
-        if callable(ge_fn):
-            try:
-                ge_fn(False)
-            except Exception as ex:
-                errors.append(f"set_global_enable:{type(ex).__name__}")
-
-        if errors:
+        if not callable(fn):
             emit_log(
                 self._bus,
                 "ERROR",
                 "orchestrator",
                 "SERVICE_ERROR",
-                f"stage=mayak_cmd cmd=emergency_stop err={'|'.join(errors)}",
+                "stage=mayak_cmd cmd=emergency_stop err=unsupported_method",
             )
-            raise RuntimeError("emergency_stop fallback failed")
+            raise RuntimeError("mayak_spindle does not support emergency_stop")
 
-        emit_log(self._bus, "INFO", "orchestrator", "MAYAK_CMD", "cmd=emergency_stop status=ok_fallback")
+        try:
+            fn()
+            emit_log(self._bus, "INFO", "orchestrator", "MAYAK_CMD", "cmd=emergency_stop status=ok")
+        except Exception as ex:
+            emit_log(
+                self._bus,
+                "ERROR",
+                "orchestrator",
+                "SERVICE_ERROR",
+                f"stage=mayak_cmd cmd=emergency_stop err={type(ex).__name__}",
+            )
+            raise
 
     def apply_profile_linear(self, spindle: str, from_rpm: int, to_rpm: int, duration_sec: float) -> None:
         emit_log(
@@ -622,54 +594,63 @@ class Orchestrator:
                 "stage=mayak_cmd cmd=start_test err=duration_invalid",
             )
             raise ValueError("duration_sec must be > 0")
+        svc = self._resolve_mayak_service()
+        fn = getattr(svc, "start_test", None)
+        if not callable(fn):
+            emit_log(
+                self._bus,
+                "ERROR",
+                "orchestrator",
+                "SERVICE_ERROR",
+                "stage=mayak_cmd cmd=start_test err=unsupported_method",
+            )
+            raise RuntimeError("mayak_spindle does not support start_test")
 
-        self._run_spindle_profile("sp1", int(head_start_rpm), int(head_end_rpm), str(profile_type), float(duration_sec))
-        self._run_spindle_profile("sp2", int(tail_start_rpm), int(tail_end_rpm), str(profile_type), float(duration_sec))
-
-        emit_log(self._bus, "INFO", "orchestrator", "MAYAK_CMD", "cmd=start_test status=ok")
+        try:
+            fn(
+                head_start_rpm=int(head_start_rpm),
+                head_end_rpm=int(head_end_rpm),
+                tail_start_rpm=int(tail_start_rpm),
+                tail_end_rpm=int(tail_end_rpm),
+                profile_type=str(profile_type),
+                duration_sec=float(duration_sec),
+            )
+            emit_log(self._bus, "INFO", "orchestrator", "MAYAK_CMD", "cmd=start_test status=ok")
+        except Exception as ex:
+            emit_log(
+                self._bus,
+                "ERROR",
+                "orchestrator",
+                "SERVICE_ERROR",
+                f"stage=mayak_cmd cmd=start_test err={type(ex).__name__}",
+            )
+            raise
 
     def stop_mayak_test(self) -> None:
         emit_log(self._bus, "INFO", "orchestrator", "MAYAK_CMD", "cmd=stop_test")
-        self.stop_spindle("sp1")
-        self.stop_spindle("sp2")
-        emit_log(self._bus, "INFO", "orchestrator", "MAYAK_CMD", "cmd=stop_test status=ok")
-
-    def _run_spindle_profile(
-        self,
-        spindle: str,
-        start_rpm: int,
-        end_rpm: int,
-        profile_type: str,
-        duration_sec: float,
-    ) -> None:
-        if start_rpm < 0 or end_rpm < 0:
-            raise ValueError("rpm must be >= 0")
-
-        self.set_speed(spindle, start_rpm, 1)
-
-        normalized = profile_type.strip().lower()
-        if normalized in ("linear", "линейный", "линейно"):
-            try:
-                self.apply_profile_linear(spindle, start_rpm, end_rpm, duration_sec)
-                return
-            except RuntimeError as ex:
-                if "does not support apply_profile_linear" not in str(ex):
-                    raise
-                emit_log(
-                    self._bus,
-                    "WARNING",
-                    "orchestrator",
-                    "MAYAK_CMD",
-                    f"cmd=profile_fallback spindle={spindle} profile=linear",
-                )
-                self.set_speed(spindle, end_rpm, 1)
-                return
-
-        if normalized in ("step", "ступень", "ступенчатый"):
-            self.set_speed(spindle, end_rpm, 1)
-            return
-
-        raise ValueError(f"unsupported profile_type={profile_type}")
+        svc = self._resolve_mayak_service()
+        fn = getattr(svc, "stop_test", None)
+        if not callable(fn):
+            emit_log(
+                self._bus,
+                "ERROR",
+                "orchestrator",
+                "SERVICE_ERROR",
+                "stage=mayak_cmd cmd=stop_test err=unsupported_method",
+            )
+            raise RuntimeError("mayak_spindle does not support stop_test")
+        try:
+            fn()
+            emit_log(self._bus, "INFO", "orchestrator", "MAYAK_CMD", "cmd=stop_test status=ok")
+        except Exception as ex:
+            emit_log(
+                self._bus,
+                "ERROR",
+                "orchestrator",
+                "SERVICE_ERROR",
+                f"stage=mayak_cmd cmd=stop_test err={type(ex).__name__}",
+            )
+            raise
 
     # -------------------- Service status tracking --------------------
 
