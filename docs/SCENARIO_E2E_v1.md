@@ -125,6 +125,9 @@ UI передаёт параметры теста в Orchestrator, Orchestrator 
 - длительность
 - версии/commit hash
 
+Практический сбор артефактов:
+`.\.venv\Scripts\python.exe -m tools.scenario_acceptance_collect --copy-full-log`
+
 ---
 
 ## 8. Acceptance Criteria
@@ -156,5 +159,5 @@ UI передаёт параметры теста в Orchestrator, Orchestrator 
 
 После утверждения этого документа:
 1. завести task-list по UI (state panel + mayak health panel + scenario timeline panel),
-2. добавить генерацию `scenario_id` и запись `timeline.jsonl`,
-3. провести первый формальный `full-e2e` прогон с фиксацией артефактов.
+2. провести формальный `full-e2e` прогон с фиксацией артефактов через `tools.scenario_acceptance_collect`,
+3. закрыть acceptance-файл `docs/acceptance/ACCEPT_SCENARIO_ITERATION_v1.md`.
