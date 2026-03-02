@@ -22,6 +22,7 @@ class _MayakLikeService:
     set_speed_calls: list[tuple[str, int, int]] = field(default_factory=list)
     stop_calls: list[str] = field(default_factory=list)
     ge_calls: list[bool] = field(default_factory=list)
+    profile_calls: list[tuple[str, int, int, float]] = field(default_factory=list)
 
     def set_spindle_speed(self, spindle: str, *, direction: int, rpm: int) -> None:
         self.set_speed_calls.append((spindle, direction, rpm))
@@ -31,6 +32,9 @@ class _MayakLikeService:
 
     def set_global_enable(self, enabled: bool) -> None:
         self.ge_calls.append(bool(enabled))
+
+    def apply_profile_linear(self, spindle: str, *, from_rpm: int, to_rpm: int, duration_sec: float) -> None:
+        self.profile_calls.append((spindle, from_rpm, to_rpm, duration_sec))
 
 
 def test_set_speed_routes_to_mayak_service() -> None:
@@ -57,11 +61,57 @@ def test_emergency_stop_uses_fallback_when_method_missing() -> None:
 
 
 def test_apply_profile_linear_raises_when_service_does_not_support_it() -> None:
+    @dataclass
+    class _NoProfileService:
+        set_speed_calls: list[tuple[str, int, int]] = field(default_factory=list)
+        stop_calls: list[str] = field(default_factory=list)
+        ge_calls: list[bool] = field(default_factory=list)
+
+        def set_spindle_speed(self, spindle: str, *, direction: int, rpm: int) -> None:
+            self.set_speed_calls.append((spindle, direction, rpm))
+
+        def stop_spindle(self, spindle: str) -> None:
+            self.stop_calls.append(spindle)
+
+        def set_global_enable(self, enabled: bool) -> None:
+            self.ge_calls.append(bool(enabled))
+
     bus = EventBus()
-    mayak = _MayakLikeService()
+    mayak = _NoProfileService()
     sm = _FakeServiceManager({"mayak_spindle": mayak})
     orch = Orchestrator(bus, sm)
 
     with pytest.raises(RuntimeError):
         orch.apply_profile_linear("sp1", 0, 1000, 2.0)
 
+
+def test_start_mayak_test_runs_both_spindles_with_linear_profile() -> None:
+    bus = EventBus()
+    mayak = _MayakLikeService()
+    sm = _FakeServiceManager({"mayak_spindle": mayak})
+    orch = Orchestrator(bus, sm)
+
+    orch.start_mayak_test(
+        head_start_rpm=100,
+        head_end_rpm=500,
+        tail_start_rpm=200,
+        tail_end_rpm=600,
+        profile_type="linear",
+        duration_sec=5.0,
+    )
+
+    assert ("sp1", 1, 100) in mayak.set_speed_calls
+    assert ("sp2", 1, 200) in mayak.set_speed_calls
+    assert ("sp1", 100, 500, 5.0) in mayak.profile_calls
+    assert ("sp2", 200, 600, 5.0) in mayak.profile_calls
+
+
+def test_stop_mayak_test_stops_both_spindles() -> None:
+    bus = EventBus()
+    mayak = _MayakLikeService()
+    sm = _FakeServiceManager({"mayak_spindle": mayak})
+    orch = Orchestrator(bus, sm)
+
+    orch.stop_mayak_test()
+
+    assert mayak.stop_calls == ["sp1", "sp2"]

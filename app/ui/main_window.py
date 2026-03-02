@@ -5,6 +5,7 @@ from typing import Any, Optional, cast
 
 from PyQt6.QtWidgets import (
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -78,11 +79,14 @@ class MainWindow(QMainWindow):
         self._init_rtsp_previews()
 
         # Mayak panel refs
-        self._mayak_spindle_combo: Optional[QComboBox] = None
-        self._mayak_direction_combo: Optional[QComboBox] = None
-        self._mayak_rpm_spin: Optional[QSpinBox] = None
-        self._btn_mayak_start: Optional[QPushButton] = None
-        self._btn_mayak_stop: Optional[QPushButton] = None
+        self._mayak_profile_combo: Optional[QComboBox] = None
+        self._mayak_duration_spin: Optional[QDoubleSpinBox] = None
+        self._head_start_spin: Optional[QSpinBox] = None
+        self._head_end_spin: Optional[QSpinBox] = None
+        self._tail_start_spin: Optional[QSpinBox] = None
+        self._tail_end_spin: Optional[QSpinBox] = None
+        self._btn_mayak_start_test: Optional[QPushButton] = None
+        self._btn_mayak_stop_test: Optional[QPushButton] = None
         self._btn_mayak_emergency: Optional[QPushButton] = None
         self._lbl_mayak_ready: Optional[QLabel] = None
         self._lbl_mayak_connected: Optional[QLabel] = None
@@ -195,57 +199,77 @@ class MainWindow(QMainWindow):
         root = QVBoxLayout(panel)
         root.setContentsMargins(0, 0, 0, 0)
 
-        control_box = QGroupBox("Mayak Control", panel)
+        control_box = QGroupBox("Управление Маяком", panel)
         control_form = QFormLayout(control_box)
 
-        self._mayak_spindle_combo = QComboBox(control_box)
-        self._mayak_spindle_combo.addItems(["sp1", "sp2"])
+        self._head_start_spin = QSpinBox(control_box)
+        self._head_start_spin.setRange(0, 6000)
+        self._head_start_spin.setSingleStep(50)
+        self._head_start_spin.setValue(300)
 
-        self._mayak_direction_combo = QComboBox(control_box)
-        self._mayak_direction_combo.addItem("Forward", 1)
-        self._mayak_direction_combo.addItem("Reverse", -1)
-        self._mayak_direction_combo.addItem("Stop", 0)
+        self._head_end_spin = QSpinBox(control_box)
+        self._head_end_spin.setRange(0, 6000)
+        self._head_end_spin.setSingleStep(50)
+        self._head_end_spin.setValue(1000)
 
-        self._mayak_rpm_spin = QSpinBox(control_box)
-        self._mayak_rpm_spin.setRange(0, 6000)
-        self._mayak_rpm_spin.setSingleStep(50)
-        self._mayak_rpm_spin.setValue(500)
+        self._tail_start_spin = QSpinBox(control_box)
+        self._tail_start_spin.setRange(0, 6000)
+        self._tail_start_spin.setSingleStep(50)
+        self._tail_start_spin.setValue(300)
 
-        control_form.addRow("Spindle", self._mayak_spindle_combo)
-        control_form.addRow("Direction", self._mayak_direction_combo)
-        control_form.addRow("RPM", self._mayak_rpm_spin)
+        self._tail_end_spin = QSpinBox(control_box)
+        self._tail_end_spin.setRange(0, 6000)
+        self._tail_end_spin.setSingleStep(50)
+        self._tail_end_spin.setValue(1000)
+
+        self._mayak_profile_combo = QComboBox(control_box)
+        self._mayak_profile_combo.addItem("Линейный", "linear")
+        self._mayak_profile_combo.addItem("Ступенька", "step")
+
+        self._mayak_duration_spin = QDoubleSpinBox(control_box)
+        self._mayak_duration_spin.setRange(0.1, 3600.0)
+        self._mayak_duration_spin.setDecimals(1)
+        self._mayak_duration_spin.setSingleStep(1.0)
+        self._mayak_duration_spin.setValue(10.0)
+
+        control_form.addRow("Головной: старт RPM", self._head_start_spin)
+        control_form.addRow("Головной: конечный RPM", self._head_end_spin)
+        control_form.addRow("Хвостовой: старт RPM", self._tail_start_spin)
+        control_form.addRow("Хвостовой: конечный RPM", self._tail_end_spin)
+        control_form.addRow("Тип изменения скорости", self._mayak_profile_combo)
+        control_form.addRow("Время теста, сек", self._mayak_duration_spin)
 
         btn_row = QHBoxLayout()
-        self._btn_mayak_start = QPushButton("Start", control_box)
-        self._btn_mayak_stop = QPushButton("Stop", control_box)
-        self._btn_mayak_emergency = QPushButton("Emergency Stop", control_box)
-        btn_row.addWidget(self._btn_mayak_start)
-        btn_row.addWidget(self._btn_mayak_stop)
+        self._btn_mayak_start_test = QPushButton("Запуск теста", control_box)
+        self._btn_mayak_stop_test = QPushButton("Остановить тест", control_box)
+        self._btn_mayak_emergency = QPushButton("Аварийный стоп", control_box)
+        btn_row.addWidget(self._btn_mayak_start_test)
+        btn_row.addWidget(self._btn_mayak_stop_test)
         btn_row.addWidget(self._btn_mayak_emergency)
         control_form.addRow(btn_row)
 
-        status_box = QGroupBox("Mayak Status", panel)
+        status_box = QGroupBox("Состояние Маяка", panel)
         status_form = QFormLayout(status_box)
         self._lbl_mayak_ready = QLabel("-", status_box)
         self._lbl_mayak_connected = QLabel("-", status_box)
         self._lbl_mayak_state = QLabel("-", status_box)
         self._lbl_mayak_error = QLabel("-", status_box)
         self._lbl_mayak_reason = QLabel("-", status_box)
-        status_form.addRow("Ready", self._lbl_mayak_ready)
-        status_form.addRow("Connected", self._lbl_mayak_connected)
-        status_form.addRow("State", self._lbl_mayak_state)
-        status_form.addRow("Error", self._lbl_mayak_error)
-        status_form.addRow("Reason", self._lbl_mayak_reason)
+        status_form.addRow("Готов", self._lbl_mayak_ready)
+        status_form.addRow("Связь", self._lbl_mayak_connected)
+        status_form.addRow("Состояние", self._lbl_mayak_state)
+        status_form.addRow("Ошибка", self._lbl_mayak_error)
+        status_form.addRow("Причина", self._lbl_mayak_reason)
 
-        telemetry_box = QGroupBox("Mayak Telemetry", panel)
+        telemetry_box = QGroupBox("Телеметрия Маяка", panel)
         telemetry_grid = QGridLayout(telemetry_box)
-        telemetry_grid.addWidget(QLabel("Spindle", telemetry_box), 0, 0)
+        telemetry_grid.addWidget(QLabel("Шпиндель", telemetry_box), 0, 0)
         telemetry_grid.addWidget(QLabel("RPM", telemetry_box), 0, 1)
-        telemetry_grid.addWidget(QLabel("Torque", telemetry_box), 0, 2)
-        telemetry_grid.addWidget(QLabel("Angle", telemetry_box), 0, 3)
+        telemetry_grid.addWidget(QLabel("Момент", telemetry_box), 0, 2)
+        telemetry_grid.addWidget(QLabel("Угол", telemetry_box), 0, 3)
 
-        for row, sp in ((1, "sp1"), (2, "sp2")):
-            telemetry_grid.addWidget(QLabel(sp, telemetry_box), row, 0)
+        for row, sp, title in ((1, "sp1", "Головной"), (2, "sp2", "Хвостовой")):
+            telemetry_grid.addWidget(QLabel(title, telemetry_box), row, 0)
             lbl_rpm = QLabel("-", telemetry_box)
             lbl_torque = QLabel("-", telemetry_box)
             lbl_angle = QLabel("-", telemetry_box)
@@ -272,14 +296,12 @@ class MainWindow(QMainWindow):
         if btn is not None and self._gen_ctl is not None:
             btn.clicked.connect(self._gen_ctl.on_generate_clicked)
 
-        if self._btn_mayak_start is not None:
-            self._btn_mayak_start.clicked.connect(self._on_mayak_start_clicked)
-        if self._btn_mayak_stop is not None:
-            self._btn_mayak_stop.clicked.connect(self._on_mayak_stop_clicked)
+        if self._btn_mayak_start_test is not None:
+            self._btn_mayak_start_test.clicked.connect(self._on_mayak_start_clicked)
+        if self._btn_mayak_stop_test is not None:
+            self._btn_mayak_stop_test.clicked.connect(self._on_mayak_stop_clicked)
         if self._btn_mayak_emergency is not None:
             self._btn_mayak_emergency.clicked.connect(self._on_mayak_emergency_clicked)
-        if self._mayak_spindle_combo is not None:
-            self._mayak_spindle_combo.currentIndexChanged.connect(self._on_mayak_spindle_changed)
 
     def _connect_bridge(self) -> None:
         try:
@@ -312,21 +334,21 @@ class MainWindow(QMainWindow):
             self._log_info("UI_MAYAK_READY", f"ready={1 if ready else 0}")
 
         if self._lbl_mayak_ready is not None:
-            self._lbl_mayak_ready.setText("YES" if ready else "NO")
+            self._lbl_mayak_ready.setText("Да" if ready else "Нет")
         if self._lbl_mayak_connected is not None:
             sp1_conn = self._format_opt_bool(getattr(e, "sp1_connected", None))
             sp2_conn = self._format_opt_bool(getattr(e, "sp2_connected", None))
-            self._lbl_mayak_connected.setText(f"sp1={sp1_conn}, sp2={sp2_conn}")
+            self._lbl_mayak_connected.setText(f"Головной={sp1_conn}, Хвостовой={sp2_conn}")
         if self._lbl_mayak_state is not None:
             sp1 = str(getattr(e, "sp1_state", "UNKNOWN"))
             sp2 = str(getattr(e, "sp2_state", "UNKNOWN"))
-            self._lbl_mayak_state.setText(f"sp1={sp1}, sp2={sp2}")
+            self._lbl_mayak_state.setText(f"Головной={sp1}, Хвостовой={sp2}")
         if self._lbl_mayak_error is not None:
             self._lbl_mayak_error.setText(str(int(getattr(e, "error_code", 0))))
         if self._lbl_mayak_reason is not None:
             self._lbl_mayak_reason.setText(str(getattr(e, "degraded_reason", "none")))
 
-        self._update_mayak_rpm_limit_from_health(e)
+        self._update_mayak_rpm_limits_from_health(e)
 
         try:
             sp1 = str(getattr(e, "sp1_state", "UNKNOWN"))
@@ -334,7 +356,7 @@ class MainWindow(QMainWindow):
             err = int(getattr(e, "error_code", 0))
             reason = str(getattr(e, "degraded_reason", "none"))
             self.statusBar().showMessage(
-                f"Mayak ready={1 if ready else 0} sp1={sp1} sp2={sp2} err={err} reason={reason}",
+                f"Маяк готов={1 if ready else 0} головной={sp1} хвостовой={sp2} err={err} reason={reason}",
                 3000,
             )
         except Exception:
@@ -354,24 +376,41 @@ class MainWindow(QMainWindow):
         labels["angle"].setText("-" if angle is None else str(int(angle)))
 
     def _on_mayak_start_clicked(self) -> None:
-        sp = self._selected_mayak_spindle()
-        direction = self._selected_mayak_direction()
-        rpm = int(self._mayak_rpm_spin.value()) if self._mayak_rpm_spin is not None else 0
+        head_start = int(self._head_start_spin.value()) if self._head_start_spin is not None else 0
+        head_end = int(self._head_end_spin.value()) if self._head_end_spin is not None else 0
+        tail_start = int(self._tail_start_spin.value()) if self._tail_start_spin is not None else 0
+        tail_end = int(self._tail_end_spin.value()) if self._tail_end_spin is not None else 0
+        profile_type = str(self._mayak_profile_combo.currentData()) if self._mayak_profile_combo is not None else "linear"
+        duration_sec = float(self._mayak_duration_spin.value()) if self._mayak_duration_spin is not None else 1.0
         try:
-            self._orch.set_speed(sp, rpm, direction)
-            self._log_info("UI_MAYAK_CMD", f"cmd=set_speed spindle={sp} direction={direction} rpm={rpm}")
+            self._orch.start_mayak_test(
+                head_start_rpm=head_start,
+                head_end_rpm=head_end,
+                tail_start_rpm=tail_start,
+                tail_end_rpm=tail_end,
+                profile_type=profile_type,
+                duration_sec=duration_sec,
+            )
+            self._log_info(
+                "UI_MAYAK_CMD",
+                (
+                    "cmd=start_test "
+                    f"profile={profile_type} duration_sec={duration_sec} "
+                    f"head_start={head_start} head_end={head_end} "
+                    f"tail_start={tail_start} tail_end={tail_end}"
+                ),
+            )
         except Exception as ex:
-            self._log_error("UI_MAYAK_CMD_FAILED", f"cmd=set_speed spindle={sp} err={type(ex).__name__}")
-            self.statusBar().showMessage(f"Mayak command failed: {type(ex).__name__}", 3000)
+            self._log_error("UI_MAYAK_CMD_FAILED", f"cmd=start_test err={type(ex).__name__}")
+            self.statusBar().showMessage(f"Ошибка запуска теста: {type(ex).__name__}", 3000)
 
     def _on_mayak_stop_clicked(self) -> None:
-        sp = self._selected_mayak_spindle()
         try:
-            self._orch.stop_spindle(sp)
-            self._log_info("UI_MAYAK_CMD", f"cmd=stop_spindle spindle={sp}")
+            self._orch.stop_mayak_test()
+            self._log_info("UI_MAYAK_CMD", "cmd=stop_test")
         except Exception as ex:
-            self._log_error("UI_MAYAK_CMD_FAILED", f"cmd=stop_spindle spindle={sp} err={type(ex).__name__}")
-            self.statusBar().showMessage(f"Mayak stop failed: {type(ex).__name__}", 3000)
+            self._log_error("UI_MAYAK_CMD_FAILED", f"cmd=stop_test err={type(ex).__name__}")
+            self.statusBar().showMessage(f"Ошибка остановки теста: {type(ex).__name__}", 3000)
 
     def _on_mayak_emergency_clicked(self) -> None:
         try:
@@ -379,11 +418,7 @@ class MainWindow(QMainWindow):
             self._log_info("UI_MAYAK_CMD", "cmd=emergency_stop")
         except Exception as ex:
             self._log_error("UI_MAYAK_CMD_FAILED", f"cmd=emergency_stop err={type(ex).__name__}")
-            self.statusBar().showMessage(f"Mayak emergency failed: {type(ex).__name__}", 3000)
-
-    def _on_mayak_spindle_changed(self) -> None:
-        if self._last_mayak_health_event is not None:
-            self._update_mayak_rpm_limit_from_health(self._last_mayak_health_event)
+            self.statusBar().showMessage(f"Ошибка аварийного стопа: {type(ex).__name__}", 3000)
 
     def _get_generate_button(self) -> Optional[QPushButton]:
         return self.findChild(QPushButton, "btn_generate_trajectory")
@@ -393,30 +428,25 @@ class MainWindow(QMainWindow):
         if btn is not None:
             btn.setEnabled(enabled)
 
-    def _selected_mayak_spindle(self) -> str:
-        if self._mayak_spindle_combo is None:
-            return "sp1"
-        txt = self._mayak_spindle_combo.currentText().strip().lower()
-        return "sp2" if txt == "sp2" else "sp1"
-
-    def _selected_mayak_direction(self) -> int:
-        if self._mayak_direction_combo is None:
-            return 1
-        data = self._mayak_direction_combo.currentData()
-        try:
-            return int(data)
-        except Exception:
-            return 1
-
-    def _update_mayak_rpm_limit_from_health(self, e: object) -> None:
-        if self._mayak_rpm_spin is None:
-            return
-        sp = self._selected_mayak_spindle()
-        max_rpm = int(getattr(e, "effective_max_rpm_sp2", 6000)) if sp == "sp2" else int(getattr(e, "effective_max_rpm_sp1", 6000))
-        max_rpm = max(1, max_rpm)
-        self._mayak_rpm_spin.setMaximum(max_rpm)
-        if self._mayak_rpm_spin.value() > max_rpm:
-            self._mayak_rpm_spin.setValue(max_rpm)
+    def _update_mayak_rpm_limits_from_health(self, e: object) -> None:
+        max_sp1 = max(1, int(getattr(e, "effective_max_rpm_sp1", 6000)))
+        max_sp2 = max(1, int(getattr(e, "effective_max_rpm_sp2", 6000)))
+        if self._head_start_spin is not None:
+            self._head_start_spin.setMaximum(max_sp1)
+            if self._head_start_spin.value() > max_sp1:
+                self._head_start_spin.setValue(max_sp1)
+        if self._head_end_spin is not None:
+            self._head_end_spin.setMaximum(max_sp1)
+            if self._head_end_spin.value() > max_sp1:
+                self._head_end_spin.setValue(max_sp1)
+        if self._tail_start_spin is not None:
+            self._tail_start_spin.setMaximum(max_sp2)
+            if self._tail_start_spin.value() > max_sp2:
+                self._tail_start_spin.setValue(max_sp2)
+        if self._tail_end_spin is not None:
+            self._tail_end_spin.setMaximum(max_sp2)
+            if self._tail_end_spin.value() > max_sp2:
+                self._tail_end_spin.setValue(max_sp2)
 
     # ---------------- logging helpers ----------------
 
@@ -433,10 +463,10 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _format_opt_bool(v: object) -> str:
         if v is True:
-            return "YES"
+            return "Да"
         if v is False:
-            return "NO"
-        return "UNKNOWN"
+            return "Нет"
+        return "Неизвестно"
 
     # ---------------- layout helper ----------------
 

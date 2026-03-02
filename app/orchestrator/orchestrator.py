@@ -584,6 +584,93 @@ class Orchestrator:
             )
             raise
 
+    def start_mayak_test(
+        self,
+        *,
+        head_start_rpm: int,
+        head_end_rpm: int,
+        tail_start_rpm: int,
+        tail_end_rpm: int,
+        profile_type: str,
+        duration_sec: float,
+    ) -> None:
+        """
+        Thin orchestrator-level command for launching a dual-spindle test program.
+        Mapping:
+        - head -> sp1
+        - tail -> sp2
+        """
+        emit_log(
+            self._bus,
+            "INFO",
+            "orchestrator",
+            "MAYAK_CMD",
+            (
+                "cmd=start_test "
+                f"profile={profile_type} duration_sec={duration_sec} "
+                f"head_start={head_start_rpm} head_end={head_end_rpm} "
+                f"tail_start={tail_start_rpm} tail_end={tail_end_rpm}"
+            ),
+        )
+
+        if float(duration_sec) <= 0:
+            emit_log(
+                self._bus,
+                "ERROR",
+                "orchestrator",
+                "SERVICE_ERROR",
+                "stage=mayak_cmd cmd=start_test err=duration_invalid",
+            )
+            raise ValueError("duration_sec must be > 0")
+
+        self._run_spindle_profile("sp1", int(head_start_rpm), int(head_end_rpm), str(profile_type), float(duration_sec))
+        self._run_spindle_profile("sp2", int(tail_start_rpm), int(tail_end_rpm), str(profile_type), float(duration_sec))
+
+        emit_log(self._bus, "INFO", "orchestrator", "MAYAK_CMD", "cmd=start_test status=ok")
+
+    def stop_mayak_test(self) -> None:
+        emit_log(self._bus, "INFO", "orchestrator", "MAYAK_CMD", "cmd=stop_test")
+        self.stop_spindle("sp1")
+        self.stop_spindle("sp2")
+        emit_log(self._bus, "INFO", "orchestrator", "MAYAK_CMD", "cmd=stop_test status=ok")
+
+    def _run_spindle_profile(
+        self,
+        spindle: str,
+        start_rpm: int,
+        end_rpm: int,
+        profile_type: str,
+        duration_sec: float,
+    ) -> None:
+        if start_rpm < 0 or end_rpm < 0:
+            raise ValueError("rpm must be >= 0")
+
+        self.set_speed(spindle, start_rpm, 1)
+
+        normalized = profile_type.strip().lower()
+        if normalized in ("linear", "линейный", "линейно"):
+            try:
+                self.apply_profile_linear(spindle, start_rpm, end_rpm, duration_sec)
+                return
+            except RuntimeError as ex:
+                if "does not support apply_profile_linear" not in str(ex):
+                    raise
+                emit_log(
+                    self._bus,
+                    "WARNING",
+                    "orchestrator",
+                    "MAYAK_CMD",
+                    f"cmd=profile_fallback spindle={spindle} profile=linear",
+                )
+                self.set_speed(spindle, end_rpm, 1)
+                return
+
+        if normalized in ("step", "ступень", "ступенчатый"):
+            self.set_speed(spindle, end_rpm, 1)
+            return
+
+        raise ValueError(f"unsupported profile_type={profile_type}")
+
     # -------------------- Service status tracking --------------------
 
     def _on_service_status_event(self, e: ServiceStatusEvent) -> None:
