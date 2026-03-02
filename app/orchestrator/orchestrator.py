@@ -81,6 +81,8 @@ class Orchestrator:
 
         # stop timeout (loaded from profile on start; default applied by orchestrator)
         self._stop_timeout_sec: int = 10
+        self._scenario_seq: int = 0
+        self._active_scenario_id: Optional[str] = None
 
         self._bus.subscribe(ServiceStatusEvent, self._on_service_status_event)
 
@@ -502,6 +504,15 @@ class Orchestrator:
         try:
             fn()
             emit_log(self._bus, "INFO", "orchestrator", "MAYAK_CMD", "cmd=emergency_stop status=ok")
+            scenario_id = self._active_scenario_id_or_none()
+            emit_log(
+                self._bus,
+                "WARNING",
+                "orchestrator",
+                "MAYAK_TEST_ABORT",
+                f"scenario_id={scenario_id} reason=emergency_stop",
+            )
+            self._clear_active_scenario()
         except Exception as ex:
             emit_log(
                 self._bus,
@@ -606,6 +617,14 @@ class Orchestrator:
             )
             raise RuntimeError("mayak_spindle does not support start_test")
 
+        scenario_id = self._begin_scenario_id()
+        emit_log(
+            self._bus,
+            "INFO",
+            "orchestrator",
+            "SCENARIO_ID",
+            f"scenario_id={scenario_id} source=mayak_test",
+        )
         try:
             fn(
                 head_start_rpm=int(head_start_rpm),
@@ -616,6 +635,17 @@ class Orchestrator:
                 duration_sec=float(duration_sec),
             )
             emit_log(self._bus, "INFO", "orchestrator", "MAYAK_CMD", "cmd=start_test status=ok")
+            emit_log(
+                self._bus,
+                "INFO",
+                "orchestrator",
+                "MAYAK_TEST_START",
+                (
+                    f"scenario_id={scenario_id} profile={str(profile_type)} duration_sec={float(duration_sec):.3f} "
+                    f"head_start={int(head_start_rpm)} head_end={int(head_end_rpm)} "
+                    f"tail_start={int(tail_start_rpm)} tail_end={int(tail_end_rpm)}"
+                ),
+            )
         except Exception as ex:
             emit_log(
                 self._bus,
@@ -624,6 +654,7 @@ class Orchestrator:
                 "SERVICE_ERROR",
                 f"stage=mayak_cmd cmd=start_test err={type(ex).__name__}",
             )
+            self._clear_scenario_if_matches(scenario_id)
             raise
 
     def stop_mayak_test(self) -> None:
@@ -642,6 +673,15 @@ class Orchestrator:
         try:
             fn()
             emit_log(self._bus, "INFO", "orchestrator", "MAYAK_CMD", "cmd=stop_test status=ok")
+            scenario_id = self._active_scenario_id_or_none()
+            emit_log(
+                self._bus,
+                "INFO",
+                "orchestrator",
+                "MAYAK_TEST_STOP",
+                f"scenario_id={scenario_id}",
+            )
+            self._clear_active_scenario()
         except Exception as ex:
             emit_log(
                 self._bus,
@@ -693,6 +733,16 @@ class Orchestrator:
                 pass
 
         emit_log(self._bus, "INFO", "orchestrator", "SERVICE_STATUS", f"service={e.service_name} status={st.value}")
+        if e.service_name == "mayak_spindle":
+            scenario_id = self._active_scenario_id_or_none()
+            if scenario_id != "none":
+                emit_log(
+                    self._bus,
+                    "INFO",
+                    "orchestrator",
+                    "SCENARIO_STATUS",
+                    f"scenario_id={scenario_id} kind=service service={e.service_name} status={st.value} orch_state={self.state.value}",
+                )
 
         if should_log_jobs_done and self.state in (OrchestratorState.PRECHECK, OrchestratorState.RUNNING, OrchestratorState.STOPPING):
             emit_log(self._bus, "INFO", "orchestrator", "ORCH_JOBS_DONE", f"pending={pending_jobs_csv or ''}")
@@ -914,7 +964,36 @@ class Orchestrator:
             self._state = st
 
         emit_log(self._bus, "INFO", "orchestrator", "ORCH_STATE_CHANGE", f"from={prev.value} to={st.value}")
+        scenario_id = self._active_scenario_id_or_none()
+        if scenario_id != "none":
+            emit_log(
+                self._bus,
+                "INFO",
+                "orchestrator",
+                "SCENARIO_STATUS",
+                f"scenario_id={scenario_id} kind=orchestrator from={prev.value} to={st.value}",
+            )
         self._publish_state(st)
+
+    def _begin_scenario_id(self) -> str:
+        with self._lock:
+            self._scenario_seq += 1
+            scenario_id = f"scn_{int(time.time() * 1000)}_{self._scenario_seq}"
+            self._active_scenario_id = scenario_id
+            return scenario_id
+
+    def _active_scenario_id_or_none(self) -> str:
+        with self._lock:
+            return self._active_scenario_id or "none"
+
+    def _clear_scenario_if_matches(self, scenario_id: str) -> None:
+        with self._lock:
+            if self._active_scenario_id == scenario_id:
+                self._active_scenario_id = None
+
+    def _clear_active_scenario(self) -> None:
+        with self._lock:
+            self._active_scenario_id = None
 
     def _publish_state(self, st: OrchestratorState) -> None:
         self._bus.publish(OrchestratorStateEvent(state=st.value))

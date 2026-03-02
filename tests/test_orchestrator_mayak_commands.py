@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from app.core.event_bus import EventBus
+from app.core.events import LogEvent
 from app.orchestrator.orchestrator import Orchestrator
 
 
@@ -134,3 +135,38 @@ def test_stop_mayak_test_stops_both_spindles() -> None:
     orch.stop_mayak_test()
 
     assert mayak.stop_test_calls == 1
+
+
+def test_mayak_timeline_logs_include_scenario_id_start_stop_abort() -> None:
+    bus = EventBus()
+    logs: list[LogEvent] = []
+    bus.subscribe(LogEvent, lambda e: logs.append(e))
+    mayak = _MayakLikeService()
+    sm = _FakeServiceManager({"mayak_spindle": mayak})
+    orch = Orchestrator(bus, sm)
+
+    orch.start_mayak_test(
+        head_start_rpm=100,
+        head_end_rpm=500,
+        tail_start_rpm=200,
+        tail_end_rpm=600,
+        profile_type="linear",
+        duration_sec=5.0,
+    )
+    orch.stop_mayak_test()
+    orch.start_mayak_test(
+        head_start_rpm=120,
+        head_end_rpm=520,
+        tail_start_rpm=220,
+        tail_end_rpm=620,
+        profile_type="linear",
+        duration_sec=6.0,
+    )
+    orch.emergency_stop()
+
+    scenario_logs = [e for e in logs if e.source == "orchestrator" and e.code in ("SCENARIO_ID", "MAYAK_TEST_START", "MAYAK_TEST_STOP", "MAYAK_TEST_ABORT")]
+    assert any(e.code == "SCENARIO_ID" for e in scenario_logs)
+    assert any(e.code == "MAYAK_TEST_START" for e in scenario_logs)
+    assert any(e.code == "MAYAK_TEST_STOP" for e in scenario_logs)
+    assert any(e.code == "MAYAK_TEST_ABORT" for e in scenario_logs)
+    assert all("scenario_id=" in e.message for e in scenario_logs)
