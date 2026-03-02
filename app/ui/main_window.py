@@ -5,6 +5,7 @@ import os
 from typing import Any, Optional, cast
 
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
@@ -60,6 +61,8 @@ class MainWindow(QMainWindow):
         self.current_config: dict[str, Any] = copy.deepcopy(self._initial_config)
         self._last_mayak_ready: Optional[bool] = None
         self._last_mayak_health_event: Optional[object] = None
+        self._trajectory_duration_sec: Optional[float] = None
+        self._last_sent_mayak_duration_sec: Optional[float] = None
         self._ui_debug: bool = str(os.getenv("SURPRIZE_UI_DEBUG", "0")).strip().lower() in (
             "1",
             "true",
@@ -88,6 +91,9 @@ class MainWindow(QMainWindow):
         # Mayak panel refs
         self._mayak_profile_combo: Optional[QComboBox] = None
         self._mayak_duration_spin: Optional[QDoubleSpinBox] = None
+        self._mayak_duration_override: Optional[QCheckBox] = None
+        self._lbl_mayak_duration_calc: Optional[QLabel] = None
+        self._lbl_mayak_duration_sent: Optional[QLabel] = None
         self._head_start_spin: Optional[QSpinBox] = None
         self._head_end_spin: Optional[QSpinBox] = None
         self._tail_start_spin: Optional[QSpinBox] = None
@@ -104,7 +110,12 @@ class MainWindow(QMainWindow):
         self._init_mayak_panel()
 
         self._traj_loader = TrajectoryCsvLoader()
-        self._traj_ctl = TrajectoryVisController(bridge=self._bridge, view=self._traj_view, loader=self._traj_loader)
+        self._traj_ctl = TrajectoryVisController(
+            bridge=self._bridge,
+            view=self._traj_view,
+            loader=self._traj_loader,
+            on_duration_resolved=self._on_trajectory_duration_resolved,
+        )
 
         if self._editor is not None:
             self._gen_ctl = GenerateController(
@@ -238,13 +249,21 @@ class MainWindow(QMainWindow):
         self._mayak_duration_spin.setDecimals(1)
         self._mayak_duration_spin.setSingleStep(1.0)
         self._mayak_duration_spin.setValue(10.0)
+        self._mayak_duration_spin.setEnabled(False)
+        self._mayak_duration_override = QCheckBox("Переопределить длительность вручную", control_box)
+        self._mayak_duration_override.setChecked(False)
+        self._lbl_mayak_duration_calc = QLabel("-", control_box)
+        self._lbl_mayak_duration_sent = QLabel("-", control_box)
 
         control_form.addRow("Головной: старт RPM", self._head_start_spin)
         control_form.addRow("Головной: конечный RPM", self._head_end_spin)
         control_form.addRow("Хвостовой: старт RPM", self._tail_start_spin)
         control_form.addRow("Хвостовой: конечный RPM", self._tail_end_spin)
         control_form.addRow("Тип изменения скорости", self._mayak_profile_combo)
-        control_form.addRow("Время теста, сек", self._mayak_duration_spin)
+        control_form.addRow("Длительность по траектории, сек", self._lbl_mayak_duration_calc)
+        control_form.addRow("", self._mayak_duration_override)
+        control_form.addRow("Override длительности, сек", self._mayak_duration_spin)
+        control_form.addRow("Отправлено в Маяк, сек", self._lbl_mayak_duration_sent)
 
         btn_row = QHBoxLayout()
         self._btn_mayak_start_test = QPushButton("Запуск теста", control_box)
@@ -301,6 +320,7 @@ class MainWindow(QMainWindow):
         root.addStretch(1)
 
         vl.addWidget(panel)
+        self._refresh_duration_labels()
 
     # ---------------- wiring ----------------
 
@@ -315,6 +335,8 @@ class MainWindow(QMainWindow):
             self._btn_mayak_stop_test.clicked.connect(self._on_mayak_stop_clicked)
         if self._btn_mayak_emergency is not None:
             self._btn_mayak_emergency.clicked.connect(self._on_mayak_emergency_clicked)
+        if self._mayak_duration_override is not None:
+            self._mayak_duration_override.toggled.connect(self._on_mayak_duration_override_toggled)
 
     def _connect_bridge(self) -> None:
         try:
@@ -396,7 +418,7 @@ class MainWindow(QMainWindow):
         tail_start = int(self._tail_start_spin.value()) if self._tail_start_spin is not None else 0
         tail_end = int(self._tail_end_spin.value()) if self._tail_end_spin is not None else 0
         profile_type = str(self._mayak_profile_combo.currentData()) if self._mayak_profile_combo is not None else "linear"
-        duration_sec = float(self._mayak_duration_spin.value()) if self._mayak_duration_spin is not None else 1.0
+        duration_sec = self._resolve_duration_for_mayak()
         try:
             self._orch.start_mayak_test(
                 head_start_rpm=head_start,
@@ -406,6 +428,8 @@ class MainWindow(QMainWindow):
                 profile_type=profile_type,
                 duration_sec=duration_sec,
             )
+            self._last_sent_mayak_duration_sec = float(duration_sec)
+            self._refresh_duration_labels()
             self._log_info(
                 "UI_MAYAK_CMD",
                 (
@@ -415,6 +439,7 @@ class MainWindow(QMainWindow):
                     f"tail_start={tail_start} tail_end={tail_end}"
                 ),
             )
+            self.statusBar().showMessage(f"Тест Маяка запущен: duration_sec={duration_sec:.1f}", 3000)
         except Exception as ex:
             self._log_error("UI_MAYAK_CMD_FAILED", f"cmd=start_test err={type(ex).__name__}")
             self.statusBar().showMessage(f"Ошибка запуска теста: {type(ex).__name__}", 3000)
@@ -434,6 +459,41 @@ class MainWindow(QMainWindow):
         except Exception as ex:
             self._log_error("UI_MAYAK_CMD_FAILED", f"cmd=emergency_stop err={type(ex).__name__}")
             self.statusBar().showMessage(f"Ошибка аварийного стопа: {type(ex).__name__}", 3000)
+
+    def _on_trajectory_duration_resolved(self, duration_sec: Optional[float]) -> None:
+        self._trajectory_duration_sec = float(duration_sec) if isinstance(duration_sec, (int, float)) else None
+        self._refresh_duration_labels()
+        if self._trajectory_duration_sec is not None:
+            self._log_info("UI_TRAJ_DURATION", f"duration_sec={self._trajectory_duration_sec:.3f}")
+
+    def _on_mayak_duration_override_toggled(self, checked: bool) -> None:
+        if self._mayak_duration_spin is not None:
+            self._mayak_duration_spin.setEnabled(bool(checked))
+        self._refresh_duration_labels()
+
+    def _resolve_duration_for_mayak(self) -> float:
+        override = self._mayak_duration_override is not None and self._mayak_duration_override.isChecked()
+        if override and self._mayak_duration_spin is not None:
+            return float(self._mayak_duration_spin.value())
+        if self._trajectory_duration_sec is not None and self._trajectory_duration_sec > 0:
+            return float(self._trajectory_duration_sec)
+        if self._mayak_duration_spin is not None:
+            fallback = float(self._mayak_duration_spin.value())
+            self._log_info("UI_MAYAK_DURATION_FALLBACK", f"reason=no_trajectory_duration fallback_sec={fallback:.3f}")
+            return fallback
+        return 1.0
+
+    def _refresh_duration_labels(self) -> None:
+        if self._lbl_mayak_duration_calc is not None:
+            if self._trajectory_duration_sec is None:
+                self._lbl_mayak_duration_calc.setText("Нет данных")
+            else:
+                self._lbl_mayak_duration_calc.setText(f"{self._trajectory_duration_sec:.1f}")
+        if self._lbl_mayak_duration_sent is not None:
+            if self._last_sent_mayak_duration_sec is None:
+                self._lbl_mayak_duration_sent.setText("Еще не отправлялось")
+            else:
+                self._lbl_mayak_duration_sent.setText(f"{self._last_sent_mayak_duration_sec:.1f}")
 
     def _get_generate_button(self) -> Optional[QPushButton]:
         return self.findChild(QPushButton, "btn_generate_trajectory")

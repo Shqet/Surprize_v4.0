@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 from app.core.logging_setup import emit_log
 from app.ui.trajectory.csv_loader import TrajectoryCsvLoader
@@ -16,10 +16,17 @@ class TrajectoryVisController:
       - logs: UI_VIS_LOAD_REQUEST/OK/FAIL
     """
 
-    def __init__(self, bridge, view: Trajectory3DView, loader: TrajectoryCsvLoader) -> None:
+    def __init__(
+        self,
+        bridge,
+        view: Trajectory3DView,
+        loader: TrajectoryCsvLoader,
+        on_duration_resolved: Optional[Callable[[Optional[float]], None]] = None,
+    ) -> None:
         self._bridge = bridge
         self._view = view
         self._loader = loader
+        self._on_duration_resolved = on_duration_resolved
 
         self.last_run_dir: Optional[str] = None
         self._run_seq: int = 0
@@ -107,7 +114,9 @@ class TrajectoryVisController:
         if seq != self._run_seq:
             return
 
-        points = points_obj  # list[tuple[float,float,float]]
+        payload = points_obj if isinstance(points_obj, dict) else {}
+        points = payload.get("points", points_obj)  # list[tuple[float,float,float]]
+        duration_sec = payload.get("duration_sec") if isinstance(payload, dict) else None
         bus = getattr(self._bridge, "_bus", None)
 
         if bus is not None:
@@ -121,6 +130,12 @@ class TrajectoryVisController:
 
         # render
         self._view.set_points(points)
+        if self._on_duration_resolved is not None:
+            try:
+                resolved = float(duration_sec) if isinstance(duration_sec, (int, float)) else None
+                self._on_duration_resolved(resolved)
+            except Exception:
+                pass
 
         if bus is not None:
             emit_log(
