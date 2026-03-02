@@ -55,6 +55,46 @@ Contract constraints:
 - `watchdog.max_packet_age_sec` (required for packet freshness control)
 - `metrics.log_period_sec`
 
+### D-map v1 (minimum, draft)
+
+All D-cell addresses are provided only via `services.mayak_spindle.d_map`.
+No hardcoded D-addresses in UI/Orchestrator/Service logic.
+
+Required `read` signals:
+- current torque:
+  - `SP1_ActualTorque`
+  - `SP2_ActualTorque`
+- current speed:
+  - `SP1_ActualSpeed`
+  - `SP2_ActualSpeed`
+- head spindle angle:
+  - `SP1_Angle`
+- state/error:
+  - `SP1_StatusWord`
+  - `SP2_StatusWord`
+  - `Error_Code`
+
+Required `write` signals:
+- start command:
+  - `Test_Start` (pulse/level semantics defined by Mayak side)
+- limits:
+  - `Limit_MaxRpm_SP1`
+  - `Limit_MaxRpm_SP2`
+  - `Limit_MaxTorque`
+- test parameters:
+  - `Test_ProfileType`
+  - `Test_Head_StartRpm`
+  - `Test_Head_EndRpm`
+  - `Test_Tail_StartRpm`
+  - `Test_Tail_EndRpm`
+  - `Test_DurationSec`
+
+Compatibility note:
+- Existing runtime keys (`SP*_ControlWord`, `SP*_TargetSpeed`, `Global_Enable`, etc.)
+  remain valid and are used in current implementation.
+- New test-program keys above are accepted as v1 contract target and may be stubbed
+  until real Mayak mapping is finalized.
+
 ### Effective limit model
 - Effective limits are computed as `min(hard, operator)` for each dimension.
 - Operator limits are always editable (inside hard bounds).

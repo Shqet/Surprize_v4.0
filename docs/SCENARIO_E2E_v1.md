@@ -41,6 +41,7 @@ UI передаёт параметры теста в Orchestrator, Orchestrator 
 - алгоритм изменения скорости выполняется на стороне Маяка;
 - UI/Orchestrator только задают параметры и командуют старт/стоп;
 - обратная связь в UI только через события (`MayakHealthEvent`, `MayakSpindleTelemetryEvent`, `ServiceStatusEvent`).
+- все D-ячейки задаются только через `services.mayak_spindle.d_map` (без хардкода адресов в коде).
 
 ---
 
