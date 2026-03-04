@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -170,3 +171,44 @@ def test_mayak_timeline_logs_include_scenario_id_start_stop_abort() -> None:
     assert any(e.code == "MAYAK_TEST_STOP" for e in scenario_logs)
     assert any(e.code == "MAYAK_TEST_ABORT" for e in scenario_logs)
     assert all("scenario_id=" in e.message for e in scenario_logs)
+
+
+def test_prepare_then_start_uses_prepared_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = EventBus()
+    mayak = _MayakLikeService()
+    sm = _FakeServiceManager({"mayak_spindle": mayak})
+    orch = Orchestrator(bus, sm)
+
+    monkeypatch.setattr(
+        orch,
+        "_find_latest_trajectory_artifact",
+        lambda: {"run_dir": "R", "trajectory_csv": "T", "diagnostics_csv": "D"},
+    )
+    monkeypatch.setattr(
+        orch,
+        "_write_scenario_manifest",
+        lambda prepared: Path("outputs/scenarios") / str(prepared.get("scenario_id", "x")) / "scenario_manifest.json",
+    )
+
+    sid = orch.prepare_mayak_test(
+        head_start_rpm=111,
+        head_end_rpm=511,
+        tail_start_rpm=222,
+        tail_end_rpm=622,
+        profile_type="linear",
+        duration_sec=7.0,
+    )
+    assert sid.startswith("scn_")
+
+    orch.start_prepared_mayak_test()
+    assert mayak.start_test_calls == [(111, 511, 222, 622, "linear", 7.0)]
+
+
+def test_start_prepared_requires_prepare_first() -> None:
+    bus = EventBus()
+    mayak = _MayakLikeService()
+    sm = _FakeServiceManager({"mayak_spindle": mayak})
+    orch = Orchestrator(bus, sm)
+
+    with pytest.raises(RuntimeError):
+        orch.start_prepared_mayak_test()

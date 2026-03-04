@@ -80,7 +80,10 @@ class GenerateController:
 
         emit_log(bus, level="INFO", source="ui", code="UI_RUN_REQUESTED", message=f"service=ballistics_model bytes={len(json_str.encode('utf-8'))}")
 
-        overrides = {"services": {"ballistics_model": {"config_json": cfg, "make_plots": False}}}
+        overrides = {
+            "orchestrator": {"require_mayak_ready_for_jobs": False},
+            "services": {"ballistics_model": {"config_json": cfg, "make_plots": False}},
+        }
 
         self._bm_running = True
         self._set_generate_enabled(False)

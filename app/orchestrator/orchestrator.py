@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 from app.core.event_bus import EventBus
@@ -83,6 +85,7 @@ class Orchestrator:
         self._stop_timeout_sec: int = 10
         self._scenario_seq: int = 0
         self._active_scenario_id: Optional[str] = None
+        self._prepared_scenario: Optional[dict[str, Any]] = None
 
         self._bus.subscribe(ServiceStatusEvent, self._on_service_status_event)
 
@@ -109,64 +112,31 @@ class Orchestrator:
         self._set_state(OrchestratorState.PRECHECK)
 
         try:
-            profile_cfg = load_profile(profile_name)
+            profile_cfg = self._load_profile_with_overrides(profile_name, overrides)
         except Exception as ex:
-            emit_log(self._bus, "ERROR", "orchestrator", "SERVICE_ERROR", f"stage=load_profile err={type(ex).__name__}")
+            msg = str(ex)
+            if msg == "validate_overrides":
+                emit_log(self._bus, "ERROR", "orchestrator", "SERVICE_ERROR", "stage=validate_overrides err=TypeError")
+            elif msg == "apply_overrides":
+                emit_log(self._bus, "ERROR", "orchestrator", "SERVICE_ERROR", "stage=apply_overrides err=TypeError")
+            elif msg.startswith("cfg_check "):
+                emit_log(
+                    self._bus,
+                    "ERROR",
+                    "orchestrator",
+                    "SERVICE_ERROR",
+                    f"stage=cfg_check err={msg.split(' ', 1)[1]}",
+                )
+            else:
+                emit_log(
+                    self._bus,
+                    "ERROR",
+                    "orchestrator",
+                    "SERVICE_ERROR",
+                    f"stage=load_profile err={type(ex).__name__}",
+                )
             self._set_state(OrchestratorState.ERROR)
             return
-
-        if overrides is not None:
-            if not isinstance(overrides, dict):
-                emit_log(self._bus, "ERROR", "orchestrator", "SERVICE_ERROR", "stage=validate_overrides err=TypeError")
-                self._set_state(OrchestratorState.ERROR)
-                return
-
-            # Apply overrides in-memory (no disk writes)
-            try:
-                if isinstance(profile_cfg, dict) and isinstance(profile_cfg.get(profile_name), dict):
-                    deep_merge(profile_cfg[profile_name], overrides)
-                elif isinstance(profile_cfg, dict):
-                    deep_merge(profile_cfg, overrides)
-                else:
-                    raise TypeError("profile_cfg must be dict")
-            except Exception as ex:
-                emit_log(
-                    self._bus,
-                    "ERROR",
-                    "orchestrator",
-                    "SERVICE_ERROR",
-                    f"stage=apply_overrides err={type(ex).__name__}",
-                )
-                self._set_state(OrchestratorState.ERROR)
-                return
-
-            emit_log(
-                self._bus,
-                "INFO",
-                "orchestrator",
-                "ORCH_PROFILE_OVERRIDES_APPLIED",
-                f"keys={count_leaf_values(overrides)}",
-            )
-
-            # Fail-fast config sanity check (minimal)
-            root = profile_cfg.get(profile_name) if isinstance(profile_cfg, dict) else None
-            root = root if isinstance(root, dict) else (profile_cfg if isinstance(profile_cfg, dict) else None)
-            services = root.get("services") if isinstance(root, dict) else None
-            if not isinstance(services, dict):
-                emit_log(self._bus, "ERROR", "orchestrator", "SERVICE_ERROR", "stage=cfg_check err=services_missing")
-                self._set_state(OrchestratorState.ERROR)
-                return
-            bm = services.get("ballistics_model")
-            if bm is not None and not isinstance(bm, dict):
-                emit_log(
-                    self._bus,
-                    "ERROR",
-                    "orchestrator",
-                    "SERVICE_ERROR",
-                    "stage=cfg_check err=ballistics_model_not_dict",
-                )
-                self._set_state(OrchestratorState.ERROR)
-                return
 
         self._apply_stop_timeout_from_profile(profile_cfg, profile_name)
 
@@ -213,10 +183,13 @@ class Orchestrator:
 
         emit_log(self._bus, "INFO", "orchestrator", "ORCH_DAEMONS_START", f"count={daemons_started}")
 
-        # v5 policy: mayak spindle daemon must be ready before starting jobs.
-        if not self._check_mayak_readiness_before_jobs(services_map, profile_cfg, profile_name):
-            self._set_state(OrchestratorState.ERROR)
-            return
+        # v5 policy: mayak spindle daemon readiness may be required before starting jobs.
+        if self._should_require_mayak_ready(profile_cfg, profile_name):
+            if not self._check_mayak_readiness_before_jobs(services_map, profile_cfg, profile_name):
+                self._set_state(OrchestratorState.ERROR)
+                return
+        else:
+            emit_log(self._bus, "INFO", "orchestrator", "ORCH_PRECHECK_SKIPPED", "service=mayak_spindle required=0")
 
         # New run-cycle job set
         with self._lock:
@@ -246,6 +219,12 @@ class Orchestrator:
                 return
 
         emit_log(self._bus, "INFO", "orchestrator", "ORCH_JOBS_START", f"count={jobs_started}")
+
+        # No jobs in run-cycle: PRECHECK completes immediately.
+        if not jobs:
+            emit_log(self._bus, "INFO", "orchestrator", "ORCH_RUN_FINISHED", "to=IDLE reason=no_jobs")
+            self._set_state(OrchestratorState.IDLE)
+            return
 
         self._set_state(OrchestratorState.RUNNING)
 
@@ -578,11 +557,29 @@ class Orchestrator:
         duration_sec: float,
     ) -> None:
         """
-        Thin orchestrator-level command for launching a dual-spindle test program.
-        Mapping:
-        - head -> sp1
-        - tail -> sp2
+        Backward-compatible entrypoint.
+        New flow: prepare scenario snapshot first, then start from prepared snapshot.
         """
+        self.prepare_mayak_test(
+            head_start_rpm=head_start_rpm,
+            head_end_rpm=head_end_rpm,
+            tail_start_rpm=tail_start_rpm,
+            tail_end_rpm=tail_end_rpm,
+            profile_type=profile_type,
+            duration_sec=duration_sec,
+        )
+        self.start_prepared_mayak_test()
+
+    def prepare_mayak_test(
+        self,
+        *,
+        head_start_rpm: int,
+        head_end_rpm: int,
+        tail_start_rpm: int,
+        tail_end_rpm: int,
+        profile_type: str,
+        duration_sec: float,
+    ) -> str:
         emit_log(
             self._bus,
             "INFO",
@@ -605,6 +602,8 @@ class Orchestrator:
                 "stage=mayak_cmd cmd=start_test err=duration_invalid",
             )
             raise ValueError("duration_sec must be > 0")
+
+        # Validate command support at prepare-time (fail fast).
         svc = self._resolve_mayak_service()
         fn = getattr(svc, "start_test", None)
         if not callable(fn):
@@ -617,7 +616,29 @@ class Orchestrator:
             )
             raise RuntimeError("mayak_spindle does not support start_test")
 
-        scenario_id = self._begin_scenario_id()
+        scenario_id = self._next_scenario_id()
+        trajectory = self._find_latest_trajectory_artifact()
+        prepared = {
+            "scenario_id": scenario_id,
+            "prepared_ts": time.time(),
+            "source": "mayak_test",
+            "trajectory": trajectory,
+            "services_snapshot": self._snapshot_service_sections("default", ("mayak_spindle", "gps_sdr_sim")),
+            "mayak": {
+                "head_start_rpm": int(head_start_rpm),
+                "head_end_rpm": int(head_end_rpm),
+                "tail_start_rpm": int(tail_start_rpm),
+                "tail_end_rpm": int(tail_end_rpm),
+                "profile_type": str(profile_type),
+                "duration_sec": float(duration_sec),
+            },
+        }
+
+        manifest_path = self._write_scenario_manifest(prepared)
+        prepared["manifest_path"] = str(manifest_path)
+        with self._lock:
+            self._prepared_scenario = dict(prepared)
+
         emit_log(
             self._bus,
             "INFO",
@@ -625,27 +646,91 @@ class Orchestrator:
             "SCENARIO_ID",
             f"scenario_id={scenario_id} source=mayak_test",
         )
+        if trajectory is None:
+            emit_log(
+                self._bus,
+                "WARNING",
+                "orchestrator",
+                "SERVICE_ERROR",
+                f"stage=prepare_scenario scenario_id={scenario_id} warn=trajectory_not_found",
+            )
+        emit_log(
+            self._bus,
+            "INFO",
+            "orchestrator",
+            "MAYAK_TEST_PREPARED",
+            f"scenario_id={scenario_id} manifest={manifest_path.as_posix()}",
+        )
+        return scenario_id
+
+    def start_prepared_mayak_test(self) -> None:
+        with self._lock:
+            prepared = dict(self._prepared_scenario) if self._prepared_scenario is not None else None
+
+        if prepared is None:
+            emit_log(
+                self._bus,
+                "ERROR",
+                "orchestrator",
+                "SERVICE_ERROR",
+                "stage=mayak_cmd cmd=start_prepared err=not_prepared",
+            )
+            raise RuntimeError("scenario is not prepared")
+
+        scenario_id = str(prepared.get("scenario_id", ""))
+        mayak = prepared.get("mayak")
+        if not isinstance(mayak, dict):
+            emit_log(
+                self._bus,
+                "ERROR",
+                "orchestrator",
+                "SERVICE_ERROR",
+                f"stage=mayak_cmd cmd=start_prepared scenario_id={scenario_id} err=invalid_snapshot",
+            )
+            raise RuntimeError("prepared scenario is invalid")
+
+        svc = self._resolve_mayak_service()
+        fn = getattr(svc, "start_test", None)
+        if not callable(fn):
+            emit_log(
+                self._bus,
+                "ERROR",
+                "orchestrator",
+                "SERVICE_ERROR",
+                "stage=mayak_cmd cmd=start_test err=unsupported_method",
+            )
+            raise RuntimeError("mayak_spindle does not support start_test")
+
+        with self._lock:
+            self._active_scenario_id = scenario_id
+
         try:
             fn(
-                head_start_rpm=int(head_start_rpm),
-                head_end_rpm=int(head_end_rpm),
-                tail_start_rpm=int(tail_start_rpm),
-                tail_end_rpm=int(tail_end_rpm),
-                profile_type=str(profile_type),
-                duration_sec=float(duration_sec),
+                head_start_rpm=int(mayak.get("head_start_rpm", 0)),
+                head_end_rpm=int(mayak.get("head_end_rpm", 0)),
+                tail_start_rpm=int(mayak.get("tail_start_rpm", 0)),
+                tail_end_rpm=int(mayak.get("tail_end_rpm", 0)),
+                profile_type=str(mayak.get("profile_type", "linear")),
+                duration_sec=float(mayak.get("duration_sec", 0.0)),
             )
             emit_log(self._bus, "INFO", "orchestrator", "MAYAK_CMD", "cmd=start_test status=ok")
+            trajectory = prepared.get("trajectory")
+            traj_path = trajectory.get("trajectory_csv") if isinstance(trajectory, dict) else None
             emit_log(
                 self._bus,
                 "INFO",
                 "orchestrator",
                 "MAYAK_TEST_START",
                 (
-                    f"scenario_id={scenario_id} profile={str(profile_type)} duration_sec={float(duration_sec):.3f} "
-                    f"head_start={int(head_start_rpm)} head_end={int(head_end_rpm)} "
-                    f"tail_start={int(tail_start_rpm)} tail_end={int(tail_end_rpm)}"
+                    f"scenario_id={scenario_id} profile={str(mayak.get('profile_type', 'linear'))} "
+                    f"duration_sec={float(mayak.get('duration_sec', 0.0)):.3f} "
+                    f"head_start={int(mayak.get('head_start_rpm', 0))} head_end={int(mayak.get('head_end_rpm', 0))} "
+                    f"tail_start={int(mayak.get('tail_start_rpm', 0))} tail_end={int(mayak.get('tail_end_rpm', 0))} "
+                    f"trajectory={traj_path or 'none'}"
                 ),
             )
+            with self._lock:
+                self._prepared_scenario = None
         except Exception as ex:
             emit_log(
                 self._bus,
@@ -821,29 +906,30 @@ class Orchestrator:
         """
         profile_cfg = load_profile(profile_name)
 
-        if overrides is None:
-            return profile_cfg
+        if overrides is not None:
+            if not isinstance(overrides, dict):
+                raise TypeError("validate_overrides")
 
-        if not isinstance(overrides, dict):
-            raise TypeError("overrides must be dict")
+            # profile_cfg in your project is usually: {profile_name: {...}}
+            try:
+                if isinstance(profile_cfg, dict) and isinstance(profile_cfg.get(profile_name), dict):
+                    deep_merge(profile_cfg[profile_name], overrides)
+                elif isinstance(profile_cfg, dict):
+                    deep_merge(profile_cfg, overrides)
+                else:
+                    raise TypeError("profile_cfg must be dict")
+            except Exception as ex:
+                raise TypeError("apply_overrides") from ex
 
-        # profile_cfg in your project is usually: {profile_name: {...}}
-        if isinstance(profile_cfg, dict) and isinstance(profile_cfg.get(profile_name), dict):
-            deep_merge(profile_cfg[profile_name], overrides)
-        elif isinstance(profile_cfg, dict):
-            deep_merge(profile_cfg, overrides)
-        else:
-            raise TypeError("profile_cfg must be dict")
+            emit_log(
+                self._bus,
+                "INFO",
+                "orchestrator",
+                "ORCH_PROFILE_OVERRIDES_APPLIED",
+                f"keys={count_leaf_values(overrides)}",
+            )
 
-        emit_log(
-            self._bus,
-            "INFO",
-            "orchestrator",
-            "ORCH_PROFILE_OVERRIDES_APPLIED",
-            f"keys={count_leaf_values(overrides)}",
-        )
-
-        # Minimal cfg-check (keep it simple but fail fast)
+        # Minimal cfg-check (keep it simple but fail fast).
         root = None
         if isinstance(profile_cfg, dict) and isinstance(profile_cfg.get(profile_name), dict):
             root = profile_cfg[profile_name]
@@ -853,6 +939,13 @@ class Orchestrator:
         services = root.get("services") if isinstance(root, dict) else None
         if not isinstance(services, dict):
             raise ValueError("cfg_check services_missing")
+
+        bm = services.get("ballistics_model")
+        if bm is not None and not isinstance(bm, dict):
+            raise ValueError("cfg_check ballistics_model_not_dict")
+
+        if not self._validate_roles(profile_cfg, profile_name):
+            raise ValueError("cfg_check service_roles_invalid")
 
         return profile_cfg
 
@@ -890,6 +983,42 @@ class Orchestrator:
                 jobs.append(svc_name)
 
         return jobs, daemons
+
+    def _validate_roles(self, profile_cfg: dict, profile_name: str) -> bool:
+        root = profile_cfg.get(profile_name) if isinstance(profile_cfg, dict) else None
+        root = root if isinstance(root, dict) else (profile_cfg if isinstance(profile_cfg, dict) else None)
+        services = root.get("services") if isinstance(root, dict) else None
+        if not isinstance(services, dict):
+            emit_log(self._bus, "ERROR", "orchestrator", "SERVICE_ERROR", "stage=cfg_check err=services_missing")
+            return False
+
+        for svc_name, svc_cfg in services.items():
+            if svc_cfg is None:
+                continue
+            if not isinstance(svc_cfg, dict):
+                emit_log(
+                    self._bus,
+                    "ERROR",
+                    "orchestrator",
+                    "SERVICE_ERROR",
+                    f"stage=cfg_check err=service_not_mapping service={svc_name}",
+                )
+                return False
+
+            role = svc_cfg.get("role", "job")
+            if role is None:
+                role = "job"
+            if not isinstance(role, str) or role not in ("job", "daemon"):
+                emit_log(
+                    self._bus,
+                    "ERROR",
+                    "orchestrator",
+                    "SERVICE_ERROR",
+                    f"stage=cfg_check err=service_role_invalid service={svc_name} role={role}",
+                )
+                return False
+
+        return True
 
     def _is_service_running(self, service_name: str) -> bool:
         with self._lock:
@@ -954,6 +1083,13 @@ class Orchestrator:
         )
         return False
 
+    def _should_require_mayak_ready(self, profile_cfg: dict, profile_name: str) -> bool:
+        root = profile_cfg.get(profile_name) if isinstance(profile_cfg, dict) else None
+        root = root if isinstance(root, dict) else (profile_cfg if isinstance(profile_cfg, dict) else {})
+        orch = root.get("orchestrator", {}) if isinstance(root, dict) else {}
+        flag = orch.get("require_mayak_ready_for_jobs", True) if isinstance(orch, dict) else True
+        return bool(flag)
+
     # -------------------- internals --------------------
 
     def _set_state(self, st: OrchestratorState) -> None:
@@ -975,12 +1111,79 @@ class Orchestrator:
             )
         self._publish_state(st)
 
-    def _begin_scenario_id(self) -> str:
+    def _next_scenario_id(self) -> str:
         with self._lock:
             self._scenario_seq += 1
-            scenario_id = f"scn_{int(time.time() * 1000)}_{self._scenario_seq}"
+            return f"scn_{int(time.time() * 1000)}_{self._scenario_seq}"
+
+    def _begin_scenario_id(self) -> str:
+        scenario_id = self._next_scenario_id()
+        with self._lock:
             self._active_scenario_id = scenario_id
             return scenario_id
+
+    def _find_latest_trajectory_artifact(self) -> Optional[dict[str, str]]:
+        """
+        Best-effort lookup of the latest generated ballistics trajectory.
+        """
+        root = Path("outputs") / "ballistics"
+        if not root.exists():
+            return None
+
+        latest_csv: Optional[Path] = None
+        latest_mtime: float = -1.0
+        for csv_path in root.glob("*/trajectory.csv"):
+            try:
+                mtime = float(csv_path.stat().st_mtime)
+            except Exception:
+                continue
+            if mtime > latest_mtime:
+                latest_mtime = mtime
+                latest_csv = csv_path
+
+        if latest_csv is None:
+            return None
+
+        run_dir = latest_csv.parent
+        diagnostics = run_dir / "diagnostics.csv"
+        return {
+            "run_dir": str(run_dir.resolve()),
+            "trajectory_csv": str(latest_csv.resolve()),
+            "diagnostics_csv": str(diagnostics.resolve()) if diagnostics.exists() else "",
+        }
+
+    def _write_scenario_manifest(self, prepared: dict[str, Any]) -> Path:
+        scenario_id = str(prepared.get("scenario_id", "scn_unknown"))
+        out_dir = (Path("outputs") / "scenarios" / scenario_id).resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = out_dir / "scenario_manifest.json"
+        manifest_path.write_text(json.dumps(prepared, ensure_ascii=False, indent=2), encoding="utf-8")
+        return manifest_path
+
+    def _snapshot_service_sections(self, profile_name: str, service_names: tuple[str, ...]) -> dict[str, Any]:
+        """
+        Best-effort immutable snapshot of selected profile service sections.
+        """
+        try:
+            profile_cfg = load_profile(profile_name)
+        except Exception:
+            return {}
+
+        root = profile_cfg.get(profile_name) if isinstance(profile_cfg, dict) else None
+        root = root if isinstance(root, dict) else (profile_cfg if isinstance(profile_cfg, dict) else None)
+        services = root.get("services") if isinstance(root, dict) else None
+        if not isinstance(services, dict):
+            return {}
+
+        out: dict[str, Any] = {}
+        for name in service_names:
+            sec = services.get(name)
+            if isinstance(sec, dict):
+                try:
+                    out[name] = json.loads(json.dumps(sec, ensure_ascii=False))
+                except Exception:
+                    out[name] = dict(sec)
+        return out
 
     def _active_scenario_id_or_none(self) -> str:
         with self._lock:
