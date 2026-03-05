@@ -22,11 +22,13 @@ class TrajectoryVisController:
         view: Trajectory3DView,
         loader: TrajectoryCsvLoader,
         on_duration_resolved: Optional[Callable[[Optional[float]], None]] = None,
+        on_points_resolved: Optional[Callable[[list[tuple[float, float, float]]], None]] = None,
     ) -> None:
         self._bridge = bridge
         self._view = view
         self._loader = loader
         self._on_duration_resolved = on_duration_resolved
+        self._on_points_resolved = on_points_resolved
 
         self.last_run_dir: Optional[str] = None
         self._run_seq: int = 0
@@ -117,6 +119,7 @@ class TrajectoryVisController:
         payload = points_obj if isinstance(points_obj, dict) else {}
         points = payload.get("points", points_obj)  # list[tuple[float,float,float]]
         duration_sec = payload.get("duration_sec") if isinstance(payload, dict) else None
+        points_list = list(points) if isinstance(points, list) else []
         bus = getattr(self._bridge, "_bus", None)
 
         if bus is not None:
@@ -125,15 +128,20 @@ class TrajectoryVisController:
                 level="INFO",
                 source="ui",
                 code="UI_VIS_LOAD_OK",
-                message=f"points={len(points)}",
+                message=f"points={len(points_list)}",
             )
 
         # render
-        self._view.set_points(points)
+        self._view.set_points(points_list)
         if self._on_duration_resolved is not None:
             try:
                 resolved = float(duration_sec) if isinstance(duration_sec, (int, float)) else None
                 self._on_duration_resolved(resolved)
+            except Exception:
+                pass
+        if self._on_points_resolved is not None:
+            try:
+                self._on_points_resolved(points_list)
             except Exception:
                 pass
 
@@ -143,7 +151,7 @@ class TrajectoryVisController:
                 level="INFO",
                 source="ui",
                 code="UI_VIS_RENDER_OK",
-                message=f"points={len(points)}",
+                message=f"points={len(points_list)}",
             )
 
     def _on_loaded_fail(self, seq: int, error: str) -> None:

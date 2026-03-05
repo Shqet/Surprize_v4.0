@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
 from app.core.logging_setup import emit_log
 from app.core.ui_bridge import UIBridge
 from app.orchestrator.orchestrator import Orchestrator
+from app.services.gps_sdr_sim.formats import ecef_to_geodetic, enu_to_ecef
 from app.ui.generated.main_window import Ui_MainWindow
 from app.ui.trajectory.controller import TrajectoryVisController
 from app.ui.trajectory.csv_loader import TrajectoryCsvLoader
@@ -51,6 +52,9 @@ _DEFAULT_GPS_NAV_PATH = "data/ephemerides/brdc0430.25n"
 _DEFAULT_GPS_STATIC_SEC = 0.0
 _DEFAULT_PLUTO_RF_BW_MHZ = 3.0
 _DEFAULT_PLUTO_TX_ATTEN_DB = -20.0
+_DEFAULT_GPS_ORIGIN_LAT = 55.7558
+_DEFAULT_GPS_ORIGIN_LON = 37.6176
+_DEFAULT_GPS_ORIGIN_H_M = 156.0
 
 
 class MainWindow(QMainWindow):
@@ -93,8 +97,15 @@ class MainWindow(QMainWindow):
         self._gps_nav_path_edit: Optional[QLineEdit] = None
         self._btn_gps_nav_browse: Optional[QPushButton] = None
         self._gps_static_sec_spin: Optional[QDoubleSpinBox] = None
+        self._gps_origin_lat_spin: Optional[QDoubleSpinBox] = None
+        self._gps_origin_lon_spin: Optional[QDoubleSpinBox] = None
+        self._gps_origin_h_spin: Optional[QDoubleSpinBox] = None
+        self._gps_finish_lat_lbl: Optional[QLabel] = None
+        self._gps_finish_lon_lbl: Optional[QLabel] = None
+        self._gps_finish_h_lbl: Optional[QLabel] = None
         self._pluto_rf_bw_spin: Optional[QDoubleSpinBox] = None
         self._pluto_tx_atten_spin: Optional[QDoubleSpinBox] = None
+        self._last_trajectory_end_local: Optional[tuple[float, float, float]] = None
         self._init_sdr_options_panel()
 
         # Mayak panel refs
@@ -124,6 +135,7 @@ class MainWindow(QMainWindow):
             view=self._traj_view,
             loader=self._traj_loader,
             on_duration_resolved=self._on_trajectory_duration_resolved,
+            on_points_resolved=self._on_trajectory_points_resolved,
         )
 
         if self._editor is not None:
@@ -260,10 +272,41 @@ class MainWindow(QMainWindow):
         self._gps_static_sec_spin.setSingleStep(1.0)
         self._gps_static_sec_spin.setValue(_DEFAULT_GPS_STATIC_SEC)
 
+        self._gps_origin_lat_spin = QDoubleSpinBox(gps_box)
+        self._gps_origin_lat_spin.setRange(-90.0, 90.0)
+        self._gps_origin_lat_spin.setDecimals(6)
+        self._gps_origin_lat_spin.setSingleStep(0.0001)
+        self._gps_origin_lat_spin.setValue(_DEFAULT_GPS_ORIGIN_LAT)
+        self._gps_origin_lat_spin.valueChanged.connect(self._on_gps_origin_changed)
+
+        self._gps_origin_lon_spin = QDoubleSpinBox(gps_box)
+        self._gps_origin_lon_spin.setRange(-180.0, 180.0)
+        self._gps_origin_lon_spin.setDecimals(6)
+        self._gps_origin_lon_spin.setSingleStep(0.0001)
+        self._gps_origin_lon_spin.setValue(_DEFAULT_GPS_ORIGIN_LON)
+        self._gps_origin_lon_spin.valueChanged.connect(self._on_gps_origin_changed)
+
+        self._gps_origin_h_spin = QDoubleSpinBox(gps_box)
+        self._gps_origin_h_spin.setRange(-500.0, 12000.0)
+        self._gps_origin_h_spin.setDecimals(2)
+        self._gps_origin_h_spin.setSingleStep(1.0)
+        self._gps_origin_h_spin.setValue(_DEFAULT_GPS_ORIGIN_H_M)
+        self._gps_origin_h_spin.valueChanged.connect(self._on_gps_origin_changed)
+
+        self._gps_finish_lat_lbl = QLabel("Нет траектории", gps_box)
+        self._gps_finish_lon_lbl = QLabel("Нет траектории", gps_box)
+        self._gps_finish_h_lbl = QLabel("Нет траектории", gps_box)
+
         nav_label = QLabel("Путь к эфемеридам", gps_box)
         gps_form.addRow(nav_label)
         gps_form.addRow(nav_row)
         gps_form.addRow("Время статики, сек", self._gps_static_sec_spin)
+        gps_form.addRow("Старт: широта, °", self._gps_origin_lat_spin)
+        gps_form.addRow("Старт: долгота, °", self._gps_origin_lon_spin)
+        gps_form.addRow("Старт: высота, м", self._gps_origin_h_spin)
+        gps_form.addRow("Финиш: широта, °", self._gps_finish_lat_lbl)
+        gps_form.addRow("Финиш: долгота, °", self._gps_finish_lon_lbl)
+        gps_form.addRow("Финиш: высота, м", self._gps_finish_h_lbl)
 
         pluto_box = QGroupBox("PlutoPlayer", self)
         pluto_form = QFormLayout(pluto_box)
@@ -549,6 +592,46 @@ class MainWindow(QMainWindow):
         if self._trajectory_duration_sec is not None:
             self._log_info("UI_TRAJ_DURATION", f"duration_sec={self._trajectory_duration_sec:.3f}")
 
+    def _on_trajectory_points_resolved(self, points: list[tuple[float, float, float]]) -> None:
+        if points:
+            x, y, z = points[-1]
+            self._last_trajectory_end_local = (float(x), float(y), float(z))
+        else:
+            self._last_trajectory_end_local = None
+        self._refresh_gps_finish_point()
+
+    def _on_gps_origin_changed(self, _value: float) -> None:
+        self._refresh_gps_finish_point()
+
+    def _refresh_gps_finish_point(self) -> None:
+        if self._gps_finish_lat_lbl is None or self._gps_finish_lon_lbl is None or self._gps_finish_h_lbl is None:
+            return
+
+        if self._last_trajectory_end_local is None:
+            self._gps_finish_lat_lbl.setText("Нет траектории")
+            self._gps_finish_lon_lbl.setText("Нет траектории")
+            self._gps_finish_h_lbl.setText("Нет траектории")
+            return
+
+        lat0 = float(self._gps_origin_lat_spin.value()) if self._gps_origin_lat_spin is not None else _DEFAULT_GPS_ORIGIN_LAT
+        lon0 = float(self._gps_origin_lon_spin.value()) if self._gps_origin_lon_spin is not None else _DEFAULT_GPS_ORIGIN_LON
+        h0 = float(self._gps_origin_h_spin.value()) if self._gps_origin_h_spin is not None else _DEFAULT_GPS_ORIGIN_H_M
+
+        try:
+            e, n, u = self._last_trajectory_end_local
+            x_ecef, y_ecef, z_ecef = enu_to_ecef(e, n, u, lat0, lon0, h0)
+            lat, lon, h = ecef_to_geodetic(x_ecef, y_ecef, z_ecef)
+        except Exception as ex:
+            self._gps_finish_lat_lbl.setText("Ошибка")
+            self._gps_finish_lon_lbl.setText("Ошибка")
+            self._gps_finish_h_lbl.setText("Ошибка")
+            self._log_error("UI_SDR_FINISH_POINT_FAILED", f"err={type(ex).__name__}")
+            return
+
+        self._gps_finish_lat_lbl.setText(f"{lat:.6f}")
+        self._gps_finish_lon_lbl.setText(f"{lon:.6f}")
+        self._gps_finish_h_lbl.setText(f"{h:.2f}")
+
     def _on_mayak_duration_override_toggled(self, checked: bool) -> None:
         if self._mayak_duration_spin is not None:
             self._mayak_duration_spin.setEnabled(bool(checked))
@@ -601,6 +684,9 @@ class MainWindow(QMainWindow):
     def get_sdr_options(self) -> dict[str, Any]:
         nav = self._gps_nav_path_edit.text().strip() if self._gps_nav_path_edit is not None else _DEFAULT_GPS_NAV_PATH
         static_sec = float(self._gps_static_sec_spin.value()) if self._gps_static_sec_spin is not None else _DEFAULT_GPS_STATIC_SEC
+        origin_lat = float(self._gps_origin_lat_spin.value()) if self._gps_origin_lat_spin is not None else _DEFAULT_GPS_ORIGIN_LAT
+        origin_lon = float(self._gps_origin_lon_spin.value()) if self._gps_origin_lon_spin is not None else _DEFAULT_GPS_ORIGIN_LON
+        origin_h = float(self._gps_origin_h_spin.value()) if self._gps_origin_h_spin is not None else _DEFAULT_GPS_ORIGIN_H_M
         rf_bw_mhz = float(self._pluto_rf_bw_spin.value()) if self._pluto_rf_bw_spin is not None else _DEFAULT_PLUTO_RF_BW_MHZ
         tx_atten_db = float(self._pluto_tx_atten_spin.value()) if self._pluto_tx_atten_spin is not None else _DEFAULT_PLUTO_TX_ATTEN_DB
 
@@ -611,6 +697,9 @@ class MainWindow(QMainWindow):
             "gps_sdr_sim": {
                 "nav": nav,
                 "static_sec": static_sec,
+                "origin_lat": origin_lat,
+                "origin_lon": origin_lon,
+                "origin_h": origin_h,
             },
             "pluto_player": {
                 "rf_bw_mhz": rf_bw_mhz,
@@ -627,6 +716,9 @@ class MainWindow(QMainWindow):
                 "gps_sdr_sim": {
                     "nav": gps.get("nav", _DEFAULT_GPS_NAV_PATH),
                     "static_sec": gps.get("static_sec", _DEFAULT_GPS_STATIC_SEC),
+                    "origin_lat": gps.get("origin_lat", _DEFAULT_GPS_ORIGIN_LAT),
+                    "origin_lon": gps.get("origin_lon", _DEFAULT_GPS_ORIGIN_LON),
+                    "origin_h": gps.get("origin_h", _DEFAULT_GPS_ORIGIN_H_M),
                     "rf_bw_mhz": pluto.get("rf_bw_mhz", _DEFAULT_PLUTO_RF_BW_MHZ),
                     "tx_atten_db": pluto.get("tx_atten_db", _DEFAULT_PLUTO_TX_ATTEN_DB),
                 }

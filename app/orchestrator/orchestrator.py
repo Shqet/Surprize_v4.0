@@ -1167,7 +1167,13 @@ class Orchestrator:
     def _sanitize_sdr_options(self, sdr_options: dict[str, Any] | None) -> dict[str, Any]:
         if not isinstance(sdr_options, dict):
             return {
-                "gps_sdr_sim": {"nav": "", "static_sec": 0.0},
+                "gps_sdr_sim": {
+                    "nav": "",
+                    "static_sec": 0.0,
+                    "origin_lat": 55.7558,
+                    "origin_lon": 37.6176,
+                    "origin_h": 156.0,
+                },
                 "pluto_player": {"rf_bw_mhz": 3.0, "tx_atten_db": -20.0},
             }
 
@@ -1176,13 +1182,25 @@ class Orchestrator:
 
         gps_nav = ""
         gps_static = 0.0
+        origin_lat = 55.7558
+        origin_lon = 37.6176
+        origin_h = 156.0
         if isinstance(gps, dict):
             nav = gps.get("nav")
             static_sec = gps.get("static_sec")
+            lat = gps.get("origin_lat")
+            lon = gps.get("origin_lon")
+            h = gps.get("origin_h")
             if isinstance(nav, str):
                 gps_nav = nav.strip()
             if isinstance(static_sec, (int, float)):
                 gps_static = max(0.0, float(static_sec))
+            if isinstance(lat, (int, float)):
+                origin_lat = max(-90.0, min(90.0, float(lat)))
+            if isinstance(lon, (int, float)):
+                origin_lon = max(-180.0, min(180.0, float(lon)))
+            if isinstance(h, (int, float)):
+                origin_h = float(h)
 
         rf_bw = 3.0
         tx_att = -20.0
@@ -1195,7 +1213,13 @@ class Orchestrator:
                 tx_att = max(-80.0, min(0.0, float(att)))
 
         return {
-            "gps_sdr_sim": {"nav": gps_nav, "static_sec": gps_static},
+            "gps_sdr_sim": {
+                "nav": gps_nav,
+                "static_sec": gps_static,
+                "origin_lat": origin_lat,
+                "origin_lon": origin_lon,
+                "origin_h": origin_h,
+            },
             "pluto_player": {"rf_bw_mhz": rf_bw, "tx_atten_db": tx_att},
         }
 
