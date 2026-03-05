@@ -50,13 +50,11 @@ def _validate_config_json(cfg: dict[str, Any]) -> None:
         raise ValueError("invalid config_json: simulation requires dt and t_max")
 
     ic = cfg["initial_conditions"]
-    if "Z0" not in ic:
-        raise ValueError("invalid config_json: initial_conditions requires Z0")
 
     # single supported format for operator-facing config
     # (avoid ambiguity between legacy and new velocity definitions).
-    if not all(k in ic for k in ("V0", "theta_deg")):
-        raise ValueError("invalid config_json: initial_conditions requires (V0,theta_deg)")
+    if not all(k in ic for k in ("V0", "theta_deg", "psi_deg")):
+        raise ValueError("invalid config_json: initial_conditions requires (V0,theta_deg,psi_deg)")
     if any(k in ic for k in ("Vx0", "Vy0", "Vz0")):
         raise ValueError("invalid config_json: legacy velocity keys (Vx0,Vy0,Vz0) are not supported")
 

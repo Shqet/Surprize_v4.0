@@ -42,10 +42,6 @@ _DEFAULT_CONFIG_JSON: dict[str, Any] = {
         "V0": 310.0,
         "theta_deg": 15.0,
         "psi_deg": 0.0,
-        "X0": 0.0,
-        "Y0": 0.0,
-        "Z0": 1.0,
-        "omega_body": [0.0, 0.0, 100.0],
     },
 }
 
@@ -184,14 +180,12 @@ class MainWindow(QMainWindow):
         if not isinstance(ic, dict):
             return out
 
-        # Keep only one operator-facing velocity format.
-        for legacy_key in ("Vx0", "Vy0", "Vz0", "wx0", "wy0", "wz0"):
+        # Keep only operator-facing keys: speed and angles.
+        for legacy_key in ("Vx0", "Vy0", "Vz0", "wx0", "wy0", "wz0", "X0", "Y0", "Z0", "omega_body"):
             ic.pop(legacy_key, None)
 
         if "psi_deg" not in ic:
             ic["psi_deg"] = 0.0
-        if "omega_body" not in ic:
-            ic["omega_body"] = [0.0, 0.0, 100.0]
         return out
 
     # ---------------- UI init ----------------

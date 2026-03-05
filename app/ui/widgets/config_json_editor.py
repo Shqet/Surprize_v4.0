@@ -279,7 +279,7 @@ class ConfigJsonEditor(QWidget):
         try:
             self.tree.clear()
 
-            root = QTreeWidgetItem(["config_json", ""])
+            root = QTreeWidgetItem(["Параметры траектории", ""])
             root.setFlags(root.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.tree.addTopLevelItem(root)
             root.setExpanded(True)
