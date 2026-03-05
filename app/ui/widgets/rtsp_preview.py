@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -27,6 +28,7 @@ class RtspPreviewWidget(QWidget):
         self._poll_ms = int(poll_ms)
         self._last_mtime: Optional[float] = None
         self._last_update_ts: Optional[float] = None
+        self._startup_wall_ts: float = time.time()
         self._status_dead_sec = 2.0
         self._pixmap: Optional[QPixmap] = None
 
@@ -60,13 +62,19 @@ class RtspPreviewWidget(QWidget):
         self._last_update_ts = None
 
     def _tick(self) -> None:
-        now = float(os.times().elapsed)
+        now = time.monotonic()
         try:
             if not self._path.exists():
                 self._update_status(False, now)
                 return
             mtime = self._path.stat().st_mtime
         except Exception:
+            self._update_status(False, now)
+            return
+
+        # Ignore stale preview file from previous app runs until it is refreshed.
+        if self._last_mtime is None and mtime < (self._startup_wall_ts - 0.5):
+            self._last_mtime = mtime
             self._update_status(False, now)
             return
 

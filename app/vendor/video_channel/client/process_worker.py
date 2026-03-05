@@ -192,8 +192,27 @@ class ProcessStreamWorker:
                 )
             else:
                 self._log(f"CHILD_EVENT stream={self.stream} ev={json.dumps(ev)}")
+        elif t == "hb":
+            try:
+                with self._lock:
+                    self._health.state = str(ev.get("state", self._health.state))
+                    self._health.attempt = int(ev.get("attempt", self._health.attempt))
+                    self._health.fps = float(ev.get("fps", self._health.fps))
+                    self._health.last_frame_age_ms = int(ev.get("last_frame_age_ms", self._health.last_frame_age_ms))
+            except Exception:
+                pass
+            self._log(f"CHILD_EVENT stream={self.stream} ev={json.dumps(ev)}")
         else:
             self._log(f"CHILD_EVENT stream={self.stream} ev={json.dumps(ev)}")
+
+    def get_health(self) -> ProcHealth:
+        with self._lock:
+            return ProcHealth(
+                state=str(self._health.state),
+                attempt=int(self._health.attempt),
+                fps=float(self._health.fps),
+                last_frame_age_ms=int(self._health.last_frame_age_ms),
+            )
 
     def send_cmd(self, cmd: dict) -> None:
         with self._send_lock:

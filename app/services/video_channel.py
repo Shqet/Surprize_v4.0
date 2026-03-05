@@ -189,6 +189,8 @@ class VideoChannelDaemonService:
                     self._preview_last_log = now_mono
                 w = self._worker
                 if w is not None and hasattr(w, "send_cmd"):
+                    if not self._is_worker_stream_connected(w):
+                        continue
                     try:
                         w.send_cmd({"cmd": "SAVE_PREVIEW", "path": path})
                         if now_mono - self._preview_last_log <= 0.001:
@@ -203,6 +205,22 @@ class VideoChannelDaemonService:
                         )
 
             next_tick = time.monotonic() + max(0.2, self._preview_period_sec)
+
+    def _is_worker_stream_connected(self, worker: Any) -> bool:
+        """
+        Treat stream as connected only if child heartbeat confirms CONNECTED
+        and frame age is fresh enough.
+        """
+        try:
+            get_health = getattr(worker, "get_health", None)
+            if callable(get_health):
+                h = get_health()
+                state = str(getattr(h, "state", ""))
+                age_ms = int(getattr(h, "last_frame_age_ms", -1))
+                return state == "CONNECTED" and age_ms >= 0 and age_ms <= 3000
+        except Exception:
+            return False
+        return False
 
     def start(self, profile_section: dict | None = None) -> None:
         # idempotent
