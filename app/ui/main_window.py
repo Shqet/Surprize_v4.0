@@ -63,7 +63,7 @@ class MainWindow(QMainWindow):
         self._orch = orchestrator
         self._bridge = bridge
 
-        self._initial_config: dict[str, Any] = self._load_initial_config_json()
+        self._initial_config: dict[str, Any] = self._normalize_ballistics_config_for_ui(self._load_initial_config_json())
         self.current_config: dict[str, Any] = copy.deepcopy(self._initial_config)
         self._last_mayak_ready: Optional[bool] = None
         self._last_mayak_health_event: Optional[object] = None
@@ -177,6 +177,22 @@ class MainWindow(QMainWindow):
         if isinstance(cj2, dict):
             return copy.deepcopy(cj2)
         return None
+
+    def _normalize_ballistics_config_for_ui(self, cfg: dict[str, Any]) -> dict[str, Any]:
+        out = copy.deepcopy(cfg) if isinstance(cfg, dict) else copy.deepcopy(_DEFAULT_CONFIG_JSON)
+        ic = out.get("initial_conditions")
+        if not isinstance(ic, dict):
+            return out
+
+        # Keep only one operator-facing velocity format.
+        for legacy_key in ("Vx0", "Vy0", "Vz0", "wx0", "wy0", "wz0"):
+            ic.pop(legacy_key, None)
+
+        if "psi_deg" not in ic:
+            ic["psi_deg"] = 0.0
+        if "omega_body" not in ic:
+            ic["omega_body"] = [0.0, 0.0, 100.0]
+        return out
 
     # ---------------- UI init ----------------
 

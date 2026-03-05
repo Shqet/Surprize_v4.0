@@ -18,6 +18,32 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate,
 )
 
+_KEY_LABELS_RU: dict[str, str] = {
+    "simulation": "Симуляция",
+    "projectile": "Снаряд",
+    "rotation": "Вращение",
+    "initial_conditions": "Начальные условия",
+    "dt": "Шаг интегрирования dt",
+    "t_max": "Макс. время t_max",
+    "max_steps": "Макс. число шагов",
+    "m": "Масса m",
+    "S": "Площадь S",
+    "C_L": "Коэф. подъемной силы C_L",
+    "C_mp": "Коэф. демпфирования C_mp",
+    "g": "Ускорение g",
+    "Ix": "Момент инерции Ix",
+    "Iy": "Момент инерции Iy",
+    "Iz": "Момент инерции Iz",
+    "k_stab": "Коэф. стабилизации",
+    "V0": "Начальная скорость V0",
+    "theta_deg": "Угол тангажа theta (град)",
+    "psi_deg": "Угол рыскания psi (град)",
+    "X0": "Начальная координата X0",
+    "Y0": "Начальная координата Y0",
+    "Z0": "Начальная координата Z0",
+    "omega_body": "Начальная угловая скорость [wx,wy,wz]",
+}
+
 
 class _ValueOnlyEditDelegate(QStyledItemDelegate):
     """
@@ -197,7 +223,8 @@ class ConfigJsonEditor(QWidget):
             parent = cur.parent()
             if parent is None:
                 break  # root "config_json"
-            parts.append(cur.text(0))
+            key = cur.data(0, Qt.ItemDataRole.UserRole)
+            parts.append(str(key) if isinstance(key, str) and key else cur.text(0))
             cur = parent
         parts.reverse()
         return ".".join(parts)
@@ -232,7 +259,9 @@ class ConfigJsonEditor(QWidget):
             self._tree_updating = False
 
     def _apply_expanded_recursive(self, item: QTreeWidgetItem, prefix: str, expanded_paths: Set[str]) -> None:
-        key = item.text(0)
+        key = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(key, str) or not key:
+            key = item.text(0)
         path = f"{prefix}.{key}" if prefix else key
 
         if item.childCount() > 0:
@@ -269,7 +298,8 @@ class ConfigJsonEditor(QWidget):
                 v = value[k]
                 child_path = path + [str(k)]
 
-                item = QTreeWidgetItem([str(k), self._value_label(v)])
+                item = QTreeWidgetItem([self._display_name_for_key(str(k)), self._value_label(v)])
+                item.setData(0, Qt.ItemDataRole.UserRole, str(k))
 
                 if isinstance(v, dict):
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -291,6 +321,12 @@ class ConfigJsonEditor(QWidget):
             item.setData(1, Qt.ItemDataRole.UserRole + 1, self._kind_code(value))
             item.setData(1, Qt.ItemDataRole.UserRole + 2, item.text(1))
             parent.addChild(item)
+
+    def _display_name_for_key(self, key: str) -> str:
+        ru = _KEY_LABELS_RU.get(key)
+        if not ru:
+            return key
+        return f"{ru} ({key})"
 
     # ---------- editing / validation ----------
 
