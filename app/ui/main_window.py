@@ -52,7 +52,7 @@ _DEFAULT_CONFIG_JSON: dict[str, Any] = {
 _DEFAULT_PREVIEW_VISIBLE = "outputs/video_preview/visible/latest.jpg"
 _DEFAULT_PREVIEW_THERMAL = "outputs/video_preview/thermal/latest.jpg"
 _DEFAULT_GPS_NAV_PATH = "data/ephemerides/brdc0430.25n"
-_DEFAULT_GPS_STATIC_SEC = 2.0
+_DEFAULT_GPS_STATIC_SEC = 0.0
 _DEFAULT_PLUTO_RF_BW_MHZ = 3.0
 _DEFAULT_PLUTO_TX_ATTEN_DB = -20.0
 
