@@ -78,6 +78,7 @@ default:
         period_ms: 200
 
     mayak_spindle:
+      mode: stub
       role: daemon
       publish_period_ms: 50
       global_enable: true

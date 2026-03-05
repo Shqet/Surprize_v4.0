@@ -15,6 +15,42 @@ from app.services.base import ServiceStatus
 from app.services.service_manager import ServiceManager
 
 
+class _MayakStubController:
+    """Temporary no-op controller used while real Mayak integration is undefined."""
+
+    name = "mayak_spindle_stub"
+
+    def is_ready(self) -> bool:
+        return True
+
+    def set_spindle_speed(self, spindle: str, *, direction: int, rpm: int) -> None:
+        return
+
+    def stop_spindle(self, spindle: str) -> None:
+        return
+
+    def emergency_stop(self) -> None:
+        return
+
+    def apply_profile_linear(self, spindle: str, *, from_rpm: int, to_rpm: int, duration_sec: float) -> None:
+        return
+
+    def start_test(
+        self,
+        *,
+        head_start_rpm: int,
+        head_end_rpm: int,
+        tail_start_rpm: int,
+        tail_end_rpm: int,
+        profile_type: str,
+        duration_sec: float,
+    ) -> None:
+        return
+
+    def stop_test(self) -> None:
+        return
+
+
 def deep_merge(base: dict, overrides: dict) -> dict:
     """Recursively merge overrides into base (in-place) and return base.
 
@@ -86,6 +122,8 @@ class Orchestrator:
         self._scenario_seq: int = 0
         self._active_scenario_id: Optional[str] = None
         self._prepared_scenario: Optional[dict[str, Any]] = None
+        self._mayak_mode: str = "real"
+        self._mayak_stub = _MayakStubController()
 
         self._bus.subscribe(ServiceStatusEvent, self._on_service_status_event)
 
@@ -139,6 +177,7 @@ class Orchestrator:
             return
 
         self._apply_stop_timeout_from_profile(profile_cfg, profile_name)
+        self._set_mayak_mode_from_profile(profile_cfg, profile_name)
 
         jobs, daemons = self._compute_roles(profile_cfg, profile_name)
         emit_log(
@@ -160,6 +199,9 @@ class Orchestrator:
         # Start daemons first (only if not already RUNNING)
         daemons_started = 0
         for name in daemons:
+            if name == "mayak_spindle" and self._is_mayak_stub_mode():
+                emit_log(self._bus, "INFO", "orchestrator", "ORCH_MAYAK_STUB_ACTIVE", "service=mayak_spindle")
+                continue
             svc = services_map.get(name)
             if svc is None:
                 continue
@@ -264,6 +306,8 @@ class Orchestrator:
             )
             return
 
+        self._set_mayak_mode_from_profile(profile_cfg, profile_name)
+
         root = profile_cfg.get(profile_name)
         if not isinstance(root, dict):
             emit_log(self._bus, "ERROR", "system", "SYSTEM_DAEMONS_START_FAIL", "error=profile_root_invalid")
@@ -292,6 +336,9 @@ class Orchestrator:
         already_running = 0
 
         for name in daemon_names:
+            if name == "mayak_spindle" and self._is_mayak_stub_mode():
+                emit_log(self._bus, "INFO", "orchestrator", "ORCH_MAYAK_STUB_ACTIVE", "service=mayak_spindle")
+                continue
             svc = services_map.get(name)
             if svc is None:
                 continue
@@ -1029,6 +1076,9 @@ class Orchestrator:
             return self._service_status.get(service_name) == ServiceStatus.RUNNING
 
     def _resolve_mayak_service(self) -> Any:
+        if self._is_mayak_stub_mode():
+            return self._mayak_stub
+
         services_map = self._sm.get_services()
         svc = services_map.get("mayak_spindle")
         if svc is None:
@@ -1048,6 +1098,10 @@ class Orchestrator:
         profile_cfg: dict,
         profile_name: str,
     ) -> bool:
+        if self._is_mayak_stub_mode():
+            emit_log(self._bus, "INFO", "orchestrator", "ORCH_PRECHECK_OK", "service=mayak_spindle mode=stub ready=1")
+            return True
+
         svc = services_map.get("mayak_spindle")
         if svc is None:
             return True
@@ -1088,11 +1142,29 @@ class Orchestrator:
         return False
 
     def _should_require_mayak_ready(self, profile_cfg: dict, profile_name: str) -> bool:
+        if self._is_mayak_stub_mode():
+            return False
+
         root = profile_cfg.get(profile_name) if isinstance(profile_cfg, dict) else None
         root = root if isinstance(root, dict) else (profile_cfg if isinstance(profile_cfg, dict) else {})
         orch = root.get("orchestrator", {}) if isinstance(root, dict) else {}
         flag = orch.get("require_mayak_ready_for_jobs", True) if isinstance(orch, dict) else True
         return bool(flag)
+
+    def _set_mayak_mode_from_profile(self, profile_cfg: dict, profile_name: str) -> None:
+        root = profile_cfg.get(profile_name) if isinstance(profile_cfg, dict) else None
+        root = root if isinstance(root, dict) else (profile_cfg if isinstance(profile_cfg, dict) else {})
+        services = root.get("services", {}) if isinstance(root, dict) else {}
+        mayak = services.get("mayak_spindle", {}) if isinstance(services, dict) else {}
+        mode_val = mayak.get("mode", "real") if isinstance(mayak, dict) else "real"
+        mode = str(mode_val).strip().lower()
+        if mode not in ("real", "stub"):
+            mode = "real"
+        self._mayak_mode = mode
+        emit_log(self._bus, "INFO", "orchestrator", "ORCH_MAYAK_MODE", f"mode={self._mayak_mode}")
+
+    def _is_mayak_stub_mode(self) -> bool:
+        return self._mayak_mode == "stub"
 
     # -------------------- internals --------------------
 
