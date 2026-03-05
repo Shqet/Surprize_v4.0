@@ -9,3 +9,12 @@ class OrchestratorState(str, Enum):
     RUNNING = "RUNNING"
     STOPPING = "STOPPING"
     ERROR = "ERROR"
+
+
+class OrchestratorPhase(str, Enum):
+    PREPARING = "PREPARING"
+    PREPARED = "PREPARED"
+    MONITORING = "MONITORING"
+    READY = "READY"
+    TEST_RUNNING = "TEST_RUNNING"
+    PHASE_ERROR = "PHASE_ERROR"

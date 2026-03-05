@@ -15,7 +15,7 @@ from app.orchestrator.mayak_controller import (
     read_mayak_mode,
     resolve_mayak_controller,
 )
-from app.orchestrator.states import OrchestratorState
+from app.orchestrator.states import OrchestratorPhase, OrchestratorState
 from app.profiles.loader import load_profile
 from app.services.base import ServiceStatus
 from app.services.service_manager import ServiceManager
@@ -73,6 +73,7 @@ class Orchestrator:
 
         self._lock = threading.Lock()
         self._state: OrchestratorState = OrchestratorState.IDLE
+        self._phase: OrchestratorPhase = OrchestratorPhase.PREPARING
 
         # service_name -> last ServiceStatus (source of truth: ServiceStatusEvent)
         self._service_status: dict[str, ServiceStatus] = {}
@@ -104,6 +105,11 @@ class Orchestrator:
     def state(self) -> OrchestratorState:
         with self._lock:
             return self._state
+
+    @property
+    def phase(self) -> OrchestratorPhase:
+        with self._lock:
+            return self._phase
 
     def start(self, profile_name: str, overrides: dict | None = None) -> None:
         with self._lock:
@@ -509,6 +515,7 @@ class Orchestrator:
                 f"scenario_id={scenario_id} reason=emergency_stop",
             )
             self._clear_active_scenario()
+            self._set_phase(OrchestratorPhase.PREPARED, "reason=emergency_stop")
         except Exception as ex:
             emit_log(
                 self._bus,
@@ -600,6 +607,7 @@ class Orchestrator:
         duration_sec: float,
         sdr_options: dict[str, Any] | None = None,
     ) -> str:
+        self._set_phase(OrchestratorPhase.PREPARING, "action=prepare_mayak_test")
         emit_log(
             self._bus,
             "INFO",
@@ -682,7 +690,105 @@ class Orchestrator:
             "MAYAK_TEST_PREPARED",
             f"scenario_id={scenario_id} manifest={manifest_path.as_posix()}",
         )
+        self._set_phase(OrchestratorPhase.PREPARED, f"scenario_id={scenario_id}")
         return scenario_id
+
+    def check_readiness(self) -> dict[str, Any]:
+        """
+        Stage-2 preflight skeleton:
+          - validate prepared scenario artifact refs
+          - generate a simple PlutoPlayer input artifact
+          - check blocking readiness (Mayak + SDR inputs)
+          - check camera readiness as warning-only
+        """
+        self._set_phase(OrchestratorPhase.MONITORING, "action=check_readiness")
+        with self._lock:
+            prepared = dict(self._prepared_scenario) if isinstance(self._prepared_scenario, dict) else None
+
+        if prepared is None:
+            self._set_phase(OrchestratorPhase.PHASE_ERROR, "reason=not_prepared")
+            return {
+                "ready_to_start": False,
+                "blocking_errors": ["scenario_not_prepared"],
+                "warnings": [],
+                "artifacts": {},
+            }
+
+        blocking_errors: list[str] = []
+        warnings: list[str] = []
+        artifacts: dict[str, str] = {}
+        scenario_id = str(prepared.get("scenario_id", "none"))
+
+        # required trajectory artifact
+        trajectory = prepared.get("trajectory")
+        traj_path = trajectory.get("trajectory_csv") if isinstance(trajectory, dict) else None
+        if not isinstance(traj_path, str) or not traj_path.strip() or not Path(traj_path).exists():
+            blocking_errors.append("trajectory_missing")
+
+        # required SDR nav file
+        sdr = prepared.get("sdr_options")
+        gps = sdr.get("gps_sdr_sim") if isinstance(sdr, dict) else None
+        nav = gps.get("nav") if isinstance(gps, dict) else None
+        if not isinstance(nav, str) or not nav.strip() or not Path(nav).exists():
+            blocking_errors.append("gps_nav_missing")
+
+        # mayak readiness is blocking
+        try:
+            svc = self._resolve_mayak_service()
+            fn = getattr(svc, "is_ready", None)
+            if callable(fn):
+                if not bool(fn()):
+                    blocking_errors.append("mayak_not_ready")
+            else:
+                warnings.append("mayak_is_ready_unavailable")
+        except Exception as ex:
+            blocking_errors.append(f"mayak_check_failed:{type(ex).__name__}")
+
+        # cameras are warning-only
+        for cam_name in ("video_visible", "video_thermal"):
+            if not self._is_service_running(cam_name):
+                warnings.append(f"{cam_name}_not_ready")
+
+        # simple pluto input artifact generation
+        try:
+            pluto_path = self._write_pluto_input_artifact(prepared)
+            artifacts["pluto_input"] = str(pluto_path)
+        except Exception as ex:
+            blocking_errors.append(f"pluto_input_failed:{type(ex).__name__}")
+
+        ready = not blocking_errors
+        if ready:
+            self._set_phase(OrchestratorPhase.READY, f"scenario_id={scenario_id}")
+        else:
+            self._set_phase(OrchestratorPhase.PREPARED, f"scenario_id={scenario_id} ready=0")
+
+        emit_log(
+            self._bus,
+            "INFO",
+            "orchestrator",
+            "ORCH_READINESS",
+            (
+                f"scenario_id={scenario_id} "
+                f"ready={1 if ready else 0} "
+                f"blocking={','.join(blocking_errors) if blocking_errors else 'none'} "
+                f"warnings={','.join(warnings) if warnings else 'none'}"
+            ),
+        )
+        return {
+            "ready_to_start": ready,
+            "blocking_errors": blocking_errors,
+            "warnings": warnings,
+            "artifacts": artifacts,
+        }
+
+    def start_test_flow(self) -> None:
+        report = self.check_readiness()
+        if not bool(report.get("ready_to_start")):
+            raise RuntimeError("readiness_check_failed")
+        self.start_prepared_mayak_test()
+
+    def stop_test_flow(self) -> None:
+        self.stop_mayak_test()
 
     def start_prepared_mayak_test(self) -> None:
         with self._lock:
@@ -750,6 +856,7 @@ class Orchestrator:
                     f"trajectory={traj_path or 'none'}"
                 ),
             )
+            self._set_phase(OrchestratorPhase.TEST_RUNNING, f"scenario_id={scenario_id}")
             with self._lock:
                 self._prepared_scenario = None
         except Exception as ex:
@@ -788,6 +895,7 @@ class Orchestrator:
                 f"scenario_id={scenario_id}",
             )
             self._clear_active_scenario()
+            self._set_phase(OrchestratorPhase.PREPARED, f"scenario_id={scenario_id}")
         except Exception as ex:
             emit_log(
                 self._bus,
@@ -1146,6 +1254,17 @@ class Orchestrator:
             )
         self._publish_state(st)
 
+    def _set_phase(self, ph: OrchestratorPhase, details: str = "") -> None:
+        with self._lock:
+            if ph == self._phase:
+                return
+            prev = self._phase
+            self._phase = ph
+        msg = f"from={prev.value} to={ph.value}"
+        if details:
+            msg = f"{msg} {details}"
+        emit_log(self._bus, "INFO", "orchestrator", "ORCH_PHASE_CHANGE", msg)
+
     def _next_scenario_id(self) -> str:
         with self._lock:
             self._scenario_seq += 1
@@ -1291,6 +1410,20 @@ class Orchestrator:
     def _clear_active_scenario(self) -> None:
         with self._lock:
             self._active_scenario_id = None
+
+    def _write_pluto_input_artifact(self, prepared: dict[str, Any]) -> Path:
+        scenario_id = str(prepared.get("scenario_id", "scn_unknown"))
+        out_dir = (Path("outputs") / "scenarios" / scenario_id).resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "scenario_id": scenario_id,
+            "created_ts": time.time(),
+            "sdr_options": prepared.get("sdr_options", {}),
+            "trajectory": prepared.get("trajectory", {}),
+        }
+        out_path = out_dir / "pluto_input.json"
+        out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return out_path
 
     def _publish_state(self, st: OrchestratorState) -> None:
         self._bus.publish(OrchestratorStateEvent(state=st.value))
