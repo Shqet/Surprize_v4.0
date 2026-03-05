@@ -214,9 +214,11 @@ class MainWindow(QMainWindow):
     def _init_rtsp_previews(self) -> None:
         if self._vl_rtsp_visible is not None:
             w = RtspPreviewWidget(_DEFAULT_PREVIEW_VISIBLE, title="Visible", poll_ms=200, parent=self)
+            w.setMaximumWidth(500)
             self._vl_rtsp_visible.addWidget(w, 0, 0)
         if self._vl_rtsp_thermal is not None:
             w = RtspPreviewWidget(_DEFAULT_PREVIEW_THERMAL, title="Thermal", poll_ms=200, parent=self)
+            w.setMaximumWidth(500)
             self._vl_rtsp_thermal.addWidget(w, 0, 0)
 
     def _init_sdr_options_panel(self) -> None:
