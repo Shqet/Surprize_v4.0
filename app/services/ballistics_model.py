@@ -53,13 +53,12 @@ def _validate_config_json(cfg: dict[str, Any]) -> None:
     if "Z0" not in ic:
         raise ValueError("invalid config_json: initial_conditions requires Z0")
 
-    # speed format: either old (Vx0,Vy0,Vz0) or new (V0,theta_deg)
-    has_old = all(k in ic for k in ("Vx0", "Vy0", "Vz0"))
-    has_new = all(k in ic for k in ("V0", "theta_deg"))
-    if not (has_old or has_new):
-        raise ValueError(
-            "invalid config_json: initial_conditions requires (Vx0,Vy0,Vz0) OR (V0,theta_deg)"
-        )
+    # single supported format for operator-facing config
+    # (avoid ambiguity between legacy and new velocity definitions).
+    if not all(k in ic for k in ("V0", "theta_deg")):
+        raise ValueError("invalid config_json: initial_conditions requires (V0,theta_deg)")
+    if any(k in ic for k in ("Vx0", "Vy0", "Vz0")):
+        raise ValueError("invalid config_json: legacy velocity keys (Vx0,Vy0,Vz0) are not supported")
 
 
 class BallisticsModelSubprocessService:
