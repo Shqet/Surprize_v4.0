@@ -200,9 +200,11 @@ class MainWindow(QMainWindow):
 
         btn = self._get_generate_button()
         if btn is None:
-            btn = QPushButton("Generate Trajectory")
+            btn = QPushButton("Сгенерировать траекторию")
             btn.setObjectName("btn_generate_trajectory")
             glp.addWidget(btn, 1, 0)
+        else:
+            btn.setText("Сгенерировать траекторию")
 
         glp.setRowStretch(0, 1)
         glp.setRowStretch(1, 0)
