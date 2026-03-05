@@ -18,6 +18,7 @@ class _FakeService:
     name: str
     bus: EventBus
     stop_emits_stopped: bool = True
+    ready: bool = True
 
     start_calls: int = 0
     stop_calls: int = 0
@@ -33,6 +34,9 @@ class _FakeService:
         self.stop_calls += 1
         if self.stop_emits_stopped:
             self.bus.publish(ServiceStatusEvent(service_name=self.name, status=ServiceStatus.STOPPED.value))
+
+    def is_ready(self) -> bool:
+        return bool(self.ready)
 
 
 class _FakeServiceManager:
@@ -280,3 +284,162 @@ def test_start_daemons_is_idempotent_when_daemons_already_running(monkeypatch: p
     assert job1.start_calls == 0
 
     assert orch.state == OrchestratorState.IDLE
+
+
+def test_start_passes_service_section_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = EventBus()
+
+    job1 = _FakeService(name="job1", bus=bus)
+    daemon1 = _FakeService(name="daemon1", bus=bus)
+    sm = _FakeServiceManager({"job1": job1, "daemon1": daemon1})
+
+    from app.orchestrator import orchestrator as orch_mod
+
+    monkeypatch.setattr(
+        orch_mod,
+        "load_profile",
+        lambda profile_name: {
+            profile_name: {
+                "orchestrator": {"stop_timeout_sec": 1},
+                "services": {
+                    "job1": {"role": "job", "foo": 1},
+                    "daemon1": {"role": "daemon", "bar": 2},
+                },
+            }
+        },
+    )
+
+    orch = Orchestrator(bus, sm)
+    orch.start("p")
+
+    assert job1.last_profile_cfg == {"role": "job", "foo": 1}
+    assert daemon1.last_profile_cfg == {"role": "daemon", "bar": 2}
+
+
+def test_start_fails_when_mayak_not_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = EventBus()
+    states = _subscribe_states(bus)
+
+    job1 = _FakeService(name="job1", bus=bus)
+    mayak = _FakeService(name="mayak_spindle", bus=bus, ready=False)
+    sm = _FakeServiceManager({"job1": job1, "mayak_spindle": mayak})
+
+    from app.orchestrator import orchestrator as orch_mod
+
+    monkeypatch.setattr(
+        orch_mod,
+        "load_profile",
+        lambda profile_name: {
+            profile_name: {
+                "orchestrator": {"stop_timeout_sec": 1, "mayak_ready_timeout_sec": 0.1},
+                "services": {
+                    "mayak_spindle": {"role": "daemon"},
+                    "job1": {"role": "job"},
+                },
+            }
+        },
+    )
+
+    orch = Orchestrator(bus, sm)
+    orch.start("p")
+
+    assert orch.state == OrchestratorState.ERROR
+    assert mayak.start_calls == 1
+    assert job1.start_calls == 0
+    assert states and states[-1] == OrchestratorState.ERROR.value
+
+
+def test_start_allows_jobs_when_mayak_not_ready_if_precheck_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = EventBus()
+    states = _subscribe_states(bus)
+    logs = _subscribe_logs(bus)
+
+    job1 = _FakeService(name="job1", bus=bus)
+    mayak = _FakeService(name="mayak_spindle", bus=bus, ready=False)
+    sm = _FakeServiceManager({"job1": job1, "mayak_spindle": mayak})
+
+    from app.orchestrator import orchestrator as orch_mod
+
+    monkeypatch.setattr(
+        orch_mod,
+        "load_profile",
+        lambda profile_name: {
+            profile_name: {
+                "orchestrator": {"stop_timeout_sec": 1, "mayak_ready_timeout_sec": 0.1},
+                "services": {
+                    "mayak_spindle": {"role": "daemon"},
+                    "job1": {"role": "job"},
+                },
+            }
+        },
+    )
+
+    orch = Orchestrator(bus, sm)
+    orch.start("p", overrides={"orchestrator": {"require_mayak_ready_for_jobs": False}})
+
+    assert _wait_state(states, OrchestratorState.RUNNING.value)
+    assert mayak.start_calls == 1
+    assert job1.start_calls == 1
+    assert any(e.code == "ORCH_PRECHECK_SKIPPED" for e in logs)
+
+
+def test_start_with_only_daemons_finishes_in_idle(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = EventBus()
+    states = _subscribe_states(bus)
+
+    daemon1 = _FakeService(name="daemon1", bus=bus)
+    sm = _FakeServiceManager({"daemon1": daemon1})
+
+    from app.orchestrator import orchestrator as orch_mod
+
+    monkeypatch.setattr(
+        orch_mod,
+        "load_profile",
+        lambda profile_name: {
+            profile_name: {
+                "orchestrator": {"stop_timeout_sec": 1},
+                "services": {
+                    "daemon1": {"role": "daemon"},
+                },
+            }
+        },
+    )
+
+    orch = Orchestrator(bus, sm)
+    orch.start("p")
+
+    assert daemon1.start_calls == 1
+    assert orch.state == OrchestratorState.IDLE
+    assert OrchestratorState.RUNNING.value not in states
+
+
+def test_start_rejects_invalid_role_from_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = EventBus()
+    logs = _subscribe_logs(bus)
+    states = _subscribe_states(bus)
+
+    job1 = _FakeService(name="job1", bus=bus)
+    sm = _FakeServiceManager({"job1": job1})
+
+    from app.orchestrator import orchestrator as orch_mod
+
+    monkeypatch.setattr(
+        orch_mod,
+        "load_profile",
+        lambda profile_name: {
+            profile_name: {
+                "orchestrator": {"stop_timeout_sec": 1},
+                "services": {
+                    "job1": {"role": "job"},
+                },
+            }
+        },
+    )
+
+    orch = Orchestrator(bus, sm)
+    orch.start("p", overrides={"services": {"job1": {"role": "invalid"}}})
+
+    assert orch.state == OrchestratorState.ERROR
+    assert states and states[-1] == OrchestratorState.ERROR.value
+    assert job1.start_calls == 0
+    assert any("service_role_invalid" in e.message for e in logs if e.code == "SERVICE_ERROR")

@@ -18,6 +18,92 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate,
 )
 
+_KEY_LABELS_RU: dict[str, str] = {
+    "simulation": "Симуляция",
+    "projectile": "Снаряд",
+    "rotation": "Вращение",
+    "initial_conditions": "Начальные условия",
+    "dt": "Шаг интегрирования dt",
+    "t_max": "Макс. время t_max",
+    "max_steps": "Макс. число шагов",
+    "m": "Масса m",
+    "S": "Площадь S",
+    "C_L": "Коэф. подъемной силы C_L",
+    "C_mp": "Коэф. демпфирования C_mp",
+    "g": "Ускорение g",
+    "Ix": "Момент инерции Ix",
+    "Iy": "Момент инерции Iy",
+    "Iz": "Момент инерции Iz",
+    "k_stab": "Коэф. стабилизации",
+    "V0": "Начальная скорость V0",
+    "theta_deg": "Угол тангажа theta (град)",
+    "psi_deg": "Угол рыскания psi (град)",
+    "X0": "Начальная координата X0",
+    "Y0": "Начальная координата Y0",
+    "Z0": "Начальная координата Z0",
+    "omega_body": "Начальная угловая скорость [wx,wy,wz]",
+}
+
+_KEY_TOOLTIPS_RU: dict[str, str] = {
+    "simulation": "Численные параметры расчета траектории: шаг по времени, длительность и ограничение по количеству шагов.",
+    "dt": (
+        "Шаг интегрирования по времени, сек.\n"
+        "Меньше dt -> выше точность, но дольше расчет.\n"
+        "Слишком большой dt может давать грубую или нестабильную траекторию."
+    ),
+    "t_max": (
+        "Максимальная длительность моделирования, сек.\n"
+        "Если объект не достиг события завершения раньше, расчет остановится по этому лимиту."
+    ),
+    "max_steps": (
+        "Предельное количество шагов интегрирования.\n"
+        "Страховка от слишком длинного расчета при малом dt или некорректных параметрах."
+    ),
+    "projectile": "Физические параметры снаряда и среды, влияющие на скорость потерь энергии и форму траектории.",
+    "m": (
+        "Масса снаряда, кг.\n"
+        "При прочих равных большая масса обычно снижает чувствительность к аэродинамическому торможению."
+    ),
+    "S": (
+        "Характерная площадь поперечного сечения, м^2.\n"
+        "Больше S -> сильнее аэродинамическое сопротивление."
+    ),
+    "C_L": (
+        "Коэффициент подъемной силы.\n"
+        "Отвечает за боковые/подъемные аэродинамические эффекты (если модель их учитывает)."
+    ),
+    "C_mp": (
+        "Коэффициент аэродинамического демпфирования по угловому движению.\n"
+        "Влияет на затухание вращательных колебаний."
+    ),
+    "g": "Ускорение свободного падения, м/с^2. Обычно 9.81 для земных условий.",
+    "rotation": "Параметры вращательной динамики: инерция и стабилизация.",
+    "Ix": "Момент инерции относительно оси X (продольной), кг*м^2.",
+    "Iy": "Момент инерции относительно оси Y, кг*м^2.",
+    "Iz": "Момент инерции относительно оси Z, кг*м^2.",
+    "k_stab": (
+        "Коэффициент стабилизации вращения.\n"
+        "Изменяет влияние вращения на устойчивость ориентации."
+    ),
+    "initial_conditions": (
+        "Начальные условия запуска.\n"
+        "В этой форме задаются только скорость и углы.\n"
+        "Стартовая позиция фиксирована: X=0, Y=0, Z=0."
+    ),
+    "V0": (
+        "Начальная скорость, м/с.\n"
+        "Это модуль вектора скорости в момент старта."
+    ),
+    "theta_deg": (
+        "Угол места (тангаж), градусы.\n"
+        "0° — горизонтально, положительные значения — вверх."
+    ),
+    "psi_deg": (
+        "Азимутальный угол (рыскание), градусы.\n"
+        "Задает направление в горизонтальной плоскости."
+    ),
+}
+
 
 class _ValueOnlyEditDelegate(QStyledItemDelegate):
     """
@@ -197,7 +283,8 @@ class ConfigJsonEditor(QWidget):
             parent = cur.parent()
             if parent is None:
                 break  # root "config_json"
-            parts.append(cur.text(0))
+            key = cur.data(0, Qt.ItemDataRole.UserRole)
+            parts.append(str(key) if isinstance(key, str) and key else cur.text(0))
             cur = parent
         parts.reverse()
         return ".".join(parts)
@@ -232,7 +319,9 @@ class ConfigJsonEditor(QWidget):
             self._tree_updating = False
 
     def _apply_expanded_recursive(self, item: QTreeWidgetItem, prefix: str, expanded_paths: Set[str]) -> None:
-        key = item.text(0)
+        key = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(key, str) or not key:
+            key = item.text(0)
         path = f"{prefix}.{key}" if prefix else key
 
         if item.childCount() > 0:
@@ -250,7 +339,7 @@ class ConfigJsonEditor(QWidget):
         try:
             self.tree.clear()
 
-            root = QTreeWidgetItem(["config_json", ""])
+            root = QTreeWidgetItem(["Параметры траектории", ""])
             root.setFlags(root.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.tree.addTopLevelItem(root)
             root.setExpanded(True)
@@ -269,7 +358,12 @@ class ConfigJsonEditor(QWidget):
                 v = value[k]
                 child_path = path + [str(k)]
 
-                item = QTreeWidgetItem([str(k), self._value_label(v)])
+                item = QTreeWidgetItem([self._display_name_for_key(str(k)), self._value_label(v)])
+                item.setData(0, Qt.ItemDataRole.UserRole, str(k))
+                tip = self._tooltip_for_key(str(k))
+                if tip:
+                    item.setToolTip(0, tip)
+                    item.setToolTip(1, tip)
 
                 if isinstance(v, dict):
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -291,6 +385,15 @@ class ConfigJsonEditor(QWidget):
             item.setData(1, Qt.ItemDataRole.UserRole + 1, self._kind_code(value))
             item.setData(1, Qt.ItemDataRole.UserRole + 2, item.text(1))
             parent.addChild(item)
+
+    def _display_name_for_key(self, key: str) -> str:
+        ru = _KEY_LABELS_RU.get(key)
+        if not ru:
+            return key
+        return f"{ru} ({key})"
+
+    def _tooltip_for_key(self, key: str) -> str:
+        return _KEY_TOOLTIPS_RU.get(key, "")
 
     # ---------- editing / validation ----------
 

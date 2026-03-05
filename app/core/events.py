@@ -36,15 +36,6 @@ class RtspChannelHealthEvent:
     state: str            # "CONNECTED" | "RECONNECTING" | "OFFLINE"
     attempt: int
     last_error: str | None
-
-@dataclass(frozen=True, slots=True)
-class RtspChannelHealthEvent:
-    service_name: str
-    channel: str     # "visible" | "thermal"
-    url: str
-    state: str       # "CONNECTED" | "RECONNECTING"
-    attempt: int
-    last_error: str | None
 @dataclass(frozen=True, slots=True)
 class RtspIngestStatsEvent:
     service: str            # always "rtsp_ingest"
@@ -54,3 +45,24 @@ class RtspIngestStatsEvent:
     last_frame_age_sec: float
     restarts: int
     ts: float               # unix seconds
+
+
+@dataclass(frozen=True, slots=True)
+class MayakHealthEvent:
+    service_name: str
+    ready: bool
+    global_enable: bool | None
+    error_code: int
+    io_error_streak: int
+    io_degraded: bool
+    degraded_reason: str
+    sp1_state: str
+    sp2_state: str
+    sp1_connected: bool | None
+    sp2_connected: bool | None
+    last_packet_age_ms: int
+    effective_max_rpm_sp1: int
+    effective_max_rpm_sp2: int
+    effective_max_accel_rpm_s: float
+    effective_max_torque: int
+    ts: float

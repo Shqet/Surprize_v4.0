@@ -10,7 +10,7 @@ from PyQt6.QtCore import QObject, pyqtSignal, QRunnable, QThreadPool
 
 
 class TrajectoryLoadSignals(QObject):
-    ok = pyqtSignal(int, object)   # seq, points: list[tuple[float,float,float]]
+    ok = pyqtSignal(int, object)   # seq, payload: {"points": list[tuple[float,float,float]], "duration_sec": float|None}
     fail = pyqtSignal(int, str)    # seq, error
 
 
@@ -39,12 +39,22 @@ class TrajectoryCsvLoadTask(QRunnable):
 
         raise ValueError(f"Unsupported CSV columns: {headers!r}")
 
+    @staticmethod
+    def _detect_time_index(headers: list[str]) -> int | None:
+        norm = [h.strip().lower() for h in headers]
+        for key in ("t", "time", "time_sec"):
+            if key in norm:
+                return norm.index(key)
+        return None
+
     def run(self) -> None:
         try:
             if not self.csv_path.exists():
                 raise FileNotFoundError(str(self.csv_path))
 
             points: list[tuple[float, float, float]] = []
+            first_t: float | None = None
+            last_t: float | None = None
             with self.csv_path.open("r", encoding="utf-8", newline="") as f:
                 reader = csv.reader(f)
                 header = next(reader, None)
@@ -52,6 +62,7 @@ class TrajectoryCsvLoadTask(QRunnable):
                     raise ValueError("Empty CSV (no header)")
 
                 ix, iy, iz = self._detect_xyz_indices(header)
+                it = self._detect_time_index(header)
 
                 for row in reader:
                     if not row:
@@ -60,6 +71,11 @@ class TrajectoryCsvLoadTask(QRunnable):
                         continue
                     try:
                         points.append((float(row[ix]), float(row[iy]), float(row[iz])))
+                        if it is not None and len(row) > it:
+                            t = float(row[it])
+                            if first_t is None:
+                                first_t = t
+                            last_t = t
                     except Exception:
                         # skip malformed rows
                         continue
@@ -67,7 +83,11 @@ class TrajectoryCsvLoadTask(QRunnable):
             if not points:
                 raise ValueError("No valid points parsed from trajectory.csv")
 
-            self.signals.ok.emit(self.seq, points)
+            duration_sec: float | None = None
+            if first_t is not None and last_t is not None:
+                duration_sec = max(0.0, float(last_t - first_t))
+
+            self.signals.ok.emit(self.seq, {"points": points, "duration_sec": duration_sec})
 
         except Exception as ex:
             self.signals.fail.emit(self.seq, f"{type(ex).__name__}: {ex}")

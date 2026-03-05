@@ -138,8 +138,13 @@ def main() -> int:
                             continue
 
                         try:
-                            # Best-effort: try worker.last_frame if exists, else black
-                            frame = getattr(worker, "last_frame", None)
+                            wlog(f"VIDEO_PREVIEW_CMD_RECV path={path}")
+                            # Best-effort: try last_frame, else black
+                            frame = None
+                            try:
+                                frame = worker.get_last_frame()
+                            except Exception:
+                                frame = None
                             if frame is None:
                                 frame = _make_black(args.preview_width, args.preview_height)
 

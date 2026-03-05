@@ -72,7 +72,7 @@ def build_params_and_state(cfg: Dict[str, Any]) -> Tuple[SimParams, FullParams, 
 
     X0 = float(ic.get("X0", 0.0))
     Y0 = float(ic.get("Y0", 0.0))
-    Z0 = float(ic["Z0"])
+    Z0 = float(ic.get("Z0", 0.0))
 
     # Support two formats:
     # 1) Old: Vx0, Vy0, Vz0 (+ wx0, wy0, wz0)

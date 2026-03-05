@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 import subprocess
+import sys
 
 from app.core.event_bus import EventBus
 from app.core.events import ProcessOutputEvent, ServiceStatusEvent
 from app.core.logging_setup import emit_log
 from app.services.base import ServiceStatus
+from app.services.stop_utils import terminate_process
 
 
 @dataclass(frozen=True)
@@ -48,16 +50,13 @@ def _validate_config_json(cfg: dict[str, Any]) -> None:
         raise ValueError("invalid config_json: simulation requires dt and t_max")
 
     ic = cfg["initial_conditions"]
-    if "Z0" not in ic:
-        raise ValueError("invalid config_json: initial_conditions requires Z0")
 
-    # speed format: either old (Vx0,Vy0,Vz0) or new (V0,theta_deg)
-    has_old = all(k in ic for k in ("Vx0", "Vy0", "Vz0"))
-    has_new = all(k in ic for k in ("V0", "theta_deg"))
-    if not (has_old or has_new):
-        raise ValueError(
-            "invalid config_json: initial_conditions requires (Vx0,Vy0,Vz0) OR (V0,theta_deg)"
-        )
+    # single supported format for operator-facing config
+    # (avoid ambiguity between legacy and new velocity definitions).
+    if not all(k in ic for k in ("V0", "theta_deg", "psi_deg")):
+        raise ValueError("invalid config_json: initial_conditions requires (V0,theta_deg,psi_deg)")
+    if any(k in ic for k in ("Vx0", "Vy0", "Vz0")):
+        raise ValueError("invalid config_json: legacy velocity keys (Vx0,Vy0,Vz0) are not supported")
 
 
 class BallisticsModelSubprocessService:
@@ -174,6 +173,8 @@ class BallisticsModelSubprocessService:
         out_root = Path(req_str("out_root"))
 
         python_exe = req_str("python_exe")
+        if python_exe.lower() in ("python", "python.exe", "py", "py.exe"):
+            python_exe = sys.executable
         calc_entry = req_str("calc_entry")
         plots_entry = req_str("plots_entry")
 
@@ -485,24 +486,13 @@ class BallisticsModelSubprocessService:
             self._set_status(ServiceStatus.STOPPED)
             return
 
-        # terminate is fast
-        try:
-            emit_log(self._bus, "INFO", "ballistics_model", "PROCESS_EXIT", "stage=stop terminate=1")
-            proc.terminate()
-        except Exception as ex:
-            emit_log(self._bus, "ERROR", "ballistics_model", "SERVICE_ERROR", f"stage=stop_terminate err={type(ex).__name__} msg={ex}")
+        def _info(msg: str) -> None:
+            emit_log(self._bus, "INFO", "ballistics_model", "PROCESS_EXIT", msg)
 
-        # wait in this background thread
-        try:
-            proc.wait(timeout=max(1, timeout_sec))
-        except subprocess.TimeoutExpired:
-            try:
-                emit_log(self._bus, "INFO", "ballistics_model", "PROCESS_EXIT", "stage=stop kill=1")
-                proc.kill()
-            except Exception as ex:
-                emit_log(self._bus, "ERROR", "ballistics_model", "SERVICE_ERROR", f"stage=stop_kill err={type(ex).__name__} msg={ex}")
-        except Exception as ex:
-            emit_log(self._bus, "ERROR", "ballistics_model", "SERVICE_ERROR", f"stage=stop_wait err={type(ex).__name__} msg={ex}")
+        def _err(msg: str) -> None:
+            emit_log(self._bus, "ERROR", "ballistics_model", "SERVICE_ERROR", msg)
+
+        terminate_process(proc, timeout_sec=timeout_sec, on_info=_info, on_error=_err)
 
         # Finalize status (if not already ERROR)
         st = self.status()

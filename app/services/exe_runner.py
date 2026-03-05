@@ -11,6 +11,7 @@ from app.core.event_bus import EventBus
 from app.core.events import ProcessOutputEvent, ServiceStatusEvent
 from app.core.logging_setup import emit_log
 from app.services.base import ServiceStatus
+from app.services.stop_utils import terminate_process
 
 
 def _trunc_line(s: str, max_len: int = 400) -> str:
@@ -288,21 +289,10 @@ class ExeRunnerService:
             self._set_status(ServiceStatus.STOPPED)
             return
 
-        # terminate -> wait -> kill (in background thread)
-        try:
-            proc.terminate()
-            try:
-                proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=2)
-        except Exception as ex:
-            emit_log(
-                self._bus,
-                "ERROR",
-                "exe_runner",
-                "SERVICE_ERROR",
-                f"service=exe_runner err={type(ex).__name__}",
-            )
-            self._set_status(ServiceStatus.ERROR)
-            return
+        def _err(msg: str) -> None:
+            emit_log(self._bus, "ERROR", "exe_runner", "SERVICE_ERROR", f"service=exe_runner {msg}")
+
+        terminate_process(proc, timeout_sec=timeout, on_error=_err)
+
+        # If we made it here, treat as stopped.
+        self._set_status(ServiceStatus.STOPPED)

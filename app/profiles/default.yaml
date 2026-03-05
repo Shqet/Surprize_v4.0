@@ -1,6 +1,7 @@
 default:
   orchestrator:
     stop_timeout_sec: 10
+    mayak_ready_timeout_sec: 2.0
 
   services:
     exe_runner:
@@ -75,3 +76,53 @@ default:
         enabled: true
         out_path: "outputs/video_preview/thermal/latest.jpg"
         period_ms: 200
+
+    mayak_spindle:
+      role: daemon
+      publish_period_ms: 50
+      global_enable: true
+      runtime:
+        command_timeout_ms: 1500
+      hard_limits:
+        max_rpm_sp1: 6000
+        max_rpm_sp2: 6000
+        max_accel_rpm_s: 0.0
+        max_torque: 100000
+      operator_limits:
+        max_rpm_sp1: 3000
+        max_rpm_sp2: 3000
+        max_accel_rpm_s: 0.0
+        max_torque: 100000
+      watchdog:
+        cell: "D1093"
+        max_packet_age_sec: 1.0
+      metrics:
+        log_period_sec: 2.0
+      transport:
+        cnc_host: "127.0.0.1"
+        cnc_port: 12346
+        listen_host: "0.0.0.0"
+        listen_port: 12345
+        machine_size: 850592
+        recv_timeout_sec: 0.2
+      d_map:
+        SP1_ControlWord: "D1000"
+        SP1_TargetSpeed: "D1001"
+        SP1_StatusWord: "D1002"
+        SP1_ActualSpeed: "D1003"
+
+        SP2_ControlWord: "D1010"
+        SP2_TargetSpeed: "D1011"
+        SP2_StatusWord: "D1012"
+        SP2_ActualSpeed: "D1013"
+
+        SP1_ActualTorque: "D1020"
+        SP2_ActualTorque: "D1021"
+        SP1_Angle: "D1022"
+
+        SP1_Connected: "D1050"
+        SP2_Connected: "D1051"
+
+        Global_Enable: "D1090"
+        Sim_Time: "D1091"
+        Error_Code: "D1092"

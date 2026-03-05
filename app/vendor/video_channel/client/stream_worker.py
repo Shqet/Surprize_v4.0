@@ -95,6 +95,7 @@ class StreamWorker:
         # --- optional video snapshot for UI ---
         self._frame_lock = threading.Lock()
         self._last_frame = None  # numpy ndarray when available
+        self._frame_logged = False
 
     # ------------------------
     # Public API
@@ -321,6 +322,14 @@ class StreamWorker:
                 self._last_frame = frame.copy()
             except Exception:
                 self._last_frame = None
+
+        if not self._frame_logged:
+            self._frame_logged = True
+            try:
+                h, w = frame.shape[:2]
+                self.log(f"VIDEO_CHILD_FRAME_RECEIVED w={int(w)} h={int(h)}")
+            except Exception:
+                self.log("VIDEO_CHILD_FRAME_RECEIVED w=? h=?")
 
         if self._window_start is None:
             self._window_start = now
