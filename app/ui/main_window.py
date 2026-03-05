@@ -246,7 +246,9 @@ class MainWindow(QMainWindow):
         self._gps_static_sec_spin.setSingleStep(1.0)
         self._gps_static_sec_spin.setValue(_DEFAULT_GPS_STATIC_SEC)
 
-        gps_form.addRow("Путь к эфемеридам", nav_row)
+        nav_label = QLabel("Путь к эфемеридам", gps_box)
+        gps_form.addRow(nav_label)
+        gps_form.addRow(nav_row)
         gps_form.addRow("Время статики, сек", self._gps_static_sec_spin)
 
         pluto_box = QGroupBox("PlutoPlayer", self)
