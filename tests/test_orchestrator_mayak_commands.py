@@ -184,11 +184,14 @@ def test_prepare_then_start_uses_prepared_snapshot(monkeypatch: pytest.MonkeyPat
         "_find_latest_trajectory_artifact",
         lambda: {"run_dir": "R", "trajectory_csv": "T", "diagnostics_csv": "D"},
     )
-    monkeypatch.setattr(
-        orch,
-        "_write_scenario_manifest",
-        lambda prepared: Path("outputs/scenarios") / str(prepared.get("scenario_id", "x")) / "scenario_manifest.json",
-    )
+    captured_prepared: dict[str, Any] = {}
+
+    def _capture_manifest(prepared: dict[str, Any]) -> Path:
+        captured_prepared.clear()
+        captured_prepared.update(prepared)
+        return Path("outputs/scenarios") / str(prepared.get("scenario_id", "x")) / "scenario_manifest.json"
+
+    monkeypatch.setattr(orch, "_write_scenario_manifest", _capture_manifest)
 
     sid = orch.prepare_mayak_test(
         head_start_rpm=111,
@@ -197,8 +200,14 @@ def test_prepare_then_start_uses_prepared_snapshot(monkeypatch: pytest.MonkeyPat
         tail_end_rpm=622,
         profile_type="linear",
         duration_sec=7.0,
+        sdr_options={
+            "gps_sdr_sim": {"nav": "data/ephemerides/custom.nav", "static_sec": 12.0},
+            "pluto_player": {"rf_bw_mhz": 4.5, "tx_atten_db": -10.0},
+        },
     )
     assert sid.startswith("scn_")
+    assert captured_prepared.get("sdr_options", {}).get("gps_sdr_sim", {}).get("nav") == "data/ephemerides/custom.nav"
+    assert captured_prepared.get("sdr_options", {}).get("pluto_player", {}).get("rf_bw_mhz") == 4.5
 
     orch.start_prepared_mayak_test()
     assert mayak.start_test_calls == [(111, 511, 222, 622, "linear", 7.0)]

@@ -8,12 +8,14 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLayout,
+    QLineEdit,
     QMainWindow,
     QPushButton,
     QSpinBox,
@@ -49,6 +51,10 @@ _DEFAULT_CONFIG_JSON: dict[str, Any] = {
 
 _DEFAULT_PREVIEW_VISIBLE = "outputs/video_preview/visible/latest.jpg"
 _DEFAULT_PREVIEW_THERMAL = "outputs/video_preview/thermal/latest.jpg"
+_DEFAULT_GPS_NAV_PATH = "data/ephemerides/brdc0430.25n"
+_DEFAULT_GPS_STATIC_SEC = 2.0
+_DEFAULT_PLUTO_RF_BW_MHZ = 3.0
+_DEFAULT_PLUTO_TX_ATTEN_DB = -20.0
 
 
 class MainWindow(QMainWindow):
@@ -78,6 +84,7 @@ class MainWindow(QMainWindow):
         self._vl_rtsp_visible: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "vl_rtsp_visible")
         self._vl_rtsp_thermal: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "vl_rtsp_thermal")
         self._vl_mayak_params: Optional[QVBoxLayout] = self._safe_find_layout(QVBoxLayout, "l_Mayak_params")
+        self._gl_sdr_options: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_SDR_options")
 
         self._editor: Optional[ConfigJsonEditor] = None
         self._init_editor()
@@ -87,6 +94,12 @@ class MainWindow(QMainWindow):
         self._init_trajectory_view()
 
         self._init_rtsp_previews()
+        self._gps_nav_path_edit: Optional[QLineEdit] = None
+        self._btn_gps_nav_browse: Optional[QPushButton] = None
+        self._gps_static_sec_spin: Optional[QDoubleSpinBox] = None
+        self._pluto_rf_bw_spin: Optional[QDoubleSpinBox] = None
+        self._pluto_tx_atten_spin: Optional[QDoubleSpinBox] = None
+        self._init_sdr_options_panel()
 
         # Mayak panel refs
         self._mayak_profile_combo: Optional[QComboBox] = None
@@ -205,6 +218,59 @@ class MainWindow(QMainWindow):
         if self._vl_rtsp_thermal is not None:
             w = RtspPreviewWidget(_DEFAULT_PREVIEW_THERMAL, title="Thermal", poll_ms=200, parent=self)
             self._vl_rtsp_thermal.addWidget(w, 0, 0)
+
+    def _init_sdr_options_panel(self) -> None:
+        gl = self._gl_sdr_options
+        if gl is None:
+            return
+
+        self._clear_layout(gl)
+
+        gps_box = QGroupBox("GPS SDR Sim", self)
+        gps_form = QFormLayout(gps_box)
+
+        self._gps_nav_path_edit = QLineEdit(gps_box)
+        self._gps_nav_path_edit.setText(_DEFAULT_GPS_NAV_PATH)
+        self._gps_nav_path_edit.setPlaceholderText("data/ephemerides/brdc0430.25n")
+        self._btn_gps_nav_browse = QPushButton("...", gps_box)
+        self._btn_gps_nav_browse.setFixedWidth(34)
+        self._btn_gps_nav_browse.clicked.connect(self._on_gps_nav_browse_clicked)
+        nav_row = QHBoxLayout()
+        nav_row.setContentsMargins(0, 0, 0, 0)
+        nav_row.addWidget(self._gps_nav_path_edit)
+        nav_row.addWidget(self._btn_gps_nav_browse)
+
+        self._gps_static_sec_spin = QDoubleSpinBox(gps_box)
+        self._gps_static_sec_spin.setRange(0.0, 36000.0)
+        self._gps_static_sec_spin.setDecimals(1)
+        self._gps_static_sec_spin.setSingleStep(1.0)
+        self._gps_static_sec_spin.setValue(_DEFAULT_GPS_STATIC_SEC)
+
+        gps_form.addRow("Путь к эфемеридам", nav_row)
+        gps_form.addRow("Время статики, сек", self._gps_static_sec_spin)
+
+        pluto_box = QGroupBox("PlutoPlayer", self)
+        pluto_form = QFormLayout(pluto_box)
+
+        self._pluto_rf_bw_spin = QDoubleSpinBox(pluto_box)
+        self._pluto_rf_bw_spin.setRange(1.0, 5.0)
+        self._pluto_rf_bw_spin.setDecimals(2)
+        self._pluto_rf_bw_spin.setSingleStep(0.25)
+        self._pluto_rf_bw_spin.setValue(_DEFAULT_PLUTO_RF_BW_MHZ)
+
+        self._pluto_tx_atten_spin = QDoubleSpinBox(pluto_box)
+        self._pluto_tx_atten_spin.setRange(-80.0, 0.0)
+        self._pluto_tx_atten_spin.setDecimals(2)
+        self._pluto_tx_atten_spin.setSingleStep(0.25)
+        self._pluto_tx_atten_spin.setValue(_DEFAULT_PLUTO_TX_ATTEN_DB)
+
+        pluto_form.addRow("Полоса пропускания, МГц", self._pluto_rf_bw_spin)
+        pluto_form.addRow("Ослабление TX, дБ", self._pluto_tx_atten_spin)
+
+        gl.addWidget(gps_box, 0, 0)
+        gl.addWidget(pluto_box, 1, 0)
+        gl.setRowStretch(2, 1)
+        gl.setColumnStretch(0, 1)
 
     def _init_mayak_panel(self) -> None:
         vl = self._vl_mayak_params
@@ -427,6 +493,7 @@ class MainWindow(QMainWindow):
                 tail_end_rpm=tail_end,
                 profile_type=profile_type,
                 duration_sec=duration_sec,
+                sdr_options=self.get_sdr_options(),
             )
             self._last_sent_mayak_duration_sec = float(duration_sec)
             self._refresh_duration_labels()
@@ -502,6 +569,53 @@ class MainWindow(QMainWindow):
         btn = self._get_generate_button()
         if btn is not None:
             btn.setEnabled(enabled)
+
+    def _on_gps_nav_browse_clicked(self) -> None:
+        current = self._gps_nav_path_edit.text().strip() if self._gps_nav_path_edit is not None else ""
+        start_dir = os.path.dirname(current) if current else ""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Выберите файл эфемерид",
+            start_dir,
+            "Nav files (*.n *.nav *.rnx);;All files (*.*)",
+        )
+        if file_path and self._gps_nav_path_edit is not None:
+            self._gps_nav_path_edit.setText(file_path)
+
+    def get_sdr_options(self) -> dict[str, Any]:
+        nav = self._gps_nav_path_edit.text().strip() if self._gps_nav_path_edit is not None else _DEFAULT_GPS_NAV_PATH
+        static_sec = float(self._gps_static_sec_spin.value()) if self._gps_static_sec_spin is not None else _DEFAULT_GPS_STATIC_SEC
+        rf_bw_mhz = float(self._pluto_rf_bw_spin.value()) if self._pluto_rf_bw_spin is not None else _DEFAULT_PLUTO_RF_BW_MHZ
+        tx_atten_db = float(self._pluto_tx_atten_spin.value()) if self._pluto_tx_atten_spin is not None else _DEFAULT_PLUTO_TX_ATTEN_DB
+
+        if not nav:
+            nav = _DEFAULT_GPS_NAV_PATH
+
+        return {
+            "gps_sdr_sim": {
+                "nav": nav,
+                "static_sec": static_sec,
+            },
+            "pluto_player": {
+                "rf_bw_mhz": rf_bw_mhz,
+                "tx_atten_db": tx_atten_db,
+            },
+        }
+
+    def get_sdr_profile_overrides(self) -> dict[str, Any]:
+        opts = self.get_sdr_options()
+        gps = opts.get("gps_sdr_sim", {}) if isinstance(opts, dict) else {}
+        pluto = opts.get("pluto_player", {}) if isinstance(opts, dict) else {}
+        return {
+            "services": {
+                "gps_sdr_sim": {
+                    "nav": gps.get("nav", _DEFAULT_GPS_NAV_PATH),
+                    "static_sec": gps.get("static_sec", _DEFAULT_GPS_STATIC_SEC),
+                    "rf_bw_mhz": pluto.get("rf_bw_mhz", _DEFAULT_PLUTO_RF_BW_MHZ),
+                    "tx_atten_db": pluto.get("tx_atten_db", _DEFAULT_PLUTO_TX_ATTEN_DB),
+                }
+            }
+        }
 
     def _update_mayak_rpm_limits_from_health(self, e: object) -> None:
         max_sp1 = max(1, int(getattr(e, "effective_max_rpm_sp1", 6000)))

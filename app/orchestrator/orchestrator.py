@@ -555,6 +555,7 @@ class Orchestrator:
         tail_end_rpm: int,
         profile_type: str,
         duration_sec: float,
+        sdr_options: dict[str, Any] | None = None,
     ) -> None:
         """
         Backward-compatible entrypoint.
@@ -567,6 +568,7 @@ class Orchestrator:
             tail_end_rpm=tail_end_rpm,
             profile_type=profile_type,
             duration_sec=duration_sec,
+            sdr_options=sdr_options,
         )
         self.start_prepared_mayak_test()
 
@@ -579,6 +581,7 @@ class Orchestrator:
         tail_end_rpm: int,
         profile_type: str,
         duration_sec: float,
+        sdr_options: dict[str, Any] | None = None,
     ) -> str:
         emit_log(
             self._bus,
@@ -624,6 +627,7 @@ class Orchestrator:
             "source": "mayak_test",
             "trajectory": trajectory,
             "services_snapshot": self._snapshot_service_sections("default", ("mayak_spindle", "gps_sdr_sim")),
+            "sdr_options": self._sanitize_sdr_options(sdr_options),
             "mayak": {
                 "head_start_rpm": int(head_start_rpm),
                 "head_end_rpm": int(head_end_rpm),
@@ -1159,6 +1163,41 @@ class Orchestrator:
         manifest_path = out_dir / "scenario_manifest.json"
         manifest_path.write_text(json.dumps(prepared, ensure_ascii=False, indent=2), encoding="utf-8")
         return manifest_path
+
+    def _sanitize_sdr_options(self, sdr_options: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(sdr_options, dict):
+            return {
+                "gps_sdr_sim": {"nav": "", "static_sec": 0.0},
+                "pluto_player": {"rf_bw_mhz": 3.0, "tx_atten_db": -20.0},
+            }
+
+        gps = sdr_options.get("gps_sdr_sim")
+        pluto = sdr_options.get("pluto_player")
+
+        gps_nav = ""
+        gps_static = 0.0
+        if isinstance(gps, dict):
+            nav = gps.get("nav")
+            static_sec = gps.get("static_sec")
+            if isinstance(nav, str):
+                gps_nav = nav.strip()
+            if isinstance(static_sec, (int, float)):
+                gps_static = max(0.0, float(static_sec))
+
+        rf_bw = 3.0
+        tx_att = -20.0
+        if isinstance(pluto, dict):
+            rf = pluto.get("rf_bw_mhz")
+            att = pluto.get("tx_atten_db")
+            if isinstance(rf, (int, float)):
+                rf_bw = max(1.0, min(5.0, float(rf)))
+            if isinstance(att, (int, float)):
+                tx_att = max(-80.0, min(0.0, float(att)))
+
+        return {
+            "gps_sdr_sim": {"nav": gps_nav, "static_sec": gps_static},
+            "pluto_player": {"rf_bw_mhz": rf_bw, "tx_atten_db": tx_att},
+        }
 
     def _snapshot_service_sections(self, profile_name: str, service_names: tuple[str, ...]) -> dict[str, Any]:
         """
