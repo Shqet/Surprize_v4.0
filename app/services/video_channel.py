@@ -190,6 +190,7 @@ class VideoChannelDaemonService:
                 w = self._worker
                 if w is not None and hasattr(w, "send_cmd"):
                     if not self._is_worker_stream_connected(w):
+                        next_tick = time.monotonic() + max(0.2, self._preview_period_sec)
                         continue
                     try:
                         w.send_cmd({"cmd": "SAVE_PREVIEW", "path": path})
