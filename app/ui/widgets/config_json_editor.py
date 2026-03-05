@@ -44,6 +44,28 @@ _KEY_LABELS_RU: dict[str, str] = {
     "omega_body": "Начальная угловая скорость [wx,wy,wz]",
 }
 
+_KEY_TOOLTIPS_RU: dict[str, str] = {
+    "simulation": "Параметры численного расчета (время, шаг, лимиты итераций).",
+    "dt": "Шаг интегрирования по времени, сек. Меньше значение -> выше точность и дольше расчет.",
+    "t_max": "Максимальная длительность моделирования, сек.",
+    "max_steps": "Ограничение на число шагов расчета для защиты от зависания.",
+    "projectile": "Физические параметры снаряда и среды.",
+    "m": "Масса снаряда, кг.",
+    "S": "Характерная площадь, м^2.",
+    "C_L": "Коэффициент подъемной силы.",
+    "C_mp": "Коэффициент аэродинамического демпфирования.",
+    "g": "Ускорение свободного падения, м/с^2.",
+    "rotation": "Параметры вращательной динамики снаряда.",
+    "Ix": "Момент инерции вокруг оси X.",
+    "Iy": "Момент инерции вокруг оси Y.",
+    "Iz": "Момент инерции вокруг оси Z.",
+    "k_stab": "Коэффициент стабилизации вращения.",
+    "initial_conditions": "Начальные условия запуска траектории.",
+    "V0": "Начальная скорость, м/с.",
+    "theta_deg": "Угол места (тангаж) в градусах.",
+    "psi_deg": "Азимутальный угол (рыскание) в градусах.",
+}
+
 
 class _ValueOnlyEditDelegate(QStyledItemDelegate):
     """
@@ -300,6 +322,10 @@ class ConfigJsonEditor(QWidget):
 
                 item = QTreeWidgetItem([self._display_name_for_key(str(k)), self._value_label(v)])
                 item.setData(0, Qt.ItemDataRole.UserRole, str(k))
+                tip = self._tooltip_for_key(str(k))
+                if tip:
+                    item.setToolTip(0, tip)
+                    item.setToolTip(1, tip)
 
                 if isinstance(v, dict):
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -327,6 +353,9 @@ class ConfigJsonEditor(QWidget):
         if not ru:
             return key
         return f"{ru} ({key})"
+
+    def _tooltip_for_key(self, key: str) -> str:
+        return _KEY_TOOLTIPS_RU.get(key, "")
 
     # ---------- editing / validation ----------
 
