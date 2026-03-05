@@ -579,7 +579,7 @@ class MainWindow(QMainWindow):
             self,
             "Выберите файл эфемерид",
             start_dir,
-            "Nav files (*.n *.nav *.rnx);;All files (*.*)",
+            "Ephemeris files (*.*n);;All files (*.*)",
         )
         if file_path and self._gps_nav_path_edit is not None:
             self._gps_nav_path_edit.setText(file_path)
