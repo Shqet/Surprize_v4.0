@@ -23,7 +23,6 @@ from dataclasses import dataclass
 from typing import Dict, Any, Optional, Tuple
 import math
 import numpy as np
-import matplotlib.pyplot as plt
 
 from impact_event import simulate_euler_full_with_impact
 from integrator_euler import (
@@ -154,6 +153,11 @@ def print_control_checks(diag: Dict[str, np.ndarray]) -> None:
 
 
 def plot_required_and_tech(t: np.ndarray, Y: np.ndarray, diag: Dict[str, np.ndarray]) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception as ex:
+        raise RuntimeError("matplotlib is required for plotting") from ex
+
     X = Y[:, IDX_X]
     Yp = Y[:, IDX_Y]
     Z = Y[:, IDX_Z]
