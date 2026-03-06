@@ -1,141 +1,92 @@
-# UI Prepare-Test Button (Draft v1)
+# UI Prepare-Test Button (v1, current behavior)
 
-Status: draft  
-Date: 2026-03-05
+Status: active  
+Date: 2026-03-06
 
 ## Scope
 
-This document defines UI behavior for a new button in `l_functionalButtons`:
+This document defines current behavior for button:
 
-- Button label: `Подготовиться к тесту`
-
-Code implementation is out of scope for this step.  
-This is a behavioral contract for upcoming UI/orchestrator work.
+- `Подготовиться к тесту` (`btn_prepare_test`)
 
 ## Goal
 
-Before test start, operator triggers an explicit preparation action that:
+Run preparation stage only:
 
-- validates required inputs
-- generates PlutoPlayer input artifact
-- informs operator about GPS signal preparation
-- shows visible progress during generation
+- validate operator inputs
+- create prepared scenario snapshot
+- generate GPS preflight artifacts (NMEA + IQ)
 
-## Placement
+Important:
 
-- Container: `l_functionalButtons`
-- Order (recommended): after trajectory generation controls and before `Начать испытание`
+- this action does **not** run SDR readiness probe
+- this action does **not** run Pluto transmission probe
+
+SDR readiness probe is executed only by:
+
+- `Проверить готовность систем` (`btn_check_readiness_m`)
 
 ## Click Flow
 
 When operator clicks `Подготовиться к тесту`, UI executes:
 
-1. Pre-warning dialog
-2. Input checks
-3. PlutoPlayer artifact generation
-4. Result summary
+1. confirmation dialog
+2. input validation (trajectory + ephemerides file)
+3. orchestrator preparation:
+   - `prepare_mayak_test(...)`
+   - `generate_gps_signal_preflight(...)`
+4. success/fail summary dialog
 
-## 1) Pre-warning Dialog (mandatory)
+Execution runs in background task and reports progress to UI.
 
-Before starting generation, show confirm dialog:
+## Input Checks (blocking)
 
-- Title: `Подготовка к тесту`
-- Message:
-  - GPS signal preparation will start now
-  - this may take noticeable time
-  - do you want to continue
+- trajectory for current session exists
+- ephemerides path is set
+- ephemerides file exists
 
-Buttons:
+If checks fail:
 
-- `Продолжить`
-- `Отмена`
+- show readable error list
+- do not start preparation
 
-If canceled: stop flow, keep UI unchanged.
+## Output Artifacts
 
-## 2) Input Checks (blocking)
+Primary artifacts are created under scenario folder:
 
-Checks required for successful preparation:
+- `outputs/scenarios/<scenario_id>/gps_preflight/nmea_strings.txt`
+- `outputs/scenarios/<scenario_id>/gps_preflight/gpssim_iq.bin`
+- `outputs/scenarios/<scenario_id>/gps_preflight/gps_preflight_meta.json`
 
-- trajectory exists and is valid (generated artifact available)
-- ephemerides path is set and file exists
+## UI Progress and State
 
-If any check fails:
+While running:
 
-- show human-readable error list
-- do not start generation
-- keep `Начать испытание` disabled
-
-## 3) PlutoPlayer Artifact Generation
-
-UI requests orchestrator preflight generation (no direct subprocess from UI).
-
-Expected output artifact (draft):
-
-- `outputs/scenarios/<scenario_id>/pluto_input.json`
-
-During generation:
-
-- show progress bar in UI
-- disable repeated click on `Подготовиться к тесту`
-- allow cancel only if backend supports cancellation (optional in v1)
-
-Progress model (v1 draft):
-
-- indeterminate progress allowed initially
-- determinate progress preferred when backend reports steps
-
-## 4) Result Summary
+- `btn_prepare_test` is disabled
+- progress bar is visible
 
 On success:
 
-- show success message
-- display generated artifact path
-- mark preparation as completed
-- allow transition to monitoring/readiness stage
+- success dialog shows `scenario_id` and IQ path
+- monitoring tab becomes active
+- trajectory monitoring animation starts
 
 On failure:
 
-- show error summary
-- keep preparation status as failed
-- keep `Начать испытание` disabled
+- error dialog with exception summary
+- progress resets
 
-## UI State Requirements
+## Separation of Responsibilities
 
-State flags (draft):
+- UI: collect inputs, show progress/result
+- Orchestrator: perform preparation and artifact generation
+- UI does not run subprocesses directly
 
-- `prep_in_progress: bool`
-- `prep_done: bool`
-- `prep_error: str | None`
+## Related Buttons
 
-Button policy:
+- `Проверить готовность систем`:
+  - executes `check_readiness()`
+  - includes blocking SDR probe
+- `Начать испытание`:
+  - executes readiness recheck before start
 
-- `Подготовиться к тесту` disabled while `prep_in_progress`
-- `Начать испытание` enabled only after successful readiness/preparation policy
-
-## Logging Requirements (UI)
-
-Suggested UI log codes:
-
-- `UI_PREPARE_CLICKED`
-- `UI_PREPARE_CONFIRM_ACCEPTED`
-- `UI_PREPARE_CONFIRM_CANCELLED`
-- `UI_PREPARE_VALIDATE_FAIL`
-- `UI_PREPARE_PROGRESS`
-- `UI_PREPARE_DONE`
-- `UI_PREPARE_FAILED`
-
-All messages should follow `k=v` style where possible.
-
-## Non-Goals
-
-- No direct service calls from UI
-- No UI-side subprocess execution
-- No final visual design decisions in this document
-
-## Acceptance Criteria (documentation phase)
-
-- New button behavior is fully specified
-- Blocking checks are explicitly listed
-- Operator warning before GPS generation is required
-- Progress bar behavior is defined
-- Success/failure outcomes are defined
