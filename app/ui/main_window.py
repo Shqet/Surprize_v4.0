@@ -998,6 +998,7 @@ class MainWindow(QMainWindow):
         return '<span style="color:#c62828; font-weight:700;">&#10006;</span>'
 
     def _build_readiness_details_html(self, report: dict[str, Any]) -> str:
+        ready_to_start = bool(report.get("ready_to_start"))
         blocking_raw = report.get("blocking_errors", [])
         warnings_raw = report.get("warnings", [])
         blocking = {str(x) for x in blocking_raw} if isinstance(blocking_raw, list) else set()
@@ -1049,6 +1050,11 @@ class MainWindow(QMainWindow):
         for title, kind, state_txt in rows:
             icon = self._status_icon_html(kind)
             lines.append(f"{icon} <b>{title}</b>: {state_txt}<br/>")
+        lines.append("<br/>")
+        if ready_to_start:
+            lines.append('<span style="color:#2e7d32; font-weight:700;">Итог: тест может быть запущен.</span>')
+        else:
+            lines.append('<span style="color:#c62828; font-weight:700;">Итог: тест НЕ может быть запущен.</span>')
         lines.append("</div>")
         return "".join(lines)
 
