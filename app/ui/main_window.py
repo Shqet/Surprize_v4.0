@@ -175,6 +175,7 @@ class MainWindow(QMainWindow):
         self._monitor_load_seq: int = 0
         self._m_speed_lbl: Optional[QLabel] = None
         self._m_coords_lbl: Optional[QLabel] = None
+        self._m_geo_lbl: Optional[QLabel] = None
         self._m_height_lbl: Optional[QLabel] = None
         self._m_distance_lbl: Optional[QLabel] = None
         self._monitor_timer = QTimer(self)
@@ -354,11 +355,13 @@ class MainWindow(QMainWindow):
 
         self._m_speed_lbl = QLabel("-", box)
         self._m_coords_lbl = QLabel("-", box)
+        self._m_geo_lbl = QLabel("-", box)
         self._m_height_lbl = QLabel("-", box)
         self._m_distance_lbl = QLabel("-", box)
 
         form.addRow("Скорость, м/с", self._m_speed_lbl)
         form.addRow("Координаты X/Y/Z, м", self._m_coords_lbl)
+        form.addRow("Земные координаты lat/lon/h", self._m_geo_lbl)
         form.addRow("Высота, м", self._m_height_lbl)
         form.addRow("Пройдено, м", self._m_distance_lbl)
 
@@ -1043,6 +1046,16 @@ class MainWindow(QMainWindow):
             self._m_speed_lbl.setText(f"{speed:.2f}")
         if self._m_coords_lbl is not None:
             self._m_coords_lbl.setText(f"{x:.2f} / {y:.2f} / {z:.2f}")
+        if self._m_geo_lbl is not None:
+            lat0 = float(self._gps_origin_lat_spin.value()) if self._gps_origin_lat_spin is not None else _DEFAULT_GPS_ORIGIN_LAT
+            lon0 = float(self._gps_origin_lon_spin.value()) if self._gps_origin_lon_spin is not None else _DEFAULT_GPS_ORIGIN_LON
+            h0 = float(self._gps_origin_h_spin.value()) if self._gps_origin_h_spin is not None else _DEFAULT_GPS_ORIGIN_H_M
+            try:
+                x_ecef, y_ecef, z_ecef = enu_to_ecef(float(x), float(y), float(z), lat0, lon0, h0)
+                lat, lon, h = ecef_to_geodetic(x_ecef, y_ecef, z_ecef)
+                self._m_geo_lbl.setText(f"{lat:.6f} / {lon:.6f} / {h:.2f}")
+            except Exception:
+                self._m_geo_lbl.setText("Ошибка")
         if self._m_height_lbl is not None:
             self._m_height_lbl.setText(f"{z:.2f}")
         if self._m_distance_lbl is not None:
