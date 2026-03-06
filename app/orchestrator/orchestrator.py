@@ -1848,8 +1848,9 @@ class Orchestrator:
             stdout_path.write_text(out or "", encoding="utf-8")
             stderr_path.write_text(err or "", encoding="utf-8")
             if int(rc) == 0:
-                emit_log(self._bus, "INFO", "orchestrator", "ORCH_SDR_PROBE_OK", f"mode=fast_exit iq={iq_path.as_posix()}")
-                return True, ""
+                # False-positive guard: fast clean exit often happens when SDR link is absent.
+                # For readiness probe we require active hold mode, not immediate process completion.
+                return False, "pluto_probe_fast_exit_rc0"
             tail = (err or "").strip().splitlines()
             msg = tail[-1] if tail else f"rc={rc}"
             return False, f"pluto_probe_failed:{msg}"
