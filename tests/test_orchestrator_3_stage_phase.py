@@ -44,6 +44,14 @@ class _MayakService:
         self.stop_test_calls += 1
 
 
+@dataclass
+class _CameraService:
+    ready: bool = False
+
+    def is_ready(self) -> bool:
+        return bool(self.ready)
+
+
 def test_prepare_readiness_start_stop_flow_sets_phase(tmp_path: Path, monkeypatch) -> None:
     nav = tmp_path / "brdc.nav"
     nav.write_text("dummy", encoding="utf-8")
@@ -154,3 +162,41 @@ def test_generate_gps_preflight_reports_missing_exe(tmp_path: Path, monkeypatch)
         msg = str(ex)
         assert "gps_sdr_sim_exe_not_found" in msg
         assert "checked=" in msg
+
+
+def test_readiness_warns_when_camera_services_not_connected(tmp_path: Path, monkeypatch) -> None:
+    nav = tmp_path / "brdc.nav"
+    nav.write_text("dummy", encoding="utf-8")
+    traj_dir = tmp_path / "ballistics" / "run1"
+    traj_dir.mkdir(parents=True, exist_ok=True)
+    traj = traj_dir / "trajectory.csv"
+    traj.write_text("t,X,Y,Z\n0,0,0,0\n", encoding="utf-8")
+    diag = traj_dir / "diagnostics.csv"
+    diag.write_text("t,V\n0,0\n", encoding="utf-8")
+
+    bus = EventBus()
+    mayak = _MayakService(ready=True)
+    cam_v = _CameraService(ready=False)
+    cam_t = _CameraService(ready=False)
+    sm = _FakeServiceManager({"mayak_spindle": mayak, "video_visible": cam_v, "video_thermal": cam_t})
+    orch = Orchestrator(bus, sm)
+
+    monkeypatch.setattr(
+        orch,
+        "_find_latest_trajectory_artifact",
+        lambda: {"run_dir": str(traj_dir), "trajectory_csv": str(traj), "diagnostics_csv": str(diag)},
+    )
+
+    orch.prepare_mayak_test(
+        head_start_rpm=100,
+        head_end_rpm=200,
+        tail_start_rpm=300,
+        tail_end_rpm=400,
+        profile_type="linear",
+        duration_sec=5.0,
+        sdr_options={"gps_sdr_sim": {"nav": str(nav), "static_sec": 0.0}},
+    )
+    report = orch.check_readiness()
+    assert report["ready_to_start"] is True
+    assert "video_visible_not_ready" in report["warnings"]
+    assert "video_thermal_not_ready" in report["warnings"]

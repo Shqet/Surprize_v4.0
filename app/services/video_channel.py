@@ -112,6 +112,15 @@ class VideoChannelDaemonService:
     def status(self) -> ServiceStatus:
         return self._status
 
+    def is_ready(self) -> bool:
+        """
+        Camera is considered ready only when worker stream is actually connected.
+        """
+        w = self._worker
+        if w is None:
+            return False
+        return self._is_worker_stream_connected(w)
+
     def _publish_status(self, st: ServiceStatus) -> None:
         self._status = st
         self._bus.publish(ServiceStatusEvent(service_name=self._name, status=st.value))

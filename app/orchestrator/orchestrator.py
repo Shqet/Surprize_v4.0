@@ -749,8 +749,19 @@ class Orchestrator:
             blocking_errors.append(f"mayak_check_failed:{type(ex).__name__}")
 
         # cameras are warning-only
+        services_map = self._sm.get_services()
         for cam_name in ("video_visible", "video_thermal"):
-            if not self._is_service_running(cam_name):
+            cam_ready = False
+            svc = services_map.get(cam_name)
+            fn = getattr(svc, "is_ready", None) if svc is not None else None
+            if callable(fn):
+                try:
+                    cam_ready = bool(fn())
+                except Exception:
+                    cam_ready = False
+            else:
+                cam_ready = self._is_service_running(cam_name)
+            if not cam_ready:
                 warnings.append(f"{cam_name}_not_ready")
 
         # simple pluto input artifact generation
