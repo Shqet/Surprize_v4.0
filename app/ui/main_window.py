@@ -126,6 +126,28 @@ class _PrepareTestTask(QRunnable):
             self.signals.fail.emit(f"{type(ex).__name__}: {ex}")
 
 
+class _ReadinessCheckSignals(QObject):
+    progress = pyqtSignal(int, str)
+    done = pyqtSignal(object)
+    fail = pyqtSignal(str)
+
+
+class _ReadinessCheckTask(QRunnable):
+    def __init__(self, *, orchestrator: Orchestrator) -> None:
+        super().__init__()
+        self._orch = orchestrator
+        self.signals = _ReadinessCheckSignals()
+
+    def run(self) -> None:
+        try:
+            self.signals.progress.emit(15, "Проверка готовности")
+            report = self._orch.check_readiness()
+            self.signals.progress.emit(100, "Проверка завершена")
+            self.signals.done.emit(report)
+        except Exception as ex:
+            self.signals.fail.emit(f"{type(ex).__name__}: {ex}")
+
+
 class MainWindow(QMainWindow):
     def __init__(self, orchestrator: Orchestrator, bridge: UIBridge) -> None:
         super().__init__()
@@ -139,6 +161,7 @@ class MainWindow(QMainWindow):
         self._trajectory_duration_sec: Optional[float] = None
         self._last_sent_mayak_duration_sec: Optional[float] = None
         self._prepare_task: Optional[_PrepareTestTask] = None
+        self._readiness_task: Optional[_ReadinessCheckTask] = None
         self._ui_debug: bool = str(os.getenv("SURPRIZE_UI_DEBUG", "0")).strip().lower() in (
             "1",
             "true",
@@ -226,6 +249,7 @@ class MainWindow(QMainWindow):
         self._btn_check_readiness_m: Optional[QPushButton] = None
         self._btn_start_test_m: Optional[QPushButton] = None
         self._prep_progress: Optional[QProgressBar] = None
+        self._readiness_progress_m: Optional[QProgressBar] = None
         self._init_functional_buttons()
 
         self._traj_loader = TrajectoryCsvLoader()
@@ -627,8 +651,15 @@ class MainWindow(QMainWindow):
             self._btn_check_readiness_m.setObjectName("btn_check_readiness_m")
             self._btn_start_test_m = QPushButton("Начать испытание", self)
             self._btn_start_test_m.setObjectName("btn_start_test_m")
+            self._readiness_progress_m = QProgressBar(self)
+            self._readiness_progress_m.setObjectName("pb_readiness_check_m")
+            self._readiness_progress_m.setRange(0, 100)
+            self._readiness_progress_m.setValue(0)
+            self._readiness_progress_m.setVisible(False)
+            self._readiness_progress_m.setTextVisible(True)
             glm.addWidget(self._btn_check_readiness_m, 0, 0)
             glm.addWidget(self._btn_start_test_m, 0, 1)
+            glm.addWidget(self._readiness_progress_m, 1, 0, 1, 2)
             glm.setColumnStretch(0, 1)
             glm.setColumnStretch(1, 1)
 
@@ -929,17 +960,37 @@ class MainWindow(QMainWindow):
         self._log_error("UI_PREPARE_FAILED", f"stage=run err={error}")
         QMessageBox.critical(self, "Подготовка к тесту", f"Ошибка подготовки: {error}")
 
-    def _on_monitor_check_readiness_clicked(self) -> None:
-        try:
-            report = self._orch.check_readiness()
-        except Exception as ex:
-            self._log_error("UI_MONITOR_READINESS_FAILED", f"err={type(ex).__name__}")
-            QMessageBox.critical(self, "Мониторинг", f"Ошибка проверки готовности: {type(ex).__name__}")
+    def _set_readiness_check_running(self, running: bool) -> None:
+        if self._btn_check_readiness_m is not None:
+            self._btn_check_readiness_m.setEnabled(not running)
+        if self._btn_start_test_m is not None:
+            self._btn_start_test_m.setEnabled(not running)
+
+        if self._readiness_progress_m is None:
             return
 
-        ready = bool(report.get("ready_to_start")) if isinstance(report, dict) else False
-        blocking = report.get("blocking_errors", []) if isinstance(report, dict) else []
-        warnings = report.get("warnings", []) if isinstance(report, dict) else []
+        if running:
+            self._readiness_progress_m.setVisible(True)
+            self._readiness_progress_m.setRange(0, 100)
+            self._readiness_progress_m.setValue(0)
+            self._readiness_progress_m.setFormat("Проверка готовности...")
+        else:
+            self._readiness_progress_m.setRange(0, 100)
+            self._readiness_progress_m.setValue(100)
+            self._readiness_progress_m.setVisible(False)
+
+    def _on_readiness_progress(self, value: int, message: str) -> None:
+        if self._readiness_progress_m is not None:
+            self._readiness_progress_m.setRange(0, 100)
+            self._readiness_progress_m.setValue(max(0, min(100, int(value))))
+            self._readiness_progress_m.setFormat(message if message else "Проверка готовности...")
+        if message:
+            self.statusBar().showMessage(message, 1500)
+
+    def _present_readiness_report(self, report: dict[str, Any]) -> None:
+        ready = bool(report.get("ready_to_start"))
+        blocking = report.get("blocking_errors", [])
+        warnings = report.get("warnings", [])
         blocking_txt = ",".join(str(x) for x in blocking) if isinstance(blocking, list) and blocking else "none"
         warnings_txt = ",".join(str(x) for x in warnings) if isinstance(warnings, list) and warnings else "none"
 
@@ -951,16 +1002,44 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.information(self, "Мониторинг", "Системы готовы к испытанию.")
             self.statusBar().showMessage("Readiness: готово", 3000)
-        else:
-            self._log_error("UI_MONITOR_READINESS", f"ready=0 blocking={blocking_txt} warnings={warnings_txt}")
-            QMessageBox.warning(
-                self,
-                "Мониторинг",
-                f"Системы не готовы.\nБлокирующие: {blocking_txt}\nПредупреждения: {warnings_txt}",
-            )
-            self.statusBar().showMessage("Readiness: не готово", 3000)
+            return
+
+        self._log_error("UI_MONITOR_READINESS", f"ready=0 blocking={blocking_txt} warnings={warnings_txt}")
+        QMessageBox.warning(
+            self,
+            "Мониторинг",
+            f"Системы не готовы.\nБлокирующие: {blocking_txt}\nПредупреждения: {warnings_txt}",
+        )
+        self.statusBar().showMessage("Readiness: не готово", 3000)
+
+    def _on_readiness_done(self, payload: object) -> None:
+        self._set_readiness_check_running(False)
+        self._readiness_task = None
+        report = payload if isinstance(payload, dict) else {}
+        self._present_readiness_report(report)
+
+    def _on_readiness_fail(self, error: str) -> None:
+        self._set_readiness_check_running(False)
+        self._readiness_task = None
+        self._log_error("UI_MONITOR_READINESS_FAILED", f"err={error}")
+        QMessageBox.critical(self, "Мониторинг", f"Ошибка проверки готовности: {error}")
+
+    def _on_monitor_check_readiness_clicked(self) -> None:
+        if self._readiness_task is not None:
+            return
+
+        self._set_readiness_check_running(True)
+        task = _ReadinessCheckTask(orchestrator=self._orch)
+        self._readiness_task = task
+        task.signals.progress.connect(self._on_readiness_progress)
+        task.signals.done.connect(self._on_readiness_done)
+        task.signals.fail.connect(self._on_readiness_fail)
+        QThreadPool.globalInstance().start(task)
 
     def _on_monitor_start_test_clicked(self) -> None:
+        if self._readiness_task is not None:
+            self.statusBar().showMessage("Дождитесь завершения проверки готовности", 2500)
+            return
         try:
             report = self._orch.check_readiness()
             warnings = report.get("warnings", []) if isinstance(report, dict) else []
