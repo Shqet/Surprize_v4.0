@@ -17,3 +17,9 @@ ruff format .
 black .
 mypy app
 pytest -q
+
+## 5) Safe pytest run (ACL workaround)
+powershell -ExecutionPolicy Bypass -File .\tools\run_tests_safe.ps1 -q
+
+# Targeted example:
+powershell -ExecutionPolicy Bypass -File .\tools\run_tests_safe.ps1 tests/test_orchestrator_3_stage_phase.py -q
