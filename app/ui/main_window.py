@@ -105,20 +105,15 @@ class _PrepareTestTask(QRunnable):
                 sdr_options=self._sdr_options,
             )
 
-            self.signals.progress.emit(30, "Проверка готовности")
-            report = self._orch.check_readiness()
-
-            gps_artifacts: dict[str, str] = {}
-            if bool(report.get("ready_to_start")):
-                gps_artifacts = self._orch.generate_gps_signal_preflight(
-                    progress_cb=lambda p, m: self.signals.progress.emit(int(p), str(m)),
-                )
+            self.signals.progress.emit(30, "Генерация GPS preflight")
+            gps_artifacts = self._orch.generate_gps_signal_preflight(
+                progress_cb=lambda p, m: self.signals.progress.emit(int(p), str(m)),
+            )
 
             self.signals.progress.emit(100, "Готово")
             self.signals.done.emit(
                 {
                     "scenario_id": scenario_id,
-                    "report": report,
                     "gps_artifacts": gps_artifacts,
                 }
             )
@@ -898,61 +893,34 @@ class MainWindow(QMainWindow):
 
         data = payload if isinstance(payload, dict) else {}
         scenario_id = str(data.get("scenario_id", "none"))
-        report = data.get("report", {})
         gps_artifacts = data.get("gps_artifacts", {})
-
-        ready = bool(report.get("ready_to_start")) if isinstance(report, dict) else False
-        blocking = report.get("blocking_errors", []) if isinstance(report, dict) else []
-        warnings = report.get("warnings", []) if isinstance(report, dict) else []
-        artifacts = report.get("artifacts", {}) if isinstance(report, dict) else {}
-        pluto_path = str(artifacts.get("pluto_input", "")) if isinstance(artifacts, dict) else ""
         iq_path = str(gps_artifacts.get("iq", "")) if isinstance(gps_artifacts, dict) else ""
-
-        if ready:
-            self._log_info(
-                "UI_PREPARE_DONE",
-                (
-                    f"scenario_id={scenario_id} ready=1 "
-                    f"pluto_input={pluto_path or 'none'} "
-                    f"iq={iq_path or 'none'}"
-                ),
-            )
-            QMessageBox.information(
-                self,
-                "Подготовка к тесту",
-                (
-                    "Подготовка завершена успешно.\n"
-                    f"scenario_id: {scenario_id}\n"
-                    f"pluto_input: {pluto_path or 'n/a'}\n"
-                    f"iq: {iq_path or 'n/a'}"
-                ),
-            )
-            self.statusBar().showMessage("Подготовка к тесту завершена", 4000)
-            self._start_monitor_trajectory_animation()
-            try:
-                idx = self.ui.tw_research.indexOf(self.ui.monitoringTab)
-                if idx >= 0:
-                    self.ui.tw_research.setCurrentIndex(idx)
-            except Exception:
-                pass
-            return
-
-        blocking_txt = ",".join(str(x) for x in blocking) if isinstance(blocking, list) and blocking else "none"
-        warnings_txt = ",".join(str(x) for x in warnings) if isinstance(warnings, list) and warnings else "none"
-        self._log_error(
-            "UI_PREPARE_FAILED",
-            f"stage=readiness blocking={blocking_txt} warnings={warnings_txt}",
+        self._log_info(
+            "UI_PREPARE_DONE",
+            (
+                f"scenario_id={scenario_id} "
+                f"iq={iq_path or 'none'}"
+            ),
         )
-        QMessageBox.warning(
+        QMessageBox.information(
             self,
             "Подготовка к тесту",
             (
-                "Подготовка выполнена с ошибками готовности.\n"
-                f"Блокирующие: {blocking_txt}\n"
-                f"Предупреждения: {warnings_txt}"
+                "Подготовка завершена успешно.\n"
+                f"scenario_id: {scenario_id}\n"
+                f"iq: {iq_path or 'n/a'}\n\n"
+                "Для проверки подключения SDR используйте кнопку "
+                "\"Проверить готовность систем\"."
             ),
         )
-        self.statusBar().showMessage("Подготовка не прошла readiness-check", 4000)
+        self.statusBar().showMessage("Подготовка к тесту завершена", 4000)
+        self._start_monitor_trajectory_animation()
+        try:
+            idx = self.ui.tw_research.indexOf(self.ui.monitoringTab)
+            if idx >= 0:
+                self.ui.tw_research.setCurrentIndex(idx)
+        except Exception:
+            pass
 
     def _on_prepare_fail(self, error: str) -> None:
         self._set_prepare_progress_running(False)
