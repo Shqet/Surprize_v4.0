@@ -482,3 +482,56 @@ def test_pluto_probe_allows_delayed_success_output(tmp_path: Path, monkeypatch) 
 
     assert ok is True
     assert detail == ""
+
+
+def test_pluto_probe_uses_absolute_iq_path_and_pluto_cwd(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    pluto_dir = tmp_path / "bin" / "pluto"
+    pluto_dir.mkdir(parents=True, exist_ok=True)
+    pluto_exe = pluto_dir / "PlutoPlayer.exe"
+    pluto_exe.write_bytes(b"MZ")
+
+    iq = tmp_path / "outputs" / "gps_sdr_sim" / "probe_cache" / "probe_iq.bin"
+    iq.parent.mkdir(parents=True, exist_ok=True)
+    iq.write_bytes(b"\x00\x01")
+
+    captured: dict[str, Any] = {}
+
+    class _FakePopen:
+        def __init__(self, cmd, cwd=None, **kwargs) -> None:
+            captured["cmd"] = list(cmd)
+            captured["cwd"] = cwd
+
+        def poll(self):
+            return 0
+
+        def communicate(self, timeout=None):
+            return ("* Found 192.168.2.1 (PlutoSDR)\nDone.\n", "")
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+    bus = EventBus()
+    sm = _FakeServiceManager({})
+    orch = Orchestrator(bus, sm)
+
+    monkeypatch.setattr("app.orchestrator.orchestrator.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("app.orchestrator.orchestrator.time.sleep", lambda _sec: None)
+
+    ok, detail = orch._run_pluto_probe(
+        pluto_exe=str(pluto_exe),
+        iq_path=iq,
+        tx_atten_db=-20.0,
+        rf_bw_mhz=3.0,
+    )
+
+    assert ok is True
+    assert detail == ""
+    cmd = captured.get("cmd", [])
+    assert len(cmd) >= 3
+    assert cmd[1] == "-t"
+    assert cmd[2] == str(iq.resolve())
+    assert captured.get("cwd") == str(pluto_exe.resolve().parent)

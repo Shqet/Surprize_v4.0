@@ -1802,13 +1802,16 @@ class Orchestrator:
         rf_bw_mhz: float,
     ) -> tuple[bool, str]:
         out_dir = iq_path.parent
+        pluto_exe_path = Path(pluto_exe).resolve()
+        iq_abs = iq_path.resolve()
+        pluto_cwd = pluto_exe_path.parent
         stdout_path = out_dir / "probe_pluto_stdout.log"
         stderr_path = out_dir / "probe_pluto_stderr.log"
         cmdline_txt = out_dir / "probe_plutoplayer.cmdline.txt"
         cmd = [
-            str(pluto_exe),
+            str(pluto_exe_path),
             "-t",
-            iq_path.name,
+            str(iq_abs),
             "-a",
             f"{float(tx_atten_db):.2f}",
             "-b",
@@ -1819,7 +1822,7 @@ class Orchestrator:
         try:
             proc = subprocess.Popen(
                 cmd,
-                cwd=str(out_dir),
+                cwd=str(pluto_cwd),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
