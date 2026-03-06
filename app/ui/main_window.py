@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import copy
+import math
 import os
 import time
 from typing import Any, Optional, cast
@@ -149,6 +150,7 @@ class MainWindow(QMainWindow):
         self.ui.setupUi(self)
 
         self._gl_trajectory_params: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "gl_trajectory_params")
+        self._gl_trajectory_params_m: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "gl_trajectory_params_m")
         self._vl_trajectory_visualization: Optional[QVBoxLayout] = self._safe_find_layout(QVBoxLayout, "vl_trajectory_visualization")
         self._vl_trajectory_visualization_m: Optional[QVBoxLayout] = self._safe_find_layout(QVBoxLayout, "vl_trajectory_visualization_m")
         self._vl_rtsp_visible: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "vl_rtsp_visible")
@@ -166,14 +168,21 @@ class MainWindow(QMainWindow):
         self._traj_view_m = Trajectory3DView(self)
         self._latest_trajectory_points: list[tuple[float, float, float]] = []
         self._monitor_points: list[tuple[float, float, float]] = []
+        self._monitor_cum_dist_m: list[float] = []
+        self._monitor_sample_dt: float = 0.0
         self._monitor_duration_sec: float = 0.0
         self._monitor_started_at: Optional[float] = None
         self._monitor_load_seq: int = 0
+        self._m_speed_lbl: Optional[QLabel] = None
+        self._m_coords_lbl: Optional[QLabel] = None
+        self._m_height_lbl: Optional[QLabel] = None
+        self._m_distance_lbl: Optional[QLabel] = None
         self._monitor_timer = QTimer(self)
         self._monitor_timer.setInterval(50)
         self._monitor_timer.timeout.connect(self._on_monitor_timer_tick)
         self._init_trajectory_view()
         self._init_monitor_trajectory_view()
+        self._init_monitor_params_panel()
 
         self._init_rtsp_previews()
         self._gps_nav_path_edit: Optional[QLineEdit] = None
@@ -333,6 +342,29 @@ class MainWindow(QMainWindow):
         vl.addWidget(self._traj_view_m)
         vl.setStretch(0, 1)
         self._traj_view_m.set_status("Мониторинг траектории (3D)\nОжидание подготовленного сценария")
+
+    def _init_monitor_params_panel(self) -> None:
+        gl = self._gl_trajectory_params_m
+        if gl is None:
+            return
+        self._clear_layout(gl)
+
+        box = QGroupBox("Параметры траектории (мониторинг)", self)
+        form = QFormLayout(box)
+
+        self._m_speed_lbl = QLabel("-", box)
+        self._m_coords_lbl = QLabel("-", box)
+        self._m_height_lbl = QLabel("-", box)
+        self._m_distance_lbl = QLabel("-", box)
+
+        form.addRow("Скорость, м/с", self._m_speed_lbl)
+        form.addRow("Координаты X/Y/Z, м", self._m_coords_lbl)
+        form.addRow("Высота, м", self._m_height_lbl)
+        form.addRow("Пройдено, м", self._m_distance_lbl)
+
+        gl.addWidget(box, 0, 0)
+        gl.setRowStretch(1, 1)
+        gl.setColumnStretch(0, 1)
 
     def _init_rtsp_previews(self) -> None:
         if self._vl_rtsp_visible is not None:
@@ -941,13 +973,24 @@ class MainWindow(QMainWindow):
             return
 
         self._monitor_points = points
+        self._monitor_cum_dist_m = []
         d = float(duration_sec) if isinstance(duration_sec, (int, float)) and float(duration_sec) > 0 else 0.0
         if d <= 0.0:
             d = max((len(points) - 1) / 10.0, 0.1)
         self._monitor_duration_sec = d
+        self._monitor_sample_dt = (d / (len(points) - 1)) if len(points) > 1 else 0.0
         self._monitor_started_at = time.monotonic()
 
+        cum: list[float] = [0.0]
+        for i in range(1, len(points)):
+            x0, y0, z0 = points[i - 1]
+            x1, y1, z1 = points[i]
+            seg = math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2)
+            cum.append(cum[-1] + float(seg))
+        self._monitor_cum_dist_m = cum
+
         self._traj_view_m.set_points(points)
+        self._update_monitor_params(0)
         self._traj_view_m.set_status(None)
         self._monitor_timer.start()
         self._log_info(
@@ -974,6 +1017,36 @@ class MainWindow(QMainWindow):
         idx = int((t / d) * (len(points) - 1))
         idx = max(0, min(len(points) - 1, idx))
         self._traj_view_m.set_marker_point(points[idx])
+        self._update_monitor_params(idx)
+
+    def _update_monitor_params(self, idx: int) -> None:
+        points = self._monitor_points
+        if not points:
+            return
+        i = max(0, min(len(points) - 1, int(idx)))
+        x, y, z = points[i]
+
+        speed = 0.0
+        dt = self._monitor_sample_dt
+        if len(points) > 1 and dt > 0.0:
+            i0 = max(0, i - 1)
+            i1 = min(len(points) - 1, i + 1)
+            if i1 > i0:
+                x0, y0, z0 = points[i0]
+                x1, y1, z1 = points[i1]
+                ds = math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2)
+                speed = ds / (float(i1 - i0) * dt)
+
+        dist = self._monitor_cum_dist_m[i] if i < len(self._monitor_cum_dist_m) else 0.0
+
+        if self._m_speed_lbl is not None:
+            self._m_speed_lbl.setText(f"{speed:.2f}")
+        if self._m_coords_lbl is not None:
+            self._m_coords_lbl.setText(f"{x:.2f} / {y:.2f} / {z:.2f}")
+        if self._m_height_lbl is not None:
+            self._m_height_lbl.setText(f"{z:.2f}")
+        if self._m_distance_lbl is not None:
+            self._m_distance_lbl.setText(f"{dist:.2f}")
 
     def _on_gps_origin_changed(self, _value: float) -> None:
         self._refresh_gps_finish_point()
