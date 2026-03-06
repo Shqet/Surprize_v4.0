@@ -159,6 +159,7 @@ class MainWindow(QMainWindow):
         self._gl_sdr_options: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_SDR_options")
         self._gl_gps_sdr_options_m: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_gpsSDRSim_options_m")
         self._gl_functional_buttons: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_functionalButtons")
+        self._gl_functional_buttons_m: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_functionalButtons_m")
 
         self._editor: Optional[ConfigJsonEditor] = None
         self._init_editor()
@@ -222,6 +223,8 @@ class MainWindow(QMainWindow):
         self._mayak_tel_labels: dict[str, dict[str, QLabel]] = {}
         self._init_mayak_panel()
         self._btn_prepare_test: Optional[QPushButton] = None
+        self._btn_check_readiness_m: Optional[QPushButton] = None
+        self._btn_start_test_m: Optional[QPushButton] = None
         self._prep_progress: Optional[QProgressBar] = None
         self._init_functional_buttons()
 
@@ -599,25 +602,35 @@ class MainWindow(QMainWindow):
 
     def _init_functional_buttons(self) -> None:
         gl = self._gl_functional_buttons
-        if gl is None:
-            return
+        if gl is not None:
+            self._clear_layout(gl)
 
-        self._clear_layout(gl)
+            self._btn_prepare_test = QPushButton("Подготовиться к тесту", self)
+            self._btn_prepare_test.setObjectName("btn_prepare_test")
 
-        self._btn_prepare_test = QPushButton("Подготовиться к тесту", self)
-        self._btn_prepare_test.setObjectName("btn_prepare_test")
+            self._prep_progress = QProgressBar(self)
+            self._prep_progress.setObjectName("pb_prepare_test")
+            self._prep_progress.setRange(0, 100)
+            self._prep_progress.setValue(0)
+            self._prep_progress.setVisible(False)
+            self._prep_progress.setTextVisible(True)
 
-        self._prep_progress = QProgressBar(self)
-        self._prep_progress.setObjectName("pb_prepare_test")
-        self._prep_progress.setRange(0, 100)
-        self._prep_progress.setValue(0)
-        self._prep_progress.setVisible(False)
-        self._prep_progress.setTextVisible(True)
+            gl.addWidget(self._btn_prepare_test, 0, 0)
+            gl.addWidget(self._prep_progress, 0, 1)
+            gl.setColumnStretch(0, 0)
+            gl.setColumnStretch(1, 1)
 
-        gl.addWidget(self._btn_prepare_test, 0, 0)
-        gl.addWidget(self._prep_progress, 0, 1)
-        gl.setColumnStretch(0, 0)
-        gl.setColumnStretch(1, 1)
+        glm = self._gl_functional_buttons_m
+        if glm is not None:
+            self._clear_layout(glm)
+            self._btn_check_readiness_m = QPushButton("Проверить готовность систем", self)
+            self._btn_check_readiness_m.setObjectName("btn_check_readiness_m")
+            self._btn_start_test_m = QPushButton("Начать испытание", self)
+            self._btn_start_test_m.setObjectName("btn_start_test_m")
+            glm.addWidget(self._btn_check_readiness_m, 0, 0)
+            glm.addWidget(self._btn_start_test_m, 0, 1)
+            glm.setColumnStretch(0, 1)
+            glm.setColumnStretch(1, 1)
 
     # ---------------- wiring ----------------
 
@@ -636,6 +649,10 @@ class MainWindow(QMainWindow):
             self._mayak_duration_override.toggled.connect(self._on_mayak_duration_override_toggled)
         if self._btn_prepare_test is not None:
             self._btn_prepare_test.clicked.connect(self._on_prepare_test_clicked)
+        if self._btn_check_readiness_m is not None:
+            self._btn_check_readiness_m.clicked.connect(self._on_monitor_check_readiness_clicked)
+        if self._btn_start_test_m is not None:
+            self._btn_start_test_m.clicked.connect(self._on_monitor_start_test_clicked)
 
     def _connect_bridge(self) -> None:
         try:
@@ -911,6 +928,42 @@ class MainWindow(QMainWindow):
         self._prepare_task = None
         self._log_error("UI_PREPARE_FAILED", f"stage=run err={error}")
         QMessageBox.critical(self, "Подготовка к тесту", f"Ошибка подготовки: {error}")
+
+    def _on_monitor_check_readiness_clicked(self) -> None:
+        try:
+            report = self._orch.check_readiness()
+        except Exception as ex:
+            self._log_error("UI_MONITOR_READINESS_FAILED", f"err={type(ex).__name__}")
+            QMessageBox.critical(self, "Мониторинг", f"Ошибка проверки готовности: {type(ex).__name__}")
+            return
+
+        ready = bool(report.get("ready_to_start")) if isinstance(report, dict) else False
+        blocking = report.get("blocking_errors", []) if isinstance(report, dict) else []
+        warnings = report.get("warnings", []) if isinstance(report, dict) else []
+        blocking_txt = ",".join(str(x) for x in blocking) if isinstance(blocking, list) and blocking else "none"
+        warnings_txt = ",".join(str(x) for x in warnings) if isinstance(warnings, list) and warnings else "none"
+
+        if ready:
+            self._log_info("UI_MONITOR_READINESS", "ready=1")
+            QMessageBox.information(self, "Мониторинг", "Системы готовы к испытанию.")
+            self.statusBar().showMessage("Readiness: готово", 3000)
+        else:
+            self._log_error("UI_MONITOR_READINESS", f"ready=0 blocking={blocking_txt} warnings={warnings_txt}")
+            QMessageBox.warning(
+                self,
+                "Мониторинг",
+                f"Системы не готовы.\nБлокирующие: {blocking_txt}\nПредупреждения: {warnings_txt}",
+            )
+            self.statusBar().showMessage("Readiness: не готово", 3000)
+
+    def _on_monitor_start_test_clicked(self) -> None:
+        try:
+            self._orch.start_test_flow()
+            self._log_info("UI_MONITOR_START_TEST", "status=ok")
+            self.statusBar().showMessage("Испытание запущено", 3000)
+        except Exception as ex:
+            self._log_error("UI_MONITOR_START_TEST_FAILED", f"err={type(ex).__name__}")
+            QMessageBox.critical(self, "Мониторинг", f"Не удалось начать испытание: {type(ex).__name__}")
 
     def _on_mayak_emergency_clicked(self) -> None:
         try:
