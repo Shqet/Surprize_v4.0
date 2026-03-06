@@ -771,6 +771,13 @@ class Orchestrator:
         except Exception as ex:
             blocking_errors.append(f"pluto_input_failed:{type(ex).__name__}")
 
+        # SDR readiness is blocking: short PlutoPlayer probe with cached short IQ.
+        sdr_ok, sdr_detail = self._check_sdr_readiness(prepared)
+        if not sdr_ok:
+            blocking_errors.append("sdr_not_ready")
+            if sdr_detail:
+                warnings.append(f"sdr_probe:{sdr_detail}")
+
         ready = not blocking_errors
         if ready:
             self._set_phase(OrchestratorPhase.READY, f"scenario_id={scenario_id}")
@@ -1522,6 +1529,196 @@ class Orchestrator:
             "pluto_player": {"rf_bw_mhz": rf_bw, "tx_atten_db": tx_att},
         }
 
+    def _check_sdr_readiness(self, prepared: dict[str, Any]) -> tuple[bool, str]:
+        """
+        Blocking SDR check:
+          1) ensure short probe IQ exists (cache; generate once if absent)
+          2) run short PlutoPlayer transmission probe
+        """
+        sdr = prepared.get("sdr_options")
+        gps = sdr.get("gps_sdr_sim") if isinstance(sdr, dict) else {}
+        pluto = sdr.get("pluto_player") if isinstance(sdr, dict) else {}
+        if not isinstance(gps, dict):
+            gps = {}
+        if not isinstance(pluto, dict):
+            pluto = {}
+
+        nav = str(gps.get("nav", "") or "").strip()
+        if not nav:
+            return False, "gps_nav_missing"
+        nav_path = Path(nav).resolve()
+        if not nav_path.exists():
+            return False, f"gps_nav_not_found={nav_path.as_posix()}"
+
+        services_snapshot = prepared.get("services_snapshot")
+        gps_service = services_snapshot.get("gps_sdr_sim") if isinstance(services_snapshot, dict) else {}
+        if not isinstance(gps_service, dict):
+            gps_service = {}
+
+        try:
+            gps_exe = self._resolve_gps_sdr_sim_executable(gps_service, gps)
+            pluto_exe = self._resolve_pluto_player_executable(gps_service, pluto)
+        except Exception as ex:
+            return False, str(ex)
+
+        bit_depth = int(gps_service.get("bit_depth", 16) or 16)
+        if bit_depth not in (8, 16):
+            bit_depth = 16
+
+        origin_lat = float(gps.get("origin_lat", 55.7558) or 55.7558)
+        origin_lon = float(gps.get("origin_lon", 37.6176) or 37.6176)
+        origin_h = float(gps.get("origin_h", 156.0) or 156.0)
+        tx_atten_db = float(pluto.get("tx_atten_db", -20.0) or -20.0)
+        rf_bw_mhz = float(pluto.get("rf_bw_mhz", 3.0) or 3.0)
+
+        try:
+            probe_iq = self._ensure_sdr_probe_iq(
+                gps_exe=gps_exe,
+                nav_path=nav_path,
+                bit_depth=bit_depth,
+                origin_lat=origin_lat,
+                origin_lon=origin_lon,
+                origin_h=origin_h,
+            )
+        except Exception as ex:
+            return False, f"probe_iq_failed:{type(ex).__name__}:{ex}"
+
+        ok, detail = self._run_pluto_probe(
+            pluto_exe=pluto_exe,
+            iq_path=probe_iq,
+            tx_atten_db=tx_atten_db,
+            rf_bw_mhz=rf_bw_mhz,
+        )
+        return (ok, detail)
+
+    def _ensure_sdr_probe_iq(
+        self,
+        *,
+        gps_exe: str,
+        nav_path: Path,
+        bit_depth: int,
+        origin_lat: float,
+        origin_lon: float,
+        origin_h: float,
+    ) -> Path:
+        out_dir = (Path("outputs") / "gps_sdr_sim" / "probe_cache").resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        traj_csv = out_dir / "probe_trajectory.csv"
+        nmea_txt = out_dir / "probe_nmea.txt"
+        iq_bin = out_dir / "probe_iq.bin"
+        cmdline_txt = out_dir / "probe_gps_sdr_sim.cmdline.txt"
+        gps_stdout = out_dir / "probe_gps_stdout.log"
+        gps_stderr = out_dir / "probe_gps_stderr.log"
+
+        if iq_bin.exists() and iq_bin.stat().st_size > 0:
+            return iq_bin
+
+        # Tiny static trajectory for deterministic short probe artifact.
+        traj_csv.write_text("t,X,Y,Z\n0.0,0,0,0\n0.1,0,0,0\n", encoding="utf-8")
+        prepare_nmea_input(
+            input_trajectory_csv=traj_csv,
+            out_nmea_txt=nmea_txt,
+            origin_lat_deg=float(origin_lat),
+            origin_lon_deg=float(origin_lon),
+            origin_h_m=float(origin_h),
+            static_sec=1.0,
+        )
+
+        nav_local = out_dir / nav_path.name
+        nav_local.write_bytes(nav_path.read_bytes())
+
+        cmd = [str(gps_exe), "-e", nav_local.name, "-g", nmea_txt.name, "-b", str(int(bit_depth)), "-o", iq_bin.name]
+        cmdline_txt.write_text(" ".join(cmd), encoding="utf-8")
+        proc = subprocess.run(
+            cmd,
+            cwd=str(out_dir),
+            capture_output=True,
+            text=True,
+            timeout=45.0,
+            encoding="utf-8",
+            errors="replace",
+        )
+        gps_stdout.write_text(proc.stdout or "", encoding="utf-8")
+        gps_stderr.write_text(proc.stderr or "", encoding="utf-8")
+        if proc.returncode != 0:
+            tail = (proc.stderr or "").strip().splitlines()
+            msg = tail[-1] if tail else "unknown_error"
+            raise RuntimeError(f"gps_probe_rc={proc.returncode} err={msg}")
+        if not iq_bin.exists() or iq_bin.stat().st_size <= 0:
+            raise RuntimeError("gps_probe_iq_missing")
+        return iq_bin
+
+    def _run_pluto_probe(
+        self,
+        *,
+        pluto_exe: str,
+        iq_path: Path,
+        tx_atten_db: float,
+        rf_bw_mhz: float,
+    ) -> tuple[bool, str]:
+        out_dir = iq_path.parent
+        stdout_path = out_dir / "probe_pluto_stdout.log"
+        stderr_path = out_dir / "probe_pluto_stderr.log"
+        cmdline_txt = out_dir / "probe_plutoplayer.cmdline.txt"
+        cmd = [
+            str(pluto_exe),
+            "-t",
+            iq_path.name,
+            "-a",
+            f"{float(tx_atten_db):.2f}",
+            "-b",
+            f"{float(rf_bw_mhz):.2f}",
+        ]
+        cmdline_txt.write_text(" ".join(cmd), encoding="utf-8")
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(out_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except Exception as ex:
+            return False, f"pluto_start_failed:{type(ex).__name__}"
+
+        try:
+            time.sleep(1.5)
+            rc = proc.poll()
+            if rc is None:
+                proc.terminate()
+                try:
+                    out, err = proc.communicate(timeout=3.0)
+                except Exception:
+                    proc.kill()
+                    out, err = proc.communicate()
+                stdout_path.write_text(out or "", encoding="utf-8")
+                stderr_path.write_text(err or "", encoding="utf-8")
+                emit_log(self._bus, "INFO", "orchestrator", "ORCH_SDR_PROBE_OK", f"mode=hold iq={iq_path.as_posix()}")
+                return True, ""
+
+            out, err = proc.communicate(timeout=1.0)
+            stdout_path.write_text(out or "", encoding="utf-8")
+            stderr_path.write_text(err or "", encoding="utf-8")
+            if int(rc) == 0:
+                emit_log(self._bus, "INFO", "orchestrator", "ORCH_SDR_PROBE_OK", f"mode=fast_exit iq={iq_path.as_posix()}")
+                return True, ""
+            tail = (err or "").strip().splitlines()
+            msg = tail[-1] if tail else f"rc={rc}"
+            return False, f"pluto_probe_failed:{msg}"
+        except Exception as ex:
+            try:
+                proc.kill()
+                out, err = proc.communicate(timeout=1.0)
+                stdout_path.write_text(out or "", encoding="utf-8")
+                stderr_path.write_text(err or "", encoding="utf-8")
+            except Exception:
+                pass
+            return False, f"pluto_probe_exception:{type(ex).__name__}"
+
     def _resolve_gps_sdr_sim_executable(self, gps_service: dict[str, Any], gps: dict[str, Any]) -> str:
         """
         Resolve gps-sdr-sim executable with explicit config first, then local bin, then PATH.
@@ -1560,6 +1757,41 @@ class Orchestrator:
 
         checked_txt = ",".join(checked) if checked else "none"
         raise FileNotFoundError(f"gps_sdr_sim_exe_not_found checked={checked_txt}")
+
+    def _resolve_pluto_player_executable(self, gps_service: dict[str, Any], pluto: dict[str, Any]) -> str:
+        explicit = str(gps_service.get("pluto_exe") or pluto.get("pluto_exe") or "").strip()
+        local_candidates = [
+            Path("bin") / "pluto" / "PlutoPlayer.exe",
+            Path("bin") / "pluto" / "PlutoPlayer",
+        ]
+        names_from_path = ["PlutoPlayer.exe", "PlutoPlayer", "plutoplayer.exe", "plutoplayer"]
+
+        candidates: list[str] = []
+        if explicit:
+            candidates.append(explicit)
+        candidates.extend(str(p) for p in local_candidates)
+        candidates.extend(names_from_path)
+
+        checked: list[str] = []
+        for raw in candidates:
+            token = str(raw).strip()
+            if not token:
+                continue
+            looks_like_path = any(sep in token for sep in ("/", "\\")) or Path(token).suffix.lower() == ".exe"
+            if looks_like_path:
+                p = Path(token).expanduser().resolve()
+                checked.append(p.as_posix())
+                if p.exists() and p.is_file():
+                    return str(p)
+                continue
+
+            found = shutil.which(token)
+            checked.append(found or f"PATH:{token}")
+            if found:
+                return str(Path(found).resolve())
+
+        checked_txt = ",".join(checked) if checked else "none"
+        raise FileNotFoundError(f"pluto_exe_not_found checked={checked_txt}")
 
     def _snapshot_service_sections(self, profile_name: str, service_names: tuple[str, ...]) -> dict[str, Any]:
         """
