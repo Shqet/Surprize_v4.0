@@ -864,7 +864,11 @@ class Orchestrator:
             static_sec=static_sec,
         )
 
-        cmd = [exe, "-e", str(nav_path), "-g", str(nmea_txt), "-b", str(bit_depth), "-o", str(iq_bin)]
+        nav_local = out_dir / nav_path.name
+        if nav_local.resolve() != nav_path:
+            nav_local.write_bytes(nav_path.read_bytes())
+
+        cmd = [exe, "-e", nav_local.name, "-g", nmea_txt.name, "-b", str(bit_depth), "-o", iq_bin.name]
         if extra_args:
             cmd += shlex.split(extra_args)
         cmdline_txt.write_text(" ".join(cmd), encoding="utf-8")
