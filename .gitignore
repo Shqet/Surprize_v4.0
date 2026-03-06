@@ -28,3 +28,4 @@ latest.jpg
 /bin/
 /outputs/
 
+/.pytest_tmp/
