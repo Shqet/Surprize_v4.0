@@ -670,6 +670,12 @@ class MainWindow(QMainWindow):
                 ),
             )
             self.statusBar().showMessage("Подготовка к тесту завершена", 4000)
+            try:
+                idx = self.ui.tw_research.indexOf(self.ui.monitoringTab)
+                if idx >= 0:
+                    self.ui.tw_research.setCurrentIndex(idx)
+            except Exception:
+                pass
             return
 
         blocking_txt = ",".join(str(x) for x in blocking) if isinstance(blocking, list) and blocking else "none"
@@ -706,18 +712,11 @@ class MainWindow(QMainWindow):
     def _validate_prepare_inputs(self) -> list[str]:
         errors: list[str] = []
 
-        latest_traj: Optional[dict[str, str]] = None
-        finder = getattr(self._orch, "_find_latest_trajectory_artifact", None)
-        if callable(finder):
-            try:
-                obj = finder()
-                latest_traj = obj if isinstance(obj, dict) else None
-            except Exception:
-                latest_traj = None
-
-        traj_csv = latest_traj.get("trajectory_csv") if isinstance(latest_traj, dict) else None
-        if not isinstance(traj_csv, str) or not traj_csv.strip() or not os.path.exists(traj_csv):
-            errors.append("траектория не сгенерирована")
+        # Strict check: use trajectory from current session only.
+        run_dir = getattr(self._traj_ctl, "last_run_dir", None)
+        traj_csv = os.path.join(run_dir, "trajectory.csv") if isinstance(run_dir, str) and run_dir.strip() else ""
+        if not traj_csv or not os.path.exists(traj_csv):
+            errors.append("траектория текущего сеанса не сгенерирована")
 
         nav = self._gps_nav_path_edit.text().strip() if self._gps_nav_path_edit is not None else ""
         if not nav:
