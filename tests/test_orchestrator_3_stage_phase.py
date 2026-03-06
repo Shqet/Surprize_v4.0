@@ -437,3 +437,48 @@ def test_pluto_probe_detects_success_from_pluto_output(tmp_path: Path, monkeypat
 
     assert ok is True
     assert detail == ""
+
+
+def test_pluto_probe_allows_delayed_success_output(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    iq = tmp_path / "probe_iq.bin"
+    iq.write_bytes(b"\x00\x01")
+
+    class _FakePopen:
+        def __init__(self, *args, **kwargs) -> None:
+            self._poll_calls = 0
+
+        def poll(self):
+            self._poll_calls += 1
+            if self._poll_calls < 6:
+                return None
+            return 0
+
+        def communicate(self, timeout=None):
+            return (
+                "* Acquiring IIO context\n* Found 192.168.2.1 (PlutoSDR)\n* Transmit starts...\nDone.\n",
+                "",
+            )
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+    bus = EventBus()
+    sm = _FakeServiceManager({})
+    orch = Orchestrator(bus, sm)
+
+    monkeypatch.setattr("app.orchestrator.orchestrator.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("app.orchestrator.orchestrator.time.sleep", lambda _sec: None)
+
+    ok, detail = orch._run_pluto_probe(
+        pluto_exe="PlutoPlayer.exe",
+        iq_path=iq,
+        tx_atten_db=-20.0,
+        rf_bw_mhz=3.0,
+    )
+
+    assert ok is True
+    assert detail == ""

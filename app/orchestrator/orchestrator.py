@@ -1854,7 +1854,9 @@ class Orchestrator:
             return False, "pluto_probe_inconclusive"
 
         try:
-            deadline = time.monotonic() + 4.0
+            # Pluto may print successful acquisition lines with noticeable delay.
+            # Keep probe window long enough to avoid false "not ready" on slow bring-up.
+            deadline = time.monotonic() + 8.0
             rc = proc.poll()
             while rc is None and time.monotonic() < deadline:
                 time.sleep(0.1)
