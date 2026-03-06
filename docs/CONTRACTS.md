@@ -28,6 +28,68 @@ RUNNING
 STOPPING
 ERROR
 
+---
+
+## Orchestrator Phase API (current)
+
+Runtime phase enum (UI/monitoring flow):
+
+- PREPARING
+- PREPARED
+- MONITORING
+- READY
+- TEST_RUNNING
+- PHASE_ERROR
+
+---
+
+## Readiness Report Contract (current)
+
+`check_readiness() -> dict[str, Any]`
+
+Required fields:
+
+- `ready_to_start: bool`
+- `blocking_errors: list[str]`
+- `warnings: list[str]`
+- `artifacts: dict[str, str]`
+
+Typical blocking keys:
+
+- `trajectory_missing`
+- `gps_nav_missing`
+- `mayak_not_ready`
+- `sdr_not_ready`
+- `pluto_input_failed:<ErrType>`
+
+Typical warning keys:
+
+- `video_visible_not_ready`
+- `video_thermal_not_ready`
+- `sdr_probe:<detail>`
+
+---
+
+## Test Session API (skeleton, current)
+
+`start_test_session() -> dict[str, str]`
+
+- precondition: prepared scenario exists
+- creates `outputs/sessions/<session_id>/`
+- writes:
+  - `session_manifest.json`
+  - `events.log` with `SESSION_START`
+
+`stop_test_session() -> dict[str, str]`
+
+- precondition: active test session exists
+- appends `SESSION_STOP` to `events.log`
+- finalizes `session_manifest.json` (`status=STOPPED`, `t1_unix`, `duration_sec`)
+
+Session id format:
+
+- `sess_<epoch_ms>_<seq>`
+
 Runtime Profile Overrides (v3)
 Orchestrator поддерживает передачу runtime-overrides при запуске:
 
