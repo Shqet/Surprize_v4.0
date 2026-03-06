@@ -341,8 +341,13 @@ class MainWindow(QMainWindow):
             if w is not None:
                 w.setParent(None)
                 w.deleteLater()
+        self._m_anim_without_test_chk = QCheckBox("Анимировать полет без испытания", self)
+        self._m_anim_without_test_chk.setChecked(True)
+        self._m_anim_without_test_chk.toggled.connect(self._on_monitor_anim_toggled)
+        vl.addWidget(self._m_anim_without_test_chk)
         vl.addWidget(self._traj_view_m)
-        vl.setStretch(0, 1)
+        vl.setStretch(0, 0)
+        vl.setStretch(1, 1)
         self._traj_view_m.set_status("Мониторинг траектории (3D)\nОжидание подготовленного сценария")
 
     def _init_monitor_params_panel(self) -> None:
@@ -354,15 +359,12 @@ class MainWindow(QMainWindow):
         box = QGroupBox("Параметры траектории (мониторинг)", self)
         form = QFormLayout(box)
 
-        self._m_anim_without_test_chk = QCheckBox("Анимировать полет без испытания", box)
-        self._m_anim_without_test_chk.setChecked(True)
         self._m_speed_lbl = QLabel("-", box)
         self._m_coords_lbl = QLabel("-", box)
         self._m_geo_lbl = QLabel("-", box)
         self._m_height_lbl = QLabel("-", box)
         self._m_distance_lbl = QLabel("-", box)
 
-        form.addRow("", self._m_anim_without_test_chk)
         form.addRow("Скорость, м/с", self._m_speed_lbl)
         form.addRow("Координаты X/Y/Z, м", self._m_coords_lbl)
         form.addRow("Земные координаты lat/lon/h", self._m_geo_lbl)
@@ -1071,6 +1073,15 @@ class MainWindow(QMainWindow):
             self._m_height_lbl.setText(f"{z:.2f}")
         if self._m_distance_lbl is not None:
             self._m_distance_lbl.setText(f"{dist:.2f}")
+
+    def _on_monitor_anim_toggled(self, checked: bool) -> None:
+        if not checked:
+            self._monitor_timer.stop()
+            self._traj_view_m.set_status("Мониторинг траектории (3D)\nАнимация отключена оператором")
+            self._log_info("UI_MONITOR_ANIM_STOP", "reason=disabled_by_operator")
+            return
+        if self._monitor_points:
+            self._apply_monitor_points(list(self._monitor_points), self._monitor_duration_sec)
 
     def _on_gps_origin_changed(self, _value: float) -> None:
         self._refresh_gps_finish_point()
