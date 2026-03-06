@@ -40,6 +40,8 @@ check_untyped_defs = true
 mypy_path = ["app"]
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--basetemp=./.pytest_tmp"
 markers = [
   "smoke: runs external binaries/hardware-dependent integration scenarios",
 ]
