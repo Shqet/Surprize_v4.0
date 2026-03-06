@@ -4,6 +4,7 @@ import copy
 import os
 from typing import Any, Optional, cast
 
+from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -59,6 +60,70 @@ _DEFAULT_GPS_ORIGIN_LON = 37.6176
 _DEFAULT_GPS_ORIGIN_H_M = 156.0
 
 
+class _PrepareTestSignals(QObject):
+    progress = pyqtSignal(int, str)
+    done = pyqtSignal(object)
+    fail = pyqtSignal(str)
+
+
+class _PrepareTestTask(QRunnable):
+    def __init__(
+        self,
+        *,
+        orchestrator: Orchestrator,
+        head_start: int,
+        head_end: int,
+        tail_start: int,
+        tail_end: int,
+        profile_type: str,
+        duration_sec: float,
+        sdr_options: dict[str, Any],
+    ) -> None:
+        super().__init__()
+        self._orch = orchestrator
+        self._head_start = int(head_start)
+        self._head_end = int(head_end)
+        self._tail_start = int(tail_start)
+        self._tail_end = int(tail_end)
+        self._profile_type = str(profile_type)
+        self._duration_sec = float(duration_sec)
+        self._sdr_options = dict(sdr_options)
+        self.signals = _PrepareTestSignals()
+
+    def run(self) -> None:
+        try:
+            self.signals.progress.emit(10, "Подготовка сценария")
+            scenario_id = self._orch.prepare_mayak_test(
+                head_start_rpm=self._head_start,
+                head_end_rpm=self._head_end,
+                tail_start_rpm=self._tail_start,
+                tail_end_rpm=self._tail_end,
+                profile_type=self._profile_type,
+                duration_sec=self._duration_sec,
+                sdr_options=self._sdr_options,
+            )
+
+            self.signals.progress.emit(30, "Проверка готовности")
+            report = self._orch.check_readiness()
+
+            gps_artifacts: dict[str, str] = {}
+            if bool(report.get("ready_to_start")):
+                gps_artifacts = self._orch.generate_gps_signal_preflight(
+                    progress_cb=lambda p, m: self.signals.progress.emit(int(p), str(m)),
+                )
+
+            self.signals.progress.emit(100, "Готово")
+            self.signals.done.emit(
+                {
+                    "scenario_id": scenario_id,
+                    "report": report,
+                    "gps_artifacts": gps_artifacts,
+                }
+            )
+        except Exception as ex:
+            self.signals.fail.emit(f"{type(ex).__name__}: {ex}")
+
+
 class MainWindow(QMainWindow):
     def __init__(self, orchestrator: Orchestrator, bridge: UIBridge) -> None:
         super().__init__()
@@ -71,6 +136,7 @@ class MainWindow(QMainWindow):
         self._last_mayak_health_event: Optional[object] = None
         self._trajectory_duration_sec: Optional[float] = None
         self._last_sent_mayak_duration_sec: Optional[float] = None
+        self._prepare_task: Optional[_PrepareTestTask] = None
         self._ui_debug: bool = str(os.getenv("SURPRIZE_UI_DEBUG", "0")).strip().lower() in (
             "1",
             "true",
@@ -623,77 +689,28 @@ class MainWindow(QMainWindow):
         self._log_info("UI_PREPARE_CONFIRM_ACCEPTED", "action=prepare_test")
 
         self._set_prepare_progress_running(True)
-        try:
-            head_start = int(self._head_start_spin.value()) if self._head_start_spin is not None else 0
-            head_end = int(self._head_end_spin.value()) if self._head_end_spin is not None else 0
-            tail_start = int(self._tail_start_spin.value()) if self._tail_start_spin is not None else 0
-            tail_end = int(self._tail_end_spin.value()) if self._tail_end_spin is not None else 0
-            profile_type = str(self._mayak_profile_combo.currentData()) if self._mayak_profile_combo is not None else "linear"
-            duration_sec = self._resolve_duration_for_mayak()
+        head_start = int(self._head_start_spin.value()) if self._head_start_spin is not None else 0
+        head_end = int(self._head_end_spin.value()) if self._head_end_spin is not None else 0
+        tail_start = int(self._tail_start_spin.value()) if self._tail_start_spin is not None else 0
+        tail_end = int(self._tail_end_spin.value()) if self._tail_end_spin is not None else 0
+        profile_type = str(self._mayak_profile_combo.currentData()) if self._mayak_profile_combo is not None else "linear"
+        duration_sec = self._resolve_duration_for_mayak()
 
-            scenario_id = self._orch.prepare_mayak_test(
-                head_start_rpm=head_start,
-                head_end_rpm=head_end,
-                tail_start_rpm=tail_start,
-                tail_end_rpm=tail_end,
-                profile_type=profile_type,
-                duration_sec=duration_sec,
-                sdr_options=self.get_sdr_options(),
-            )
-            report = self._orch.check_readiness()
-        except Exception as ex:
-            self._set_prepare_progress_running(False)
-            self._log_error("UI_PREPARE_FAILED", f"stage=run err={type(ex).__name__}")
-            QMessageBox.critical(self, "Подготовка к тесту", f"Ошибка подготовки: {type(ex).__name__}")
-            return
-
-        self._set_prepare_progress_running(False)
-
-        ready = bool(report.get("ready_to_start"))
-        blocking = report.get("blocking_errors", [])
-        warnings = report.get("warnings", [])
-        artifacts = report.get("artifacts", {})
-        pluto_path = str(artifacts.get("pluto_input", ""))
-
-        if ready:
-            self._log_info(
-                "UI_PREPARE_DONE",
-                f"scenario_id={scenario_id} ready=1 pluto_input={pluto_path or 'none'}",
-            )
-            QMessageBox.information(
-                self,
-                "Подготовка к тесту",
-                (
-                    "Подготовка завершена успешно.\n"
-                    f"scenario_id: {scenario_id}\n"
-                    f"pluto_input: {pluto_path or 'n/a'}"
-                ),
-            )
-            self.statusBar().showMessage("Подготовка к тесту завершена", 4000)
-            try:
-                idx = self.ui.tw_research.indexOf(self.ui.monitoringTab)
-                if idx >= 0:
-                    self.ui.tw_research.setCurrentIndex(idx)
-            except Exception:
-                pass
-            return
-
-        blocking_txt = ",".join(str(x) for x in blocking) if isinstance(blocking, list) and blocking else "none"
-        warnings_txt = ",".join(str(x) for x in warnings) if isinstance(warnings, list) and warnings else "none"
-        self._log_error(
-            "UI_PREPARE_FAILED",
-            f"stage=readiness blocking={blocking_txt} warnings={warnings_txt}",
+        task = _PrepareTestTask(
+            orchestrator=self._orch,
+            head_start=head_start,
+            head_end=head_end,
+            tail_start=tail_start,
+            tail_end=tail_end,
+            profile_type=profile_type,
+            duration_sec=duration_sec,
+            sdr_options=self.get_sdr_options(),
         )
-        QMessageBox.warning(
-            self,
-            "Подготовка к тесту",
-            (
-                "Подготовка выполнена с ошибками готовности.\n"
-                f"Блокирующие: {blocking_txt}\n"
-                f"Предупреждения: {warnings_txt}"
-            ),
-        )
-        self.statusBar().showMessage("Подготовка не прошла readiness-check", 4000)
+        self._prepare_task = task
+        task.signals.progress.connect(self._on_prepare_progress)
+        task.signals.done.connect(self._on_prepare_done)
+        task.signals.fail.connect(self._on_prepare_fail)
+        QThreadPool.globalInstance().start(task)
 
     def _confirm_prepare_test(self) -> bool:
         answer = QMessageBox.question(
@@ -733,12 +750,88 @@ class MainWindow(QMainWindow):
             return
         if running:
             self._prep_progress.setVisible(True)
-            self._prep_progress.setRange(0, 0)
-            self._prep_progress.setFormat("Генерация файла для PlutoPlayer...")
+            self._prep_progress.setRange(0, 100)
+            self._prep_progress.setValue(0)
+            self._prep_progress.setFormat("Подготовка...")
         else:
             self._prep_progress.setRange(0, 100)
             self._prep_progress.setValue(100)
             self._prep_progress.setVisible(False)
+
+    def _on_prepare_progress(self, value: int, message: str) -> None:
+        if self._prep_progress is not None:
+            self._prep_progress.setRange(0, 100)
+            self._prep_progress.setValue(max(0, min(100, int(value))))
+            self._prep_progress.setFormat(message if message else "Подготовка...")
+        if message:
+            self.statusBar().showMessage(message, 1500)
+
+    def _on_prepare_done(self, payload: object) -> None:
+        self._set_prepare_progress_running(False)
+        self._prepare_task = None
+
+        data = payload if isinstance(payload, dict) else {}
+        scenario_id = str(data.get("scenario_id", "none"))
+        report = data.get("report", {})
+        gps_artifacts = data.get("gps_artifacts", {})
+
+        ready = bool(report.get("ready_to_start")) if isinstance(report, dict) else False
+        blocking = report.get("blocking_errors", []) if isinstance(report, dict) else []
+        warnings = report.get("warnings", []) if isinstance(report, dict) else []
+        artifacts = report.get("artifacts", {}) if isinstance(report, dict) else {}
+        pluto_path = str(artifacts.get("pluto_input", "")) if isinstance(artifacts, dict) else ""
+        iq_path = str(gps_artifacts.get("iq", "")) if isinstance(gps_artifacts, dict) else ""
+
+        if ready:
+            self._log_info(
+                "UI_PREPARE_DONE",
+                (
+                    f"scenario_id={scenario_id} ready=1 "
+                    f"pluto_input={pluto_path or 'none'} "
+                    f"iq={iq_path or 'none'}"
+                ),
+            )
+            QMessageBox.information(
+                self,
+                "Подготовка к тесту",
+                (
+                    "Подготовка завершена успешно.\n"
+                    f"scenario_id: {scenario_id}\n"
+                    f"pluto_input: {pluto_path or 'n/a'}\n"
+                    f"iq: {iq_path or 'n/a'}"
+                ),
+            )
+            self.statusBar().showMessage("Подготовка к тесту завершена", 4000)
+            try:
+                idx = self.ui.tw_research.indexOf(self.ui.monitoringTab)
+                if idx >= 0:
+                    self.ui.tw_research.setCurrentIndex(idx)
+            except Exception:
+                pass
+            return
+
+        blocking_txt = ",".join(str(x) for x in blocking) if isinstance(blocking, list) and blocking else "none"
+        warnings_txt = ",".join(str(x) for x in warnings) if isinstance(warnings, list) and warnings else "none"
+        self._log_error(
+            "UI_PREPARE_FAILED",
+            f"stage=readiness blocking={blocking_txt} warnings={warnings_txt}",
+        )
+        QMessageBox.warning(
+            self,
+            "Подготовка к тесту",
+            (
+                "Подготовка выполнена с ошибками готовности.\n"
+                f"Блокирующие: {blocking_txt}\n"
+                f"Предупреждения: {warnings_txt}"
+            ),
+        )
+        self.statusBar().showMessage("Подготовка не прошла readiness-check", 4000)
+
+    def _on_prepare_fail(self, error: str) -> None:
+        self._set_prepare_progress_running(False)
+        self._prepare_task = None
+        self._log_error("UI_PREPARE_FAILED", f"stage=run err={error}")
+        QMessageBox.critical(self, "Подготовка к тесту", f"Ошибка подготовки: {error}")
 
     def _on_mayak_emergency_clicked(self) -> None:
         try:

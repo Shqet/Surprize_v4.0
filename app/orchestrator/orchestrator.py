@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import shlex
+import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from app.core.event_bus import EventBus
 from app.core.events import OrchestratorStateEvent, ServiceStatusEvent
@@ -17,6 +19,7 @@ from app.orchestrator.mayak_controller import (
 )
 from app.orchestrator.states import OrchestratorPhase, OrchestratorState
 from app.profiles.loader import load_profile
+from app.services.gps_sdr_sim.engine import prepare_nmea_input
 from app.services.base import ServiceStatus
 from app.services.service_manager import ServiceManager
 
@@ -789,6 +792,138 @@ class Orchestrator:
 
     def stop_test_flow(self) -> None:
         self.stop_mayak_test()
+
+    def generate_gps_signal_preflight(
+        self,
+        *,
+        progress_cb: Optional[Callable[[int, str], None]] = None,
+    ) -> dict[str, str]:
+        """
+        Generate GPS preflight artifacts (NMEA + IQ) without Pluto TX.
+        Uses prepared scenario snapshot and current SDR options.
+        """
+        with self._lock:
+            prepared = dict(self._prepared_scenario) if isinstance(self._prepared_scenario, dict) else None
+
+        if prepared is None:
+            raise RuntimeError("scenario_not_prepared")
+
+        scenario_id = str(prepared.get("scenario_id", "scn_unknown"))
+        trajectory = prepared.get("trajectory")
+        traj_csv = trajectory.get("trajectory_csv") if isinstance(trajectory, dict) else None
+        if not isinstance(traj_csv, str) or not traj_csv.strip() or not Path(traj_csv).exists():
+            raise FileNotFoundError("trajectory_missing")
+
+        sdr = prepared.get("sdr_options")
+        gps = sdr.get("gps_sdr_sim") if isinstance(sdr, dict) else {}
+        if not isinstance(gps, dict):
+            gps = {}
+
+        nav = str(gps.get("nav", "") or "").strip()
+        if not nav:
+            raise ValueError("gps_nav_missing")
+        nav_path = Path(nav).resolve()
+        if not nav_path.exists():
+            raise FileNotFoundError(f"gps_nav_not_found={nav_path.as_posix()}")
+
+        static_sec = float(gps.get("static_sec", 0.0) or 0.0)
+        static_sec = max(0.0, static_sec)
+        origin_lat = float(gps.get("origin_lat", 55.7558) or 55.7558)
+        origin_lon = float(gps.get("origin_lon", 37.6176) or 37.6176)
+        origin_h = float(gps.get("origin_h", 156.0) or 156.0)
+
+        services_snapshot = prepared.get("services_snapshot")
+        gps_service = services_snapshot.get("gps_sdr_sim") if isinstance(services_snapshot, dict) else {}
+        if not isinstance(gps_service, dict):
+            gps_service = {}
+
+        exe = str(
+            gps_service.get("gps_sdr_sim_exe")
+            or gps.get("gps_sdr_sim_exe")
+            or "gps-sdr-sim"
+        )
+        bit_depth = int(gps_service.get("bit_depth", 16) or 16)
+        if bit_depth not in (8, 16):
+            bit_depth = 16
+        timeout_sec = int(gps_service.get("gps_timeout_sec", 120) or 120)
+        if timeout_sec <= 0:
+            timeout_sec = 120
+        extra_args = str(gps_service.get("gps_extra_args", "") or "")
+
+        out_dir = (Path("outputs") / "scenarios" / scenario_id / "gps_preflight").resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        nmea_txt = out_dir / "nmea_strings.txt"
+        iq_bin = out_dir / "gpssim_iq.bin"
+        cmdline_txt = out_dir / "gps_sdr_sim.cmdline.txt"
+
+        if progress_cb is not None:
+            progress_cb(45, "Генерация NMEA")
+        meta = prepare_nmea_input(
+            input_trajectory_csv=Path(traj_csv),
+            out_nmea_txt=nmea_txt,
+            origin_lat_deg=origin_lat,
+            origin_lon_deg=origin_lon,
+            origin_h_m=origin_h,
+            static_sec=static_sec,
+        )
+
+        cmd = [exe, "-e", str(nav_path), "-g", str(nmea_txt), "-b", str(bit_depth), "-o", str(iq_bin)]
+        if extra_args:
+            cmd += shlex.split(extra_args)
+        cmdline_txt.write_text(" ".join(cmd), encoding="utf-8")
+
+        if progress_cb is not None:
+            progress_cb(70, "Генерация IQ")
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(out_dir),
+                capture_output=True,
+                text=True,
+                timeout=float(timeout_sec),
+                encoding="utf-8",
+                errors="replace",
+            )
+        except subprocess.TimeoutExpired as ex:
+            raise RuntimeError(f"gps_iq_timeout={timeout_sec}") from ex
+
+        if proc.returncode != 0:
+            stderr_short = (proc.stderr or "").strip().splitlines()
+            tail = stderr_short[-1] if stderr_short else "unknown_error"
+            raise RuntimeError(f"gps_iq_failed rc={proc.returncode} err={tail}")
+
+        if not iq_bin.exists() or iq_bin.stat().st_size <= 0:
+            raise RuntimeError("gps_iq_missing")
+
+        meta_path = out_dir / "gps_preflight_meta.json"
+        payload = {
+            "scenario_id": scenario_id,
+            "created_ts": time.time(),
+            "nmea": str(nmea_txt),
+            "iq": str(iq_bin),
+            "cmdline": str(cmdline_txt),
+            "static_sec": static_sec,
+            "meta": meta,
+        }
+        meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        emit_log(
+            self._bus,
+            "INFO",
+            "orchestrator",
+            "ORCH_GPS_PREFLIGHT_DONE",
+            f"scenario_id={scenario_id} nmea={nmea_txt.as_posix()} iq={iq_bin.as_posix()} static_sec={static_sec}",
+        )
+        if progress_cb is not None:
+            progress_cb(95, "GPS preflight завершен")
+
+        return {
+            "run_dir": str(out_dir),
+            "nmea": str(nmea_txt),
+            "iq": str(iq_bin),
+            "meta": str(meta_path),
+            "cmdline": str(cmdline_txt),
+        }
 
     def start_prepared_mayak_test(self) -> None:
         with self._lock:
