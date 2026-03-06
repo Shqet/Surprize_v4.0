@@ -609,18 +609,18 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Ошибка остановки теста: {type(ex).__name__}", 3000)
 
     def _on_prepare_test_clicked(self) -> None:
-        if not self._confirm_prepare_test():
-            self._log_info("UI_PREPARE_CONFIRM_CANCELLED", "action=prepare_test")
-            return
-
-        self._log_info("UI_PREPARE_CONFIRM_ACCEPTED", "action=prepare_test")
-
         precheck_errors = self._validate_prepare_inputs()
         if precheck_errors:
             msg = "\n".join(f"- {x}" for x in precheck_errors)
             QMessageBox.critical(self, "Подготовка к тесту", f"Подготовка остановлена:\n{msg}")
             self._log_error("UI_PREPARE_VALIDATE_FAIL", f"errors={','.join(precheck_errors)}")
             return
+
+        if not self._confirm_prepare_test():
+            self._log_info("UI_PREPARE_CONFIRM_CANCELLED", "action=prepare_test")
+            return
+
+        self._log_info("UI_PREPARE_CONFIRM_ACCEPTED", "action=prepare_test")
 
         self._set_prepare_progress_running(True)
         try:
