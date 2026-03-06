@@ -29,3 +29,4 @@ latest.jpg
 /outputs/
 
 /.pytest_tmp/
+/_pytest_basetemp/
