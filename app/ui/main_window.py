@@ -961,23 +961,26 @@ class MainWindow(QMainWindow):
         warnings = report.get("warnings", [])
         blocking_txt = ",".join(str(x) for x in blocking) if isinstance(blocking, list) and blocking else "none"
         warnings_txt = ",".join(str(x) for x in warnings) if isinstance(warnings, list) and warnings else "none"
+        details_html = self._build_readiness_details_html(report)
 
         if ready:
             self._log_info("UI_MONITOR_READINESS", "ready=1")
-            cam_warn = self._build_camera_warning_text(warnings if isinstance(warnings, list) else [])
-            if cam_warn:
-                QMessageBox.warning(self, "Мониторинг", cam_warn)
-            else:
-                QMessageBox.information(self, "Мониторинг", "Системы готовы к испытанию.")
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Мониторинг")
+            msg.setIcon(QMessageBox.Icon.Information)
+            msg.setText("Результат проверки готовности систем")
+            msg.setInformativeText(details_html)
+            msg.exec()
             self.statusBar().showMessage("Readiness: готово", 3000)
             return
 
         self._log_error("UI_MONITOR_READINESS", f"ready=0 blocking={blocking_txt} warnings={warnings_txt}")
-        QMessageBox.warning(
-            self,
-            "Мониторинг",
-            f"Системы не готовы.\nБлокирующие: {blocking_txt}\nПредупреждения: {warnings_txt}",
-        )
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Мониторинг")
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setText("Результат проверки готовности систем")
+        msg.setInformativeText(details_html)
+        msg.exec()
         self.statusBar().showMessage("Readiness: не готово", 3000)
 
     def _on_readiness_done(self, payload: object) -> None:
@@ -985,6 +988,69 @@ class MainWindow(QMainWindow):
         self._readiness_task = None
         report = payload if isinstance(payload, dict) else {}
         self._present_readiness_report(report)
+
+    @staticmethod
+    def _status_icon_html(kind: str) -> str:
+        if kind == "ok":
+            return '<span style="color:#2e7d32; font-weight:700;">&#10004;</span>'
+        if kind == "warn":
+            return '<span style="color:#f9a825; font-weight:700;">&#9888;</span>'
+        return '<span style="color:#c62828; font-weight:700;">&#10006;</span>'
+
+    def _build_readiness_details_html(self, report: dict[str, Any]) -> str:
+        blocking_raw = report.get("blocking_errors", [])
+        warnings_raw = report.get("warnings", [])
+        blocking = {str(x) for x in blocking_raw} if isinstance(blocking_raw, list) else set()
+        warnings = {str(x) for x in warnings_raw} if isinstance(warnings_raw, list) else set()
+
+        def has_blocking(prefix: str) -> bool:
+            return any(item == prefix or item.startswith(prefix) for item in blocking)
+
+        rows: list[tuple[str, str, str]] = []
+
+        if "trajectory_missing" in blocking:
+            rows.append(("Траектория", "err", "не готово"))
+        else:
+            rows.append(("Траектория", "ok", "готово"))
+
+        if has_blocking("gps_nav_missing") or has_blocking("gps_nav_not_found"):
+            rows.append(("Эфемериды GPS", "err", "не готово"))
+        else:
+            rows.append(("Эфемериды GPS", "ok", "готово"))
+
+        if has_blocking("mayak_not_ready") or has_blocking("mayak_check_failed"):
+            rows.append(("Маяк", "err", "не готово"))
+        elif "mayak_is_ready_unavailable" in warnings:
+            rows.append(("Маяк", "warn", "не готово (допустимо)"))
+        else:
+            rows.append(("Маяк", "ok", "готово"))
+
+        if has_blocking("sdr_not_ready"):
+            rows.append(("SDR / Pluto", "err", "не готово"))
+        else:
+            rows.append(("SDR / Pluto", "ok", "готово"))
+
+        if has_blocking("pluto_input_failed"):
+            rows.append(("Pluto input", "err", "не готово"))
+        else:
+            rows.append(("Pluto input", "ok", "готово"))
+
+        if "video_visible_not_ready" in warnings:
+            rows.append(("Камера Visible", "warn", "не готово (допустимо)"))
+        else:
+            rows.append(("Камера Visible", "ok", "готово"))
+
+        if "video_thermal_not_ready" in warnings:
+            rows.append(("Камера Thermal", "warn", "не готово (допустимо)"))
+        else:
+            rows.append(("Камера Thermal", "ok", "готово"))
+
+        lines = ["<div>"]
+        for title, kind, state_txt in rows:
+            icon = self._status_icon_html(kind)
+            lines.append(f"{icon} <b>{title}</b>: {state_txt}<br/>")
+        lines.append("</div>")
+        return "".join(lines)
 
     def _on_readiness_fail(self, error: str) -> None:
         self._set_readiness_check_running(False)
