@@ -178,6 +178,7 @@ class MainWindow(QMainWindow):
         self._m_geo_lbl: Optional[QLabel] = None
         self._m_height_lbl: Optional[QLabel] = None
         self._m_distance_lbl: Optional[QLabel] = None
+        self._m_anim_without_test_chk: Optional[QCheckBox] = None
         self._monitor_timer = QTimer(self)
         self._monitor_timer.setInterval(50)
         self._monitor_timer.timeout.connect(self._on_monitor_timer_tick)
@@ -353,12 +354,15 @@ class MainWindow(QMainWindow):
         box = QGroupBox("Параметры траектории (мониторинг)", self)
         form = QFormLayout(box)
 
+        self._m_anim_without_test_chk = QCheckBox("Анимировать полет без испытания", box)
+        self._m_anim_without_test_chk.setChecked(True)
         self._m_speed_lbl = QLabel("-", box)
         self._m_coords_lbl = QLabel("-", box)
         self._m_geo_lbl = QLabel("-", box)
         self._m_height_lbl = QLabel("-", box)
         self._m_distance_lbl = QLabel("-", box)
 
+        form.addRow("", self._m_anim_without_test_chk)
         form.addRow("Скорость, м/с", self._m_speed_lbl)
         form.addRow("Координаты X/Y/Z, м", self._m_coords_lbl)
         form.addRow("Земные координаты lat/lon/h", self._m_geo_lbl)
@@ -930,6 +934,13 @@ class MainWindow(QMainWindow):
         self._refresh_gps_finish_point()
 
     def _start_monitor_trajectory_animation(self) -> None:
+        enabled = self._m_anim_without_test_chk is None or self._m_anim_without_test_chk.isChecked()
+        if not enabled:
+            self._monitor_timer.stop()
+            self._traj_view_m.set_status("Мониторинг траектории (3D)\nАнимация отключена оператором")
+            self._log_info("UI_MONITOR_ANIM_SKIPPED", "reason=disabled_by_operator")
+            return
+
         points = list(self._latest_trajectory_points)
         if points:
             self._apply_monitor_points(points, self._trajectory_duration_sec)
