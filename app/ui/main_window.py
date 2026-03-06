@@ -17,6 +17,8 @@ from PyQt6.QtWidgets import (
     QLayout,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
+    QProgressBar,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -85,6 +87,7 @@ class MainWindow(QMainWindow):
         self._vl_rtsp_thermal: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "vl_rtsp_thermal")
         self._vl_mayak_params: Optional[QVBoxLayout] = self._safe_find_layout(QVBoxLayout, "l_Mayak_params")
         self._gl_sdr_options: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_SDR_options")
+        self._gl_functional_buttons: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_functionalButtons")
 
         self._editor: Optional[ConfigJsonEditor] = None
         self._init_editor()
@@ -128,6 +131,9 @@ class MainWindow(QMainWindow):
         self._lbl_mayak_reason: Optional[QLabel] = None
         self._mayak_tel_labels: dict[str, dict[str, QLabel]] = {}
         self._init_mayak_panel()
+        self._btn_prepare_test: Optional[QPushButton] = None
+        self._prep_progress: Optional[QProgressBar] = None
+        self._init_functional_buttons()
 
         self._traj_loader = TrajectoryCsvLoader()
         self._traj_ctl = TrajectoryVisController(
@@ -447,6 +453,28 @@ class MainWindow(QMainWindow):
         vl.addWidget(panel)
         self._refresh_duration_labels()
 
+    def _init_functional_buttons(self) -> None:
+        gl = self._gl_functional_buttons
+        if gl is None:
+            return
+
+        self._clear_layout(gl)
+
+        self._btn_prepare_test = QPushButton("Подготовиться к тесту", self)
+        self._btn_prepare_test.setObjectName("btn_prepare_test")
+
+        self._prep_progress = QProgressBar(self)
+        self._prep_progress.setObjectName("pb_prepare_test")
+        self._prep_progress.setRange(0, 100)
+        self._prep_progress.setValue(0)
+        self._prep_progress.setVisible(False)
+        self._prep_progress.setTextVisible(True)
+
+        gl.addWidget(self._btn_prepare_test, 0, 0)
+        gl.addWidget(self._prep_progress, 0, 1)
+        gl.setColumnStretch(0, 0)
+        gl.setColumnStretch(1, 1)
+
     # ---------------- wiring ----------------
 
     def _connect_actions(self) -> None:
@@ -462,6 +490,8 @@ class MainWindow(QMainWindow):
             self._btn_mayak_emergency.clicked.connect(self._on_mayak_emergency_clicked)
         if self._mayak_duration_override is not None:
             self._mayak_duration_override.toggled.connect(self._on_mayak_duration_override_toggled)
+        if self._btn_prepare_test is not None:
+            self._btn_prepare_test.clicked.connect(self._on_prepare_test_clicked)
 
     def _connect_bridge(self) -> None:
         try:
@@ -577,6 +607,139 @@ class MainWindow(QMainWindow):
         except Exception as ex:
             self._log_error("UI_MAYAK_CMD_FAILED", f"cmd=stop_test err={type(ex).__name__}")
             self.statusBar().showMessage(f"Ошибка остановки теста: {type(ex).__name__}", 3000)
+
+    def _on_prepare_test_clicked(self) -> None:
+        if not self._confirm_prepare_test():
+            self._log_info("UI_PREPARE_CONFIRM_CANCELLED", "action=prepare_test")
+            return
+
+        self._log_info("UI_PREPARE_CONFIRM_ACCEPTED", "action=prepare_test")
+
+        precheck_errors = self._validate_prepare_inputs()
+        if precheck_errors:
+            msg = "\n".join(f"- {x}" for x in precheck_errors)
+            QMessageBox.critical(self, "Подготовка к тесту", f"Подготовка остановлена:\n{msg}")
+            self._log_error("UI_PREPARE_VALIDATE_FAIL", f"errors={','.join(precheck_errors)}")
+            return
+
+        self._set_prepare_progress_running(True)
+        try:
+            head_start = int(self._head_start_spin.value()) if self._head_start_spin is not None else 0
+            head_end = int(self._head_end_spin.value()) if self._head_end_spin is not None else 0
+            tail_start = int(self._tail_start_spin.value()) if self._tail_start_spin is not None else 0
+            tail_end = int(self._tail_end_spin.value()) if self._tail_end_spin is not None else 0
+            profile_type = str(self._mayak_profile_combo.currentData()) if self._mayak_profile_combo is not None else "linear"
+            duration_sec = self._resolve_duration_for_mayak()
+
+            scenario_id = self._orch.prepare_mayak_test(
+                head_start_rpm=head_start,
+                head_end_rpm=head_end,
+                tail_start_rpm=tail_start,
+                tail_end_rpm=tail_end,
+                profile_type=profile_type,
+                duration_sec=duration_sec,
+                sdr_options=self.get_sdr_options(),
+            )
+            report = self._orch.check_readiness()
+        except Exception as ex:
+            self._set_prepare_progress_running(False)
+            self._log_error("UI_PREPARE_FAILED", f"stage=run err={type(ex).__name__}")
+            QMessageBox.critical(self, "Подготовка к тесту", f"Ошибка подготовки: {type(ex).__name__}")
+            return
+
+        self._set_prepare_progress_running(False)
+
+        ready = bool(report.get("ready_to_start"))
+        blocking = report.get("blocking_errors", [])
+        warnings = report.get("warnings", [])
+        artifacts = report.get("artifacts", {})
+        pluto_path = str(artifacts.get("pluto_input", ""))
+
+        if ready:
+            self._log_info(
+                "UI_PREPARE_DONE",
+                f"scenario_id={scenario_id} ready=1 pluto_input={pluto_path or 'none'}",
+            )
+            QMessageBox.information(
+                self,
+                "Подготовка к тесту",
+                (
+                    "Подготовка завершена успешно.\n"
+                    f"scenario_id: {scenario_id}\n"
+                    f"pluto_input: {pluto_path or 'n/a'}"
+                ),
+            )
+            self.statusBar().showMessage("Подготовка к тесту завершена", 4000)
+            return
+
+        blocking_txt = ",".join(str(x) for x in blocking) if isinstance(blocking, list) and blocking else "none"
+        warnings_txt = ",".join(str(x) for x in warnings) if isinstance(warnings, list) and warnings else "none"
+        self._log_error(
+            "UI_PREPARE_FAILED",
+            f"stage=readiness blocking={blocking_txt} warnings={warnings_txt}",
+        )
+        QMessageBox.warning(
+            self,
+            "Подготовка к тесту",
+            (
+                "Подготовка выполнена с ошибками готовности.\n"
+                f"Блокирующие: {blocking_txt}\n"
+                f"Предупреждения: {warnings_txt}"
+            ),
+        )
+        self.statusBar().showMessage("Подготовка не прошла readiness-check", 4000)
+
+    def _confirm_prepare_test(self) -> bool:
+        answer = QMessageBox.question(
+            self,
+            "Подготовка к тесту",
+            (
+                "Сейчас будет подготовлен GPS-сигнал для испытания.\n"
+                "Операция может занять некоторое время.\n\n"
+                "Продолжить?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _validate_prepare_inputs(self) -> list[str]:
+        errors: list[str] = []
+
+        latest_traj: Optional[dict[str, str]] = None
+        finder = getattr(self._orch, "_find_latest_trajectory_artifact", None)
+        if callable(finder):
+            try:
+                obj = finder()
+                latest_traj = obj if isinstance(obj, dict) else None
+            except Exception:
+                latest_traj = None
+
+        traj_csv = latest_traj.get("trajectory_csv") if isinstance(latest_traj, dict) else None
+        if not isinstance(traj_csv, str) or not traj_csv.strip() or not os.path.exists(traj_csv):
+            errors.append("траектория не сгенерирована")
+
+        nav = self._gps_nav_path_edit.text().strip() if self._gps_nav_path_edit is not None else ""
+        if not nav:
+            errors.append("не указан путь к эфемеридам")
+        elif not os.path.exists(nav):
+            errors.append("файл эфемерид не найден")
+
+        return errors
+
+    def _set_prepare_progress_running(self, running: bool) -> None:
+        if self._btn_prepare_test is not None:
+            self._btn_prepare_test.setEnabled(not running)
+        if self._prep_progress is None:
+            return
+        if running:
+            self._prep_progress.setVisible(True)
+            self._prep_progress.setRange(0, 0)
+            self._prep_progress.setFormat("Генерация файла для PlutoPlayer...")
+        else:
+            self._prep_progress.setRange(0, 100)
+            self._prep_progress.setValue(100)
+            self._prep_progress.setVisible(False)
 
     def _on_mayak_emergency_clicked(self) -> None:
         try:
