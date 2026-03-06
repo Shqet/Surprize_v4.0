@@ -945,7 +945,11 @@ class MainWindow(QMainWindow):
 
         if ready:
             self._log_info("UI_MONITOR_READINESS", "ready=1")
-            QMessageBox.information(self, "Мониторинг", "Системы готовы к испытанию.")
+            cam_warn = self._build_camera_warning_text(warnings if isinstance(warnings, list) else [])
+            if cam_warn:
+                QMessageBox.warning(self, "Мониторинг", cam_warn)
+            else:
+                QMessageBox.information(self, "Мониторинг", "Системы готовы к испытанию.")
             self.statusBar().showMessage("Readiness: готово", 3000)
         else:
             self._log_error("UI_MONITOR_READINESS", f"ready=0 blocking={blocking_txt} warnings={warnings_txt}")
@@ -958,12 +962,37 @@ class MainWindow(QMainWindow):
 
     def _on_monitor_start_test_clicked(self) -> None:
         try:
+            report = self._orch.check_readiness()
+            warnings = report.get("warnings", []) if isinstance(report, dict) else []
+            cam_warn = self._build_camera_warning_text(warnings if isinstance(warnings, list) else [])
+            if cam_warn:
+                QMessageBox.warning(self, "Мониторинг", cam_warn)
             self._orch.start_test_flow()
             self._log_info("UI_MONITOR_START_TEST", "status=ok")
             self.statusBar().showMessage("Испытание запущено", 3000)
         except Exception as ex:
             self._log_error("UI_MONITOR_START_TEST_FAILED", f"err={type(ex).__name__}")
             QMessageBox.critical(self, "Мониторинг", f"Не удалось начать испытание: {type(ex).__name__}")
+
+    @staticmethod
+    def _build_camera_warning_text(warnings: list[object]) -> str:
+        keys = {str(x) for x in warnings}
+        missing_visible = "video_visible_not_ready" in keys
+        missing_thermal = "video_thermal_not_ready" in keys
+        if not missing_visible and not missing_thermal:
+            return ""
+
+        if missing_visible and missing_thermal:
+            cams = "видимая и тепловая камеры не подключены"
+        elif missing_visible:
+            cams = "видимая камера не подключена"
+        else:
+            cams = "тепловая камера не подключена"
+
+        return (
+            f"Внимание: {cams}.\n"
+            "Испытание можно выполнить, но результаты будут без видео."
+        )
 
     def _on_mayak_emergency_clicked(self) -> None:
         try:
