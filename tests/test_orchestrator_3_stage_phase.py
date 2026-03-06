@@ -112,3 +112,45 @@ def test_readiness_fails_when_nav_or_traj_missing(monkeypatch) -> None:
     assert report["ready_to_start"] is False
     assert "trajectory_missing" in report["blocking_errors"]
     assert "gps_nav_missing" in report["blocking_errors"]
+
+
+def test_generate_gps_preflight_reports_missing_exe(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    nav = tmp_path / "brdc.nav"
+    nav.write_text("dummy", encoding="utf-8")
+    traj_dir = tmp_path / "ballistics" / "run1"
+    traj_dir.mkdir(parents=True, exist_ok=True)
+    traj = traj_dir / "trajectory.csv"
+    traj.write_text("t,X,Y,Z\n0,0,0,0\n", encoding="utf-8")
+    diag = traj_dir / "diagnostics.csv"
+    diag.write_text("t,V\n0,0\n", encoding="utf-8")
+
+    bus = EventBus()
+    mayak = _MayakService(ready=True)
+    sm = _FakeServiceManager({"mayak_spindle": mayak})
+    orch = Orchestrator(bus, sm)
+
+    monkeypatch.setattr(
+        orch,
+        "_find_latest_trajectory_artifact",
+        lambda: {"run_dir": str(traj_dir), "trajectory_csv": str(traj), "diagnostics_csv": str(diag)},
+    )
+    monkeypatch.setattr("app.orchestrator.orchestrator.shutil.which", lambda _name: None)
+
+    orch.prepare_mayak_test(
+        head_start_rpm=100,
+        head_end_rpm=200,
+        tail_start_rpm=300,
+        tail_end_rpm=400,
+        profile_type="linear",
+        duration_sec=5.0,
+        sdr_options={"gps_sdr_sim": {"nav": str(nav), "static_sec": 0.0}},
+    )
+
+    try:
+        orch.generate_gps_signal_preflight()
+        assert False, "expected FileNotFoundError"
+    except FileNotFoundError as ex:
+        msg = str(ex)
+        assert "gps_sdr_sim_exe_not_found" in msg
+        assert "checked=" in msg

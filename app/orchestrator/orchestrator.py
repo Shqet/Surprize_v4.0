@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import shutil
 import subprocess
 import threading
 import time
@@ -837,11 +838,7 @@ class Orchestrator:
         if not isinstance(gps_service, dict):
             gps_service = {}
 
-        exe = str(
-            gps_service.get("gps_sdr_sim_exe")
-            or gps.get("gps_sdr_sim_exe")
-            or "gps-sdr-sim"
-        )
+        exe = self._resolve_gps_sdr_sim_executable(gps_service, gps)
         bit_depth = int(gps_service.get("bit_depth", 16) or 16)
         if bit_depth not in (8, 16):
             bit_depth = 16
@@ -884,6 +881,8 @@ class Orchestrator:
                 encoding="utf-8",
                 errors="replace",
             )
+        except FileNotFoundError as ex:
+            raise FileNotFoundError(f"gps_sdr_sim_exe_not_found={exe}") from ex
         except subprocess.TimeoutExpired as ex:
             raise RuntimeError(f"gps_iq_timeout={timeout_sec}") from ex
 
@@ -1507,6 +1506,45 @@ class Orchestrator:
             },
             "pluto_player": {"rf_bw_mhz": rf_bw, "tx_atten_db": tx_att},
         }
+
+    def _resolve_gps_sdr_sim_executable(self, gps_service: dict[str, Any], gps: dict[str, Any]) -> str:
+        """
+        Resolve gps-sdr-sim executable with explicit config first, then local bin, then PATH.
+        """
+        explicit = str(gps_service.get("gps_sdr_sim_exe") or gps.get("gps_sdr_sim_exe") or "").strip()
+        local_candidates = [
+            Path("bin") / "gps_sdr_sim" / "gps-sdr-sim.exe",
+            Path("bin") / "gps_sdr_sim" / "gps-sdr-sim",
+        ]
+        names_from_path = ["gps-sdr-sim.exe", "gps-sdr-sim"]
+
+        candidates: list[str] = []
+        if explicit:
+            candidates.append(explicit)
+        candidates.extend(str(p) for p in local_candidates)
+        candidates.extend(names_from_path)
+
+        checked: list[str] = []
+        for raw in candidates:
+            token = str(raw).strip()
+            if not token:
+                continue
+
+            looks_like_path = any(sep in token for sep in ("/", "\\")) or Path(token).suffix.lower() == ".exe"
+            if looks_like_path:
+                p = Path(token).expanduser().resolve()
+                checked.append(p.as_posix())
+                if p.exists() and p.is_file():
+                    return str(p)
+                continue
+
+            found = shutil.which(token)
+            checked.append(found or f"PATH:{token}")
+            if found:
+                return str(Path(found).resolve())
+
+        checked_txt = ",".join(checked) if checked else "none"
+        raise FileNotFoundError(f"gps_sdr_sim_exe_not_found checked={checked_txt}")
 
     def _snapshot_service_sections(self, profile_name: str, service_names: tuple[str, ...]) -> dict[str, Any]:
         """
