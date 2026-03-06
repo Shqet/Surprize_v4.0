@@ -344,10 +344,10 @@ class MainWindow(QMainWindow):
         self._m_anim_without_test_chk = QCheckBox("Анимировать полет без испытания", self)
         self._m_anim_without_test_chk.setChecked(True)
         self._m_anim_without_test_chk.toggled.connect(self._on_monitor_anim_toggled)
-        vl.addWidget(self._m_anim_without_test_chk)
         vl.addWidget(self._traj_view_m)
-        vl.setStretch(0, 0)
-        vl.setStretch(1, 1)
+        vl.addWidget(self._m_anim_without_test_chk)
+        vl.setStretch(0, 1)
+        vl.setStretch(1, 0)
         self._traj_view_m.set_status("Мониторинг траектории (3D)\nОжидание подготовленного сценария")
 
     def _init_monitor_params_panel(self) -> None:
