@@ -355,4 +355,85 @@ def test_pluto_probe_fast_exit_rc0_is_not_ready(tmp_path: Path, monkeypatch) -> 
     )
 
     assert ok is False
-    assert detail == "pluto_probe_fast_exit_rc0"
+    assert detail == "pluto_probe_inconclusive"
+
+
+def test_pluto_probe_detects_missing_sdr_from_iio_context_error(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    iq = tmp_path / "probe_iq.bin"
+    iq.write_bytes(b"\x00\x01")
+
+    class _FakePopen:
+        def __init__(self, *args, **kwargs) -> None:
+            self.returncode = 1
+
+        def poll(self):
+            return 1
+
+        def communicate(self, timeout=None):
+            return ("", "Failed creating IIO context: No such file or directory (2)")
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+    bus = EventBus()
+    sm = _FakeServiceManager({})
+    orch = Orchestrator(bus, sm)
+
+    monkeypatch.setattr("app.orchestrator.orchestrator.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("app.orchestrator.orchestrator.time.sleep", lambda _sec: None)
+
+    ok, detail = orch._run_pluto_probe(
+        pluto_exe="PlutoPlayer.exe",
+        iq_path=iq,
+        tx_atten_db=-20.0,
+        rf_bw_mhz=3.0,
+    )
+
+    assert ok is False
+    assert detail == "pluto_probe_failed:failed_creating_iio_context"
+
+
+def test_pluto_probe_detects_success_from_pluto_output(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    iq = tmp_path / "probe_iq.bin"
+    iq.write_bytes(b"\x00\x01")
+
+    class _FakePopen:
+        def __init__(self, *args, **kwargs) -> None:
+            self.returncode = 0
+
+        def poll(self):
+            return 0
+
+        def communicate(self, timeout=None):
+            return (
+                "* Found 192.168.2.1 (FISH Ball PlutoSDR Rev.A)\n* Transmit starts...\nDone.\n",
+                "",
+            )
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+    bus = EventBus()
+    sm = _FakeServiceManager({})
+    orch = Orchestrator(bus, sm)
+
+    monkeypatch.setattr("app.orchestrator.orchestrator.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("app.orchestrator.orchestrator.time.sleep", lambda _sec: None)
+
+    ok, detail = orch._run_pluto_probe(
+        pluto_exe="PlutoPlayer.exe",
+        iq_path=iq,
+        tx_atten_db=-20.0,
+        rf_bw_mhz=3.0,
+    )
+
+    assert ok is True
+    assert detail == ""

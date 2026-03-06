@@ -1829,9 +1829,37 @@ class Orchestrator:
         except Exception as ex:
             return False, f"pluto_start_failed:{type(ex).__name__}"
 
+        def _classify_pluto_output(stdout_text: str, stderr_text: str) -> tuple[bool, str]:
+            text = f"{stdout_text}\n{stderr_text}".lower()
+            fail_tokens = (
+                "failed creating iio context",
+                "no such file or directory",
+                "unable to create iio",
+                "context error",
+            )
+            for token in fail_tokens:
+                if token in text:
+                    return False, f"pluto_probe_failed:{token.replace(' ', '_')}"
+
+            success_tokens = (
+                "transmit starts",
+                "done.",
+                "found 192.168.2.1",
+                "plutosdr",
+            )
+            for token in success_tokens:
+                if token in text:
+                    return True, ""
+
+            return False, "pluto_probe_inconclusive"
+
         try:
-            time.sleep(1.5)
+            deadline = time.monotonic() + 4.0
             rc = proc.poll()
+            while rc is None and time.monotonic() < deadline:
+                time.sleep(0.1)
+                rc = proc.poll()
+
             if rc is None:
                 proc.terminate()
                 try:
@@ -1841,19 +1869,23 @@ class Orchestrator:
                     out, err = proc.communicate()
                 stdout_path.write_text(out or "", encoding="utf-8")
                 stderr_path.write_text(err or "", encoding="utf-8")
-                emit_log(self._bus, "INFO", "orchestrator", "ORCH_SDR_PROBE_OK", f"mode=hold iq={iq_path.as_posix()}")
-                return True, ""
+                ok, detail = _classify_pluto_output(out or "", err or "")
+                if ok:
+                    emit_log(self._bus, "INFO", "orchestrator", "ORCH_SDR_PROBE_OK", f"mode=hold iq={iq_path.as_posix()}")
+                return ok, detail
 
             out, err = proc.communicate(timeout=1.0)
             stdout_path.write_text(out or "", encoding="utf-8")
             stderr_path.write_text(err or "", encoding="utf-8")
-            if int(rc) == 0:
-                # False-positive guard: fast clean exit often happens when SDR link is absent.
-                # For readiness probe we require active hold mode, not immediate process completion.
-                return False, "pluto_probe_fast_exit_rc0"
-            tail = (err or "").strip().splitlines()
-            msg = tail[-1] if tail else f"rc={rc}"
-            return False, f"pluto_probe_failed:{msg}"
+            ok, detail = _classify_pluto_output(out or "", err or "")
+            if ok and int(rc) == 0:
+                emit_log(self._bus, "INFO", "orchestrator", "ORCH_SDR_PROBE_OK", f"mode=fast_exit iq={iq_path.as_posix()}")
+                return True, ""
+            if not ok and int(rc) != 0 and detail == "pluto_probe_inconclusive":
+                tail = (err or "").strip().splitlines()
+                msg = tail[-1] if tail else f"rc={rc}"
+                return False, f"pluto_probe_failed:{msg}"
+            return ok, detail
         except Exception as ex:
             try:
                 proc.kill()
