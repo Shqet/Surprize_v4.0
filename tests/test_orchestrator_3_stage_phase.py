@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -238,3 +239,81 @@ def test_readiness_blocks_when_sdr_probe_fails(tmp_path: Path, monkeypatch) -> N
     report = orch.check_readiness()
     assert report["ready_to_start"] is False
     assert "sdr_not_ready" in report["blocking_errors"]
+
+
+def test_start_stop_test_session_writes_manifest_and_events(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    nav = tmp_path / "brdc.nav"
+    nav.write_text("dummy", encoding="utf-8")
+    traj_dir = tmp_path / "ballistics" / "run1"
+    traj_dir.mkdir(parents=True, exist_ok=True)
+    traj = traj_dir / "trajectory.csv"
+    traj.write_text("t,X,Y,Z\n0,0,0,0\n", encoding="utf-8")
+    diag = traj_dir / "diagnostics.csv"
+    diag.write_text("t,V\n0,0\n", encoding="utf-8")
+
+    bus = EventBus()
+    mayak = _MayakService(ready=True)
+    sm = _FakeServiceManager({"mayak_spindle": mayak})
+    orch = Orchestrator(bus, sm)
+
+    monkeypatch.setattr(
+        orch,
+        "_find_latest_trajectory_artifact",
+        lambda: {"run_dir": str(traj_dir), "trajectory_csv": str(traj), "diagnostics_csv": str(diag)},
+    )
+
+    orch.prepare_mayak_test(
+        head_start_rpm=100,
+        head_end_rpm=200,
+        tail_start_rpm=300,
+        tail_end_rpm=400,
+        profile_type="linear",
+        duration_sec=5.0,
+        sdr_options={"gps_sdr_sim": {"nav": str(nav), "static_sec": 0.0}},
+    )
+
+    started = orch.start_test_session()
+    assert orch.phase == OrchestratorPhase.TEST_RUNNING
+    session_id = started["session_id"]
+    manifest_path = Path(started["manifest"])
+    events_path = Path(started["events"])
+    assert session_id.startswith("sess_")
+    assert manifest_path.exists()
+    assert events_path.exists()
+
+    manifest_running = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest_running["status"] == "RUNNING"
+    assert manifest_running["session_id"] == session_id
+    assert manifest_running["scenario_id"].startswith("scn_")
+
+    stopped = orch.stop_test_session()
+    assert stopped["session_id"] == session_id
+    assert orch.phase == OrchestratorPhase.PREPARED
+
+    manifest_stopped = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest_stopped["status"] == "STOPPED"
+    assert isinstance(manifest_stopped.get("duration_sec"), (int, float))
+    assert float(manifest_stopped["duration_sec"]) >= 0.0
+    assert manifest_stopped["t1_unix"] is not None
+
+    lines = [x for x in events_path.read_text(encoding="utf-8").splitlines() if x.strip()]
+    assert len(lines) >= 2
+    first = json.loads(lines[0])
+    last = json.loads(lines[-1])
+    assert first.get("event") == "SESSION_START"
+    assert last.get("event") == "SESSION_STOP"
+    assert first.get("session_id") == session_id
+    assert last.get("session_id") == session_id
+
+
+def test_start_test_session_requires_prepared_scenario() -> None:
+    bus = EventBus()
+    sm = _FakeServiceManager({})
+    orch = Orchestrator(bus, sm)
+
+    try:
+        orch.start_test_session()
+        assert False, "expected RuntimeError"
+    except RuntimeError as ex:
+        assert str(ex) == "scenario_not_prepared"

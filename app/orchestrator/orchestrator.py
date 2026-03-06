@@ -95,8 +95,10 @@ class Orchestrator:
         # stop timeout (loaded from profile on start; default applied by orchestrator)
         self._stop_timeout_sec: int = 10
         self._scenario_seq: int = 0
+        self._test_session_seq: int = 0
         self._active_scenario_id: Optional[str] = None
         self._prepared_scenario: Optional[dict[str, Any]] = None
+        self._active_test_session: Optional[dict[str, Any]] = None
         self._mayak_mode: str = "real"
         self._mayak_stub = MayakStubController()
 
@@ -812,6 +814,137 @@ class Orchestrator:
     def stop_test_flow(self) -> None:
         self.stop_mayak_test()
 
+    def start_test_session(self) -> dict[str, str]:
+        """
+        Start lightweight test session (no Mayak dependency).
+        v1 writes only session manifest and events log.
+        """
+        with self._lock:
+            if self._active_test_session is not None:
+                raise RuntimeError("test_session_already_running")
+            prepared = dict(self._prepared_scenario) if isinstance(self._prepared_scenario, dict) else None
+
+        if prepared is None:
+            raise RuntimeError("scenario_not_prepared")
+
+        session_id = self._next_test_session_id()
+        scenario_id = str(prepared.get("scenario_id", "none"))
+        out_dir = (Path("outputs") / "sessions" / session_id).resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        events_path = out_dir / "events.log"
+        manifest_path = out_dir / "session_manifest.json"
+
+        t0_unix = time.time()
+        t0_mono = time.monotonic()
+        manifest = {
+            "session_id": session_id,
+            "scenario_id": scenario_id,
+            "status": "RUNNING",
+            "t0_unix": t0_unix,
+            "t0_monotonic": t0_mono,
+            "t1_unix": None,
+            "duration_sec": None,
+            "paths": {
+                "events_log": str(events_path),
+            },
+        }
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        self._append_session_event(
+            events_path=events_path,
+            payload={
+                "event": "SESSION_START",
+                "session_id": session_id,
+                "scenario_id": scenario_id,
+                "unix_ts": t0_unix,
+                "t_rel_sec": 0.0,
+            },
+        )
+
+        with self._lock:
+            self._active_test_session = {
+                "session_id": session_id,
+                "scenario_id": scenario_id,
+                "out_dir": str(out_dir),
+                "events_path": str(events_path),
+                "manifest_path": str(manifest_path),
+                "t0_unix": t0_unix,
+                "t0_monotonic": t0_mono,
+            }
+
+        emit_log(
+            self._bus,
+            "INFO",
+            "orchestrator",
+            "SESSION_START",
+            f"session_id={session_id} scenario_id={scenario_id}",
+        )
+        self._set_phase(OrchestratorPhase.TEST_RUNNING, f"session_id={session_id}")
+        return {
+            "session_id": session_id,
+            "out_dir": str(out_dir),
+            "manifest": str(manifest_path),
+            "events": str(events_path),
+        }
+
+    def stop_test_session(self) -> dict[str, str]:
+        with self._lock:
+            active = dict(self._active_test_session) if isinstance(self._active_test_session, dict) else None
+
+        if active is None:
+            raise RuntimeError("test_session_not_running")
+
+        session_id = str(active.get("session_id", "none"))
+        scenario_id = str(active.get("scenario_id", "none"))
+        t0_mono = float(active.get("t0_monotonic", time.monotonic()))
+        t1_unix = time.time()
+        duration_sec = max(0.0, time.monotonic() - t0_mono)
+
+        events_path = Path(str(active.get("events_path", "")))
+        manifest_path = Path(str(active.get("manifest_path", "")))
+        self._append_session_event(
+            events_path=events_path,
+            payload={
+                "event": "SESSION_STOP",
+                "session_id": session_id,
+                "scenario_id": scenario_id,
+                "unix_ts": t1_unix,
+                "t_rel_sec": duration_sec,
+            },
+        )
+
+        manifest: dict[str, Any] = {}
+        if manifest_path.exists():
+            try:
+                parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if isinstance(parsed, dict):
+                    manifest = parsed
+            except Exception:
+                manifest = {}
+        manifest["session_id"] = session_id
+        manifest["scenario_id"] = scenario_id
+        manifest["status"] = "STOPPED"
+        manifest["t1_unix"] = t1_unix
+        manifest["duration_sec"] = duration_sec
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        with self._lock:
+            self._active_test_session = None
+
+        emit_log(
+            self._bus,
+            "INFO",
+            "orchestrator",
+            "SESSION_STOP",
+            f"session_id={session_id} scenario_id={scenario_id} duration_sec={duration_sec:.3f}",
+        )
+        self._set_phase(OrchestratorPhase.PREPARED, f"session_id={session_id}")
+        return {
+            "session_id": session_id,
+            "manifest": str(manifest_path),
+            "events": str(events_path),
+        }
+
     def generate_gps_signal_preflight(
         self,
         *,
@@ -1425,6 +1558,17 @@ class Orchestrator:
         with self._lock:
             self._scenario_seq += 1
             return f"scn_{int(time.time() * 1000)}_{self._scenario_seq}"
+
+    def _next_test_session_id(self) -> str:
+        with self._lock:
+            self._test_session_seq += 1
+            return f"sess_{int(time.time() * 1000)}_{self._test_session_seq}"
+
+    def _append_session_event(self, *, events_path: Path, payload: dict[str, Any]) -> None:
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(payload, ensure_ascii=False)
+        with events_path.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
 
     def _begin_scenario_id(self) -> str:
         scenario_id = self._next_scenario_id()
