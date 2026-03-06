@@ -1714,6 +1714,7 @@ class Orchestrator:
         origin_h = float(gps.get("origin_h", 156.0) or 156.0)
         tx_atten_db = float(pluto.get("tx_atten_db", -20.0) or -20.0)
         rf_bw_mhz = float(pluto.get("rf_bw_mhz", 3.0) or 3.0)
+        pluto_host = str(pluto.get("host", "") or pluto.get("ip", "") or "").strip()
 
         try:
             probe_iq = self._ensure_sdr_probe_iq(
@@ -1732,7 +1733,28 @@ class Orchestrator:
             iq_path=probe_iq,
             tx_atten_db=tx_atten_db,
             rf_bw_mhz=rf_bw_mhz,
+            host=pluto_host or None,
         )
+        if (not ok) and isinstance(detail, str) and "failed_creating_iio_context" in detail:
+            fallback_host = "192.168.2.1"
+            if (not pluto_host) or (pluto_host != fallback_host):
+                ok2, detail2 = self._run_pluto_probe(
+                    pluto_exe=pluto_exe,
+                    iq_path=probe_iq,
+                    tx_atten_db=tx_atten_db,
+                    rf_bw_mhz=rf_bw_mhz,
+                    host=fallback_host,
+                )
+                if ok2:
+                    emit_log(
+                        self._bus,
+                        "INFO",
+                        "orchestrator",
+                        "ORCH_SDR_PROBE_OK",
+                        f"mode=retry_host host={fallback_host}",
+                    )
+                    return True, ""
+                return False, detail2
         return (ok, detail)
 
     def _ensure_sdr_probe_iq(
@@ -1800,6 +1822,7 @@ class Orchestrator:
         iq_path: Path,
         tx_atten_db: float,
         rf_bw_mhz: float,
+        host: str | None = None,
     ) -> tuple[bool, str]:
         out_dir = iq_path.parent
         pluto_exe_path = Path(pluto_exe).resolve()
@@ -1817,6 +1840,9 @@ class Orchestrator:
             "-b",
             f"{float(rf_bw_mhz):.2f}",
         ]
+        host_txt = str(host or "").strip()
+        if host_txt:
+            cmd += ["-n", host_txt]
         cmdline_txt.write_text(" ".join(cmd), encoding="utf-8")
 
         try:
