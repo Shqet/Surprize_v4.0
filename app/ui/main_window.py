@@ -153,6 +153,7 @@ class MainWindow(QMainWindow):
         self._vl_rtsp_thermal: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "vl_rtsp_thermal")
         self._vl_mayak_params: Optional[QVBoxLayout] = self._safe_find_layout(QVBoxLayout, "l_Mayak_params")
         self._gl_sdr_options: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_SDR_options")
+        self._gl_gps_sdr_options_m: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_gpsSDRSim_options_m")
         self._gl_functional_buttons: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_functionalButtons")
 
         self._editor: Optional[ConfigJsonEditor] = None
@@ -318,11 +319,15 @@ class MainWindow(QMainWindow):
             self._vl_rtsp_thermal.addWidget(w, 0, 0)
 
     def _init_sdr_options_panel(self) -> None:
-        gl = self._gl_sdr_options
-        if gl is None:
+        gl_scenario = self._gl_sdr_options
+        gl_monitor = self._gl_gps_sdr_options_m
+        if gl_scenario is None and gl_monitor is None:
             return
 
-        self._clear_layout(gl)
+        if gl_scenario is not None:
+            self._clear_layout(gl_scenario)
+        if gl_monitor is not None:
+            self._clear_layout(gl_monitor)
 
         gps_box = QGroupBox("GPS SDR Sim", self)
         gps_form = QFormLayout(gps_box)
@@ -398,10 +403,16 @@ class MainWindow(QMainWindow):
         pluto_form.addRow("Полоса пропускания, МГц", self._pluto_rf_bw_spin)
         pluto_form.addRow("Ослабление TX, дБ", self._pluto_tx_atten_spin)
 
-        gl.addWidget(gps_box, 0, 0)
-        gl.addWidget(pluto_box, 1, 0)
-        gl.setRowStretch(2, 1)
-        gl.setColumnStretch(0, 1)
+        if gl_scenario is not None:
+            gl_scenario.addWidget(gps_box, 0, 0)
+            gl_scenario.setRowStretch(1, 1)
+            gl_scenario.setColumnStretch(0, 1)
+
+        # Pluto settings are operator controls for monitoring phase.
+        if gl_monitor is not None:
+            gl_monitor.addWidget(pluto_box, 0, 0)
+            gl_monitor.setRowStretch(1, 1)
+            gl_monitor.setColumnStretch(0, 1)
 
     def _init_mayak_panel(self) -> None:
         vl = self._vl_mayak_params
