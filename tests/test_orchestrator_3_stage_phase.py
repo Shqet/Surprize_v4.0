@@ -354,8 +354,8 @@ def test_pluto_probe_fast_exit_rc0_is_not_ready(tmp_path: Path, monkeypatch) -> 
         rf_bw_mhz=3.0,
     )
 
-    assert ok is False
-    assert detail == "pluto_probe_inconclusive"
+    assert ok is True
+    assert detail == ""
 
 
 def test_pluto_probe_detects_missing_sdr_from_iio_context_error(tmp_path: Path, monkeypatch) -> None:

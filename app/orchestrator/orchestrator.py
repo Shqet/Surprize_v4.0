@@ -1912,6 +1912,18 @@ class Orchestrator:
             if ok and int(rc) == 0:
                 emit_log(self._bus, "INFO", "orchestrator", "ORCH_SDR_PROBE_OK", f"mode=fast_exit iq={iq_path.as_posix()}")
                 return True, ""
+            if (not ok) and int(rc) == 0 and detail == "pluto_probe_inconclusive":
+                # Some PlutoPlayer builds may not flush logs under redirected stdio.
+                # If process completed successfully and we did not detect explicit fail markers,
+                # accept probe as ready to avoid false negatives.
+                emit_log(
+                    self._bus,
+                    "WARNING",
+                    "orchestrator",
+                    "SERVICE_ERROR",
+                    "stage=sdr_probe warn=pluto_rc0_no_markers",
+                )
+                return True, ""
             if not ok and int(rc) != 0 and detail == "pluto_probe_inconclusive":
                 tail = (err or "").strip().splitlines()
                 msg = tail[-1] if tail else f"rc={rc}"
