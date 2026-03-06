@@ -2,9 +2,10 @@
 
 import copy
 import os
+import time
 from typing import Any, Optional, cast
 
-from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal
+from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -149,6 +150,7 @@ class MainWindow(QMainWindow):
 
         self._gl_trajectory_params: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "gl_trajectory_params")
         self._vl_trajectory_visualization: Optional[QVBoxLayout] = self._safe_find_layout(QVBoxLayout, "vl_trajectory_visualization")
+        self._vl_trajectory_visualization_m: Optional[QVBoxLayout] = self._safe_find_layout(QVBoxLayout, "vl_trajectory_visualization_m")
         self._vl_rtsp_visible: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "vl_rtsp_visible")
         self._vl_rtsp_thermal: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "vl_rtsp_thermal")
         self._vl_mayak_params: Optional[QVBoxLayout] = self._safe_find_layout(QVBoxLayout, "l_Mayak_params")
@@ -161,7 +163,17 @@ class MainWindow(QMainWindow):
 
         # 3D view + controller
         self._traj_view = Trajectory3DView(self)
+        self._traj_view_m = Trajectory3DView(self)
+        self._latest_trajectory_points: list[tuple[float, float, float]] = []
+        self._monitor_points: list[tuple[float, float, float]] = []
+        self._monitor_duration_sec: float = 0.0
+        self._monitor_started_at: Optional[float] = None
+        self._monitor_load_seq: int = 0
+        self._monitor_timer = QTimer(self)
+        self._monitor_timer.setInterval(50)
+        self._monitor_timer.timeout.connect(self._on_monitor_timer_tick)
         self._init_trajectory_view()
+        self._init_monitor_trajectory_view()
 
         self._init_rtsp_previews()
         self._gps_nav_path_edit: Optional[QLineEdit] = None
@@ -307,6 +319,20 @@ class MainWindow(QMainWindow):
                 w.deleteLater()
         vl.addWidget(self._traj_view)
         vl.setStretch(0, 1)
+
+    def _init_monitor_trajectory_view(self) -> None:
+        vl = self._vl_trajectory_visualization_m
+        if vl is None:
+            return
+        while vl.count():
+            it = vl.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        vl.addWidget(self._traj_view_m)
+        vl.setStretch(0, 1)
+        self._traj_view_m.set_status("Мониторинг траектории (3D)\nОжидание подготовленного сценария")
 
     def _init_rtsp_previews(self) -> None:
         if self._vl_rtsp_visible is not None:
@@ -813,6 +839,7 @@ class MainWindow(QMainWindow):
                 ),
             )
             self.statusBar().showMessage("Подготовка к тесту завершена", 4000)
+            self._start_monitor_trajectory_animation()
             try:
                 idx = self.ui.tw_research.indexOf(self.ui.monitoringTab)
                 if idx >= 0:
@@ -859,12 +886,94 @@ class MainWindow(QMainWindow):
             self._log_info("UI_TRAJ_DURATION", f"duration_sec={self._trajectory_duration_sec:.3f}")
 
     def _on_trajectory_points_resolved(self, points: list[tuple[float, float, float]]) -> None:
+        self._latest_trajectory_points = list(points) if isinstance(points, list) else []
         if points:
             x, y, z = points[-1]
             self._last_trajectory_end_local = (float(x), float(y), float(z))
         else:
             self._last_trajectory_end_local = None
         self._refresh_gps_finish_point()
+
+    def _start_monitor_trajectory_animation(self) -> None:
+        points = list(self._latest_trajectory_points)
+        if points:
+            self._apply_monitor_points(points, self._trajectory_duration_sec)
+            return
+
+        run_dir = getattr(self._traj_ctl, "last_run_dir", None)
+        if not isinstance(run_dir, str) or not run_dir.strip():
+            self._traj_view_m.set_status("Мониторинг траектории (3D)\nНет данных trajectory.csv")
+            return
+
+        self._monitor_load_seq += 1
+        seq = self._monitor_load_seq
+        self._traj_view_m.set_status("Мониторинг траектории (3D)\nЗагрузка trajectory.csv…")
+        self._traj_loader.start(
+            seq=seq,
+            run_dir=run_dir,
+            on_ok=self._on_monitor_trajectory_loaded_ok,
+            on_fail=self._on_monitor_trajectory_loaded_fail,
+        )
+
+    def _on_monitor_trajectory_loaded_ok(self, seq: int, payload_obj: object) -> None:
+        if seq != self._monitor_load_seq:
+            return
+        payload = payload_obj if isinstance(payload_obj, dict) else {}
+        points_raw = payload.get("points", payload_obj) if isinstance(payload, dict) else payload_obj
+        points = list(points_raw) if isinstance(points_raw, list) else []
+        duration_raw = payload.get("duration_sec") if isinstance(payload, dict) else None
+        duration = float(duration_raw) if isinstance(duration_raw, (int, float)) else None
+        self._apply_monitor_points(points, duration)
+
+    def _on_monitor_trajectory_loaded_fail(self, seq: int, error: str) -> None:
+        if seq != self._monitor_load_seq:
+            return
+        self._traj_view_m.show_failed(error)
+
+    def _apply_monitor_points(
+        self,
+        points: list[tuple[float, float, float]],
+        duration_sec: Optional[float],
+    ) -> None:
+        self._monitor_timer.stop()
+        if not points:
+            self._traj_view_m.set_status("Мониторинг траектории (3D)\nНет точек для анимации")
+            return
+
+        self._monitor_points = points
+        d = float(duration_sec) if isinstance(duration_sec, (int, float)) and float(duration_sec) > 0 else 0.0
+        if d <= 0.0:
+            d = max((len(points) - 1) / 10.0, 0.1)
+        self._monitor_duration_sec = d
+        self._monitor_started_at = time.monotonic()
+
+        self._traj_view_m.set_points(points)
+        self._traj_view_m.set_status(None)
+        self._monitor_timer.start()
+        self._log_info(
+            "UI_MONITOR_ANIM_START",
+            f"points={len(points)} duration_sec={self._monitor_duration_sec:.3f}",
+        )
+
+    def _on_monitor_timer_tick(self) -> None:
+        points = self._monitor_points
+        if not points:
+            self._monitor_timer.stop()
+            return
+        if len(points) == 1:
+            self._traj_view_m.set_marker_point(points[0])
+            return
+
+        started = self._monitor_started_at
+        if started is None:
+            self._monitor_started_at = time.monotonic()
+            started = self._monitor_started_at
+        elapsed = max(0.0, time.monotonic() - float(started))
+        d = max(self._monitor_duration_sec, 0.001)
+        t = elapsed % d
+        idx = int((t / d) * (len(points) - 1))
+        idx = max(0, min(len(points) - 1, idx))
+        self._traj_view_m.set_marker_point(points[idx])
 
     def _on_gps_origin_changed(self, _value: float) -> None:
         self._refresh_gps_finish_point()

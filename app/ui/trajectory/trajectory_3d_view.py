@@ -31,6 +31,7 @@ class Trajectory3DView(QWidget):
 
         self._grid: Optional[object] = None
         self._line: Optional[object] = None
+        self._marker: Optional[object] = None
 
         # overlay status
         self._status = QLabel("", self)
@@ -76,6 +77,7 @@ class Trajectory3DView(QWidget):
             pass
         self._grid = None
         self._line = None
+        self._marker = None
 
     def show_failed(self, details: Optional[str] = None) -> None:
         self.clear()
@@ -124,6 +126,15 @@ class Trajectory3DView(QWidget):
         self._grid = grid
         self._line = line
 
+        marker = gl.GLScatterPlotItem(
+            pos=np.array([[float(pos[0][0]), float(pos[0][1]), float(pos[0][2])]], dtype=float),
+            size=10.0,
+            color=(0.2, 0.9, 1.0, 1.0),
+            pxMode=True,
+        )
+        self._view.addItem(marker)
+        self._marker = marker
+
         # camera fit
         try:
             self._view.opts["center"] = Vector(float(center[0]), float(center[1]), float(center[2]))
@@ -141,3 +152,12 @@ class Trajectory3DView(QWidget):
 
         # hide overlay after successful render
         self.set_status(None)
+
+    def set_marker_point(self, point: tuple[float, float, float]) -> None:
+        if self._marker is None:
+            return
+        x, y, z = point
+        try:
+            self._marker.setData(pos=np.array([[float(x), float(y), float(z)]], dtype=float))
+        except Exception:
+            pass
