@@ -1365,6 +1365,18 @@ class MainWindow(QMainWindow):
 
         rows: list[tuple[str, str, str]] = []
 
+        if has_blocking("sdr_not_ready"):
+            rows.append(("SDR / Pluto", "err", "не готово"))
+        else:
+            rows.append(("SDR / Pluto", "ok", "готово"))
+
+        if has_blocking("mayak_not_ready") or has_blocking("mayak_check_failed"):
+            rows.append(("Маяк", "err", "не готово"))
+        elif "mayak_is_ready_unavailable" in warnings:
+            rows.append(("Маяк", "warn", "не готово (допустимо)"))
+        else:
+            rows.append(("Маяк", "ok", "готово"))
+
         if "trajectory_missing" in blocking:
             rows.append(("Траектория", "err", "не готово"))
         else:
@@ -1374,18 +1386,6 @@ class MainWindow(QMainWindow):
             rows.append(("Эфемериды GPS", "err", "не готово"))
         else:
             rows.append(("Эфемериды GPS", "ok", "готово"))
-
-        if has_blocking("mayak_not_ready") or has_blocking("mayak_check_failed"):
-            rows.append(("Маяк", "err", "не готово"))
-        elif "mayak_is_ready_unavailable" in warnings:
-            rows.append(("Маяк", "warn", "не готово (допустимо)"))
-        else:
-            rows.append(("Маяк", "ok", "готово"))
-
-        if has_blocking("sdr_not_ready"):
-            rows.append(("SDR / Pluto", "err", "не готово"))
-        else:
-            rows.append(("SDR / Pluto", "ok", "готово"))
 
         if has_blocking("pluto_input_failed"):
             rows.append(("Pluto input", "err", "не готово"))

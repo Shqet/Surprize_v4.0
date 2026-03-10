@@ -732,9 +732,9 @@ class Orchestrator:
     def check_readiness(self) -> dict[str, Any]:
         """
         Stage-2 preflight skeleton:
+          - check blocking readiness (SDR + Mayak)
           - validate prepared scenario artifact refs
           - generate a simple PlutoPlayer input artifact
-          - check blocking readiness (Mayak + SDR inputs)
           - check camera readiness as warning-only
         """
         self._set_phase(OrchestratorPhase.MONITORING, "action=check_readiness")
@@ -755,19 +755,6 @@ class Orchestrator:
         artifacts: dict[str, str] = {}
         scenario_id = str(prepared.get("scenario_id", "none"))
 
-        # required trajectory artifact
-        trajectory = prepared.get("trajectory")
-        traj_path = trajectory.get("trajectory_csv") if isinstance(trajectory, dict) else None
-        if not isinstance(traj_path, str) or not traj_path.strip() or not Path(traj_path).exists():
-            blocking_errors.append("trajectory_missing")
-
-        # required SDR nav file
-        sdr = prepared.get("sdr_options")
-        gps = sdr.get("gps_sdr_sim") if isinstance(sdr, dict) else None
-        nav = gps.get("nav") if isinstance(gps, dict) else None
-        if not isinstance(nav, str) or not nav.strip() or not Path(nav).exists():
-            blocking_errors.append("gps_nav_missing")
-
         # mayak readiness is blocking
         try:
             svc = self._resolve_mayak_service()
@@ -779,6 +766,24 @@ class Orchestrator:
                 warnings.append("mayak_is_ready_unavailable")
         except Exception as ex:
             blocking_errors.append(f"mayak_check_failed:{type(ex).__name__}")
+
+        # SDR readiness is blocking: short PlutoPlayer probe with cached short IQ.
+        sdr_ok, sdr_detail = self._check_sdr_readiness(prepared)
+        if not sdr_ok:
+            blocking_errors.append("sdr_not_ready")
+            if sdr_detail:
+                detail_txt = str(sdr_detail)
+                if detail_txt.startswith("gps_nav_missing"):
+                    blocking_errors.append("gps_nav_missing")
+                elif detail_txt.startswith("gps_nav_not_found="):
+                    blocking_errors.append(detail_txt)
+                warnings.append(f"sdr_probe:{sdr_detail}")
+
+        # required trajectory artifact
+        trajectory = prepared.get("trajectory")
+        traj_path = trajectory.get("trajectory_csv") if isinstance(trajectory, dict) else None
+        if not isinstance(traj_path, str) or not traj_path.strip() or not Path(traj_path).exists():
+            blocking_errors.append("trajectory_missing")
 
         # cameras are warning-only
         services_map = self._sm.get_services()
@@ -802,13 +807,6 @@ class Orchestrator:
             artifacts["pluto_input"] = str(pluto_path)
         except Exception as ex:
             blocking_errors.append(f"pluto_input_failed:{type(ex).__name__}")
-
-        # SDR readiness is blocking: short PlutoPlayer probe with cached short IQ.
-        sdr_ok, sdr_detail = self._check_sdr_readiness(prepared)
-        if not sdr_ok:
-            blocking_errors.append("sdr_not_ready")
-            if sdr_detail:
-                warnings.append(f"sdr_probe:{sdr_detail}")
 
         ready = not blocking_errors
         if ready:
