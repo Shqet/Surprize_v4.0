@@ -5,6 +5,7 @@ import csv
 import json
 import math
 import os
+import subprocess
 import time
 from bisect import bisect_left
 from pathlib import Path
@@ -210,6 +211,7 @@ class MainWindow(QMainWindow):
         self._runtime_prev_active: bool = False
         self._last_finished_session_notified: Optional[str] = None
         self._session_out_dir_hints: dict[str, str] = {}
+        self._last_completed_out_dir: str = ""
         self._settings_store = QSettings("Surprize", "SurprizeShell")
         self._settings = self._load_ui_settings()
         self._anim_without_test_enabled: bool = bool(
@@ -339,6 +341,7 @@ class MainWindow(QMainWindow):
         self._lbl_session_gps_m: Optional[QLabel] = None
         self._lbl_session_degraded_m: Optional[QLabel] = None
         self._lbl_last_test_result_m: Optional[QLabel] = None
+        self._btn_open_last_results_m: Optional[QPushButton] = None
         self._session_output_root_m_edit: Optional[QLineEdit] = None
         self._btn_session_output_root_m_browse: Optional[QPushButton] = None
         self._btn_session_output_root_m_default: Optional[QPushButton] = None
@@ -957,6 +960,8 @@ class MainWindow(QMainWindow):
             self._lbl_session_gps_m = QLabel("GPS трансляция: -", self)
             self._lbl_session_degraded_m = QLabel("Режим: -", self)
             self._lbl_last_test_result_m = QLabel("Последнее испытание: не запускалось", self)
+            self._btn_open_last_results_m = QPushButton("Открыть папку результатов", self)
+            self._btn_open_last_results_m.setEnabled(False)
             self._session_output_root_m_edit = QLineEdit(self)
             self._session_output_root_m_edit.setText(str(self._settings.get("session_output_root", _DEFAULT_SESSION_OUTPUT_ROOT)))
             self._session_output_root_m_edit.setPlaceholderText(_DEFAULT_SESSION_OUTPUT_ROOT)
@@ -983,6 +988,7 @@ class MainWindow(QMainWindow):
             glm.addWidget(self._lbl_session_gps_m, 8, 0, 1, 3)
             glm.addWidget(self._lbl_session_degraded_m, 9, 0, 1, 3)
             glm.addWidget(self._lbl_last_test_result_m, 10, 0, 1, 3)
+            glm.addWidget(self._btn_open_last_results_m, 11, 0, 1, 3)
             glm.setColumnStretch(0, 1)
             glm.setColumnStretch(1, 1)
             glm.setColumnStretch(2, 1)
@@ -1016,6 +1022,8 @@ class MainWindow(QMainWindow):
             self._btn_session_output_root_m_browse.clicked.connect(self._on_monitor_session_output_root_browse)
         if self._btn_session_output_root_m_default is not None:
             self._btn_session_output_root_m_default.clicked.connect(self._on_monitor_session_output_root_use_default)
+        if self._btn_open_last_results_m is not None:
+            self._btn_open_last_results_m.clicked.connect(self._on_open_last_results_clicked)
         if self._btn_replay_open_m is not None:
             self._btn_replay_open_m.clicked.connect(self._on_replay_open_session_clicked)
         if self._btn_replay_play_m is not None:
@@ -1369,6 +1377,10 @@ class MainWindow(QMainWindow):
             return any(item == prefix or item.startswith(prefix) for item in blocking)
 
         rows: list[tuple[str, str, str]] = []
+        sdr_probe_details: list[str] = []
+        for warn in warnings:
+            if warn.startswith("sdr_probe:"):
+                sdr_probe_details.append(warn.split(":", 1)[1].strip())
 
         if has_blocking("sdr_not_ready"):
             rows.append(("SDR / Pluto", "err", "не готово"))
@@ -1411,6 +1423,10 @@ class MainWindow(QMainWindow):
         for title, kind, state_txt in rows:
             icon = self._status_icon_html(kind)
             lines.append(f"{icon} <b>{title}</b>: {state_txt}<br/>")
+        if sdr_probe_details:
+            details_txt = "; ".join(x for x in sdr_probe_details if x)
+            if details_txt:
+                lines.append(f"<br/><b>SDR детали:</b> {details_txt}<br/>")
         lines.append("<br/>")
         if ready_to_start:
             lines.append('<span style="color:#2e7d32; font-weight:700;">Итог: тест может быть запущен.</span>')
@@ -1552,6 +1568,9 @@ class MainWindow(QMainWindow):
             self._btn_session_output_root_m_browse.setEnabled(can_change_output_root)
         if self._btn_session_output_root_m_default is not None:
             self._btn_session_output_root_m_default.setEnabled(can_change_output_root)
+        if self._btn_open_last_results_m is not None:
+            has_results_dir = bool(self._last_completed_out_dir) and Path(self._last_completed_out_dir).exists()
+            self._btn_open_last_results_m.setEnabled(has_results_dir)
 
     @staticmethod
     def _format_elapsed(value_sec: float) -> str:
@@ -1907,6 +1926,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Испытание завершено ({sid}). Результаты сохранены.", 5000)
         self._set_last_test_result_label(f"Последнее испытание: успешно завершено ({sid})", "#2e7d32")
         if out:
+            self._last_completed_out_dir = out
+            if self._btn_open_last_results_m is not None:
+                self._btn_open_last_results_m.setEnabled(True)
+        if out:
             QMessageBox.information(
                 self,
                 "Мониторинг",
@@ -1916,6 +1939,23 @@ class MainWindow(QMainWindow):
                     f"Папка: {out}"
                 ),
             )
+
+    def _on_open_last_results_clicked(self) -> None:
+        out = str(self._last_completed_out_dir or "").strip()
+        if not out:
+            QMessageBox.information(self, "Мониторинг", "Папка результатов еще не зафиксирована.")
+            return
+        p = Path(out)
+        if not p.exists():
+            QMessageBox.warning(self, "Мониторинг", f"Папка не найдена:\n{p.as_posix()}")
+            return
+        try:
+            if hasattr(os, "startfile"):
+                os.startfile(str(p))  # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["xdg-open", str(p)])
+        except Exception as ex:
+            QMessageBox.critical(self, "Мониторинг", f"Не удалось открыть папку:\n{type(ex).__name__}: {ex}")
 
     def _set_last_test_result_label(self, text: str, color: str = "") -> None:
         if self._lbl_last_test_result_m is None:
