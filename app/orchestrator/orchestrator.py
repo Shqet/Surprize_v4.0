@@ -22,6 +22,7 @@ from app.orchestrator.mayak_controller import (
 )
 from app.orchestrator.session_gps_tx import SessionGpsTxRunner
 from app.orchestrator.session_runtime import SessionRuntime, SessionStatus
+from app.orchestrator.session_trajectory_ticker import SessionTrajectoryTicker
 from app.orchestrator.session_video_recorder import SessionVideoRecorder
 from app.orchestrator.states import OrchestratorPhase, OrchestratorState
 from app.profiles.loader import load_profile
@@ -105,6 +106,7 @@ class Orchestrator:
         self._prepared_scenario: Optional[dict[str, Any]] = None
         self._active_test_session: Optional[SessionRuntime] = None
         self._gps_tx_runner = SessionGpsTxRunner(bus)
+        self._trajectory_ticker = SessionTrajectoryTicker(bus)
         self._video_recorder = SessionVideoRecorder(bus, self._sm.get_services)
         self._mayak_mode: str = "real"
         self._mayak_stub = MayakStubController()
@@ -821,6 +823,25 @@ class Orchestrator:
     def stop_test_flow(self) -> None:
         self.stop_mayak_test()
 
+    def start_test_session_flow(self) -> dict[str, Any]:
+        """
+        Unified runtime flow for monitoring test session:
+          readiness -> create session -> start video -> start GPS TX -> RUNNING
+        """
+        report = self.check_readiness()
+        ready = bool(report.get("ready_to_start")) if isinstance(report, dict) else False
+        if not ready:
+            return {"started": False, "readiness": report}
+        session = self.start_test_session()
+        return {"started": True, "readiness": report, "session": session}
+
+    def stop_test_session_flow(self) -> dict[str, str]:
+        """
+        Unified stop flow:
+          stop trajectory ticker -> stop GPS TX -> stop video -> finalize manifest
+        """
+        return self.stop_test_session()
+
     def start_test_session(self) -> dict[str, str]:
         """
         Start lightweight test session (no Mayak dependency).
@@ -872,7 +893,12 @@ class Orchestrator:
                 "t_rel_sec": 0.0,
             },
         )
+        started_ticker = False
+        started_video = False
+        started_gps = False
+        start_stage = "init"
         try:
+            start_stage = "start_timeline"
             timeline_path = self._build_session_trajectory_timeline(runtime, prepared)
             runtime.paths["trajectory_timeline"] = str(timeline_path)
             runtime.handles["trajectory_timeline_meta"] = {
@@ -894,65 +920,43 @@ class Orchestrator:
                     ),
                 },
             )
+            self._trajectory_ticker.start(runtime)
+            started_ticker = True
             self._write_session_manifest(runtime)
-        except Exception as ex:
-            runtime.status = SessionStatus.ERROR
-            self._write_session_manifest(runtime)
-            self._append_session_event(
-                events_path=events_path,
-                payload={
-                    "event": "SESSION_ERROR",
-                    "session_id": session_id,
-                    "scenario_id": scenario_id,
-                    "unix_ts": time.time(),
-                    "t_rel_sec": max(0.0, time.monotonic() - t0_mono),
-                    "details": f"stage=start_timeline err={type(ex).__name__}",
-                },
-            )
-            emit_log(
-                self._bus,
-                "ERROR",
-                "orchestrator",
-                "SESSION_ERROR",
-                f"session_id={session_id} scenario_id={scenario_id} stage=start_timeline err={type(ex).__name__}",
-            )
-            raise
 
-        try:
+            start_stage = "start_video"
             self._video_recorder.record_for_session(runtime)
-        except Exception as ex:
-            runtime.status = SessionStatus.ERROR
+            started_video = True
             self._write_session_manifest(runtime)
-            self._append_session_event(
-                events_path=events_path,
-                payload={
-                    "event": "SESSION_ERROR",
-                    "session_id": session_id,
-                    "scenario_id": scenario_id,
-                    "unix_ts": time.time(),
-                    "t_rel_sec": max(0.0, time.monotonic() - t0_mono),
-                    "details": f"stage=start_video err={type(ex).__name__}",
-                },
-            )
-            emit_log(
-                self._bus,
-                "ERROR",
-                "orchestrator",
-                "SESSION_ERROR",
-                f"session_id={session_id} scenario_id={scenario_id} stage=start_video err={type(ex).__name__}",
-            )
-            raise
 
-        try:
+            start_stage = "start_gps_tx"
             self._gps_tx_runner.start(runtime)
+            started_gps = True
+            self._write_session_manifest(runtime)
         except Exception as ex:
-            try:
-                self._video_recorder.stop_record_for_session(runtime)
-            except Exception:
-                pass
+            rollback_errors: list[str] = []
+            if started_gps:
+                try:
+                    self._gps_tx_runner.stop(runtime)
+                except Exception as rollback_ex:
+                    rollback_errors.append(f"rollback_gps:{type(rollback_ex).__name__}")
+            if started_video:
+                try:
+                    self._video_recorder.stop_record_for_session(runtime)
+                except Exception as rollback_ex:
+                    rollback_errors.append(f"rollback_video:{type(rollback_ex).__name__}")
+            if started_ticker:
+                try:
+                    self._trajectory_ticker.stop(runtime)
+                except Exception as rollback_ex:
+                    rollback_errors.append(f"rollback_ticker:{type(rollback_ex).__name__}")
+
             runtime.status = SessionStatus.ERROR
             runtime.handles.pop("gps_tx_proc", None)
             self._write_session_manifest(runtime)
+            detail = f"stage={start_stage} err={type(ex).__name__}"
+            if rollback_errors:
+                detail = f"{detail} rollback={','.join(rollback_errors)}"
             self._append_session_event(
                 events_path=events_path,
                 payload={
@@ -961,7 +965,7 @@ class Orchestrator:
                     "scenario_id": scenario_id,
                     "unix_ts": time.time(),
                     "t_rel_sec": max(0.0, time.monotonic() - t0_mono),
-                    "details": f"stage=start_gps_tx err={type(ex).__name__}",
+                    "details": detail,
                 },
             )
             emit_log(
@@ -969,7 +973,7 @@ class Orchestrator:
                 "ERROR",
                 "orchestrator",
                 "SESSION_ERROR",
-                f"session_id={session_id} scenario_id={scenario_id} stage=start_gps_tx err={type(ex).__name__}",
+                f"session_id={session_id} scenario_id={scenario_id} {detail}",
             )
             raise
 
@@ -1016,6 +1020,23 @@ class Orchestrator:
         self._write_session_manifest(active)
 
         stop_errors: list[str] = []
+        try:
+            self._trajectory_ticker.stop(active)
+        except Exception as ex:
+            stop_errors.append(f"stop_trajectory_ticker:{type(ex).__name__}")
+            active.status = SessionStatus.ERROR
+            self._write_session_manifest(active)
+            self._append_session_event(
+                events_path=events_path,
+                payload={
+                    "event": "SESSION_ERROR",
+                    "session_id": session_id,
+                    "scenario_id": scenario_id,
+                    "unix_ts": time.time(),
+                    "t_rel_sec": duration_sec,
+                    "details": f"stage=stop_trajectory_ticker err={type(ex).__name__}",
+                },
+            )
         try:
             self._gps_tx_runner.stop(active)
         except Exception as ex:

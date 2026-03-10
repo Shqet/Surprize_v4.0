@@ -1081,14 +1081,17 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Дождитесь завершения проверки готовности", 2500)
             return
         try:
-            report = self._orch.check_readiness()
-            ready = bool(report.get("ready_to_start")) if isinstance(report, dict) else False
+            flow = self._orch.start_test_session_flow()
+            ready = bool(flow.get("started")) if isinstance(flow, dict) else False
             if ready:
-                self._log_info("UI_MONITOR_START_TEST", "status=ok mode=mock_only")
-                QMessageBox.information(self, "Мониторинг", "Испытание началось")
-                self.statusBar().showMessage("Испытание началось", 3000)
+                session = flow.get("session") if isinstance(flow, dict) else {}
+                session_id = str(session.get("session_id", "unknown")) if isinstance(session, dict) else "unknown"
+                self._log_info("UI_MONITOR_START_TEST", f"status=ok session_id={session_id}")
+                QMessageBox.information(self, "Мониторинг", f"Испытание началось\nСессия: {session_id}")
+                self.statusBar().showMessage(f"Испытание началось ({session_id})", 3000)
             else:
                 self._log_error("UI_MONITOR_START_TEST", "status=blocked readiness=0")
+                report = flow.get("readiness") if isinstance(flow, dict) else {}
                 self._present_readiness_report(report if isinstance(report, dict) else {})
         except Exception as ex:
             self._log_error("UI_MONITOR_START_TEST_FAILED", f"err={type(ex).__name__}")

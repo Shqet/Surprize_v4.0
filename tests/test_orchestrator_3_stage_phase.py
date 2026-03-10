@@ -288,6 +288,14 @@ def test_start_stop_test_session_writes_manifest_and_events(tmp_path: Path, monk
             session_ctx.handles.pop("gps_tx_proc", None)
 
     orch._gps_tx_runner = _FakeGpsTxRunner()
+    orch._trajectory_ticker = type(
+        "_FakeTrajectoryTicker",
+        (),
+        {
+            "start": staticmethod(lambda session_ctx: session_ctx.handles.__setitem__("trajectory_ticker", object())),
+            "stop": staticmethod(lambda session_ctx: session_ctx.handles.pop("trajectory_ticker", None)),
+        },
+    )()
     orch._video_recorder = type(
         "_FakeVideoRecorder",
         (),
@@ -382,6 +390,8 @@ def test_start_test_session_marks_error_when_gps_tx_fails(tmp_path: Path, monkey
         lambda _prepared: {"pluto_exe": "PlutoPlayer.exe", "iq_path": "dummy.bin", "tx_atten_db": -20.0, "rf_bw_mhz": 3.0},
     )
 
+    rollback = {"video_stop": 0, "ticker_stop": 0}
+
     class _FailingGpsTxRunner:
         def start(self, _session_ctx) -> None:
             raise RuntimeError("boom")
@@ -390,12 +400,30 @@ def test_start_test_session_marks_error_when_gps_tx_fails(tmp_path: Path, monkey
             return None
 
     orch._gps_tx_runner = _FailingGpsTxRunner()
+    orch._trajectory_ticker = type(
+        "_FakeTrajectoryTicker",
+        (),
+        {
+            "start": staticmethod(lambda session_ctx: session_ctx.handles.__setitem__("trajectory_ticker", object())),
+            "stop": staticmethod(
+                lambda session_ctx: (
+                    rollback.__setitem__("ticker_stop", int(rollback["ticker_stop"]) + 1),
+                    session_ctx.handles.pop("trajectory_ticker", None),
+                )
+            ),
+        },
+    )()
     orch._video_recorder = type(
         "_FakeVideoRecorder",
         (),
         {
             "record_for_session": staticmethod(lambda session_ctx: session_ctx.handles.__setitem__("video_recording", {})),
-            "stop_record_for_session": staticmethod(lambda session_ctx: session_ctx.handles.pop("video_recording", None)),
+            "stop_record_for_session": staticmethod(
+                lambda session_ctx: (
+                    rollback.__setitem__("video_stop", int(rollback["video_stop"]) + 1),
+                    session_ctx.handles.pop("video_recording", None),
+                )
+            ),
         },
     )()
 
@@ -423,6 +451,8 @@ def test_start_test_session_marks_error_when_gps_tx_fails(tmp_path: Path, monkey
     assert manifests, "manifest should exist for failed session start"
     manifest = json.loads(manifests[-1].read_text(encoding="utf-8"))
     assert manifest["status"] == SessionStatus.ERROR.value
+    assert rollback["video_stop"] == 1
+    assert rollback["ticker_stop"] == 1
 
 
 def test_start_test_session_fails_when_trajectory_time_is_not_monotonic(tmp_path: Path, monkeypatch) -> None:
@@ -459,6 +489,11 @@ def test_start_test_session_fails_when_trajectory_time_is_not_monotonic(tmp_path
             "stop_record_for_session": staticmethod(lambda session_ctx: session_ctx.handles.pop("video_recording", None)),
         },
     )()
+    orch._trajectory_ticker = type(
+        "_FakeTrajectoryTicker",
+        (),
+        {"start": staticmethod(lambda _session_ctx: None), "stop": staticmethod(lambda _session_ctx: None)},
+    )()
     orch._gps_tx_runner = type(
         "_FakeGpsTxRunner",
         (),
@@ -486,6 +521,46 @@ def test_start_test_session_fails_when_trajectory_time_is_not_monotonic(tmp_path
     assert manifests, "manifest should exist for failed session start"
     manifest = json.loads(manifests[-1].read_text(encoding="utf-8"))
     assert manifest["status"] == SessionStatus.ERROR.value
+
+
+def test_start_test_session_flow_blocks_when_readiness_not_ready(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    nav = tmp_path / "brdc.nav"
+    nav.write_text("dummy", encoding="utf-8")
+    traj_dir = tmp_path / "ballistics" / "run1"
+    traj_dir.mkdir(parents=True, exist_ok=True)
+    traj = traj_dir / "trajectory.csv"
+    traj.write_text("t,X,Y,Z\n0,0,0,0\n", encoding="utf-8")
+    diag = traj_dir / "diagnostics.csv"
+    diag.write_text("t,V\n0,0\n", encoding="utf-8")
+
+    bus = EventBus()
+    mayak = _MayakService(ready=True)
+    sm = _FakeServiceManager({"mayak_spindle": mayak})
+    orch = Orchestrator(bus, sm)
+
+    monkeypatch.setattr(
+        orch,
+        "_find_latest_trajectory_artifact",
+        lambda: {"run_dir": str(traj_dir), "trajectory_csv": str(traj), "diagnostics_csv": str(diag)},
+    )
+    monkeypatch.setattr(orch, "_check_sdr_readiness", lambda _prepared: (False, "probe_fail"))
+
+    orch.prepare_mayak_test(
+        head_start_rpm=100,
+        head_end_rpm=200,
+        tail_start_rpm=300,
+        tail_end_rpm=400,
+        profile_type="linear",
+        duration_sec=5.0,
+        sdr_options={"gps_sdr_sim": {"nav": str(nav), "static_sec": 0.0}},
+    )
+
+    out = orch.start_test_session_flow()
+    assert out["started"] is False
+    readiness = out["readiness"]
+    assert readiness["ready_to_start"] is False
+    assert "sdr_not_ready" in readiness["blocking_errors"]
 
 
 def test_pluto_probe_fast_exit_rc0_is_not_ready(tmp_path: Path, monkeypatch) -> None:
