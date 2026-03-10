@@ -20,6 +20,7 @@ from app.orchestrator.mayak_controller import (
 )
 from app.orchestrator.session_gps_tx import SessionGpsTxRunner
 from app.orchestrator.session_runtime import SessionRuntime, SessionStatus
+from app.orchestrator.session_video_recorder import SessionVideoRecorder
 from app.orchestrator.states import OrchestratorPhase, OrchestratorState
 from app.profiles.loader import load_profile
 from app.services.gps_sdr_sim.engine import prepare_nmea_input
@@ -102,6 +103,7 @@ class Orchestrator:
         self._prepared_scenario: Optional[dict[str, Any]] = None
         self._active_test_session: Optional[SessionRuntime] = None
         self._gps_tx_runner = SessionGpsTxRunner(bus)
+        self._video_recorder = SessionVideoRecorder(bus, self._sm.get_services)
         self._mayak_mode: str = "real"
         self._mayak_stub = MayakStubController()
 
@@ -870,8 +872,37 @@ class Orchestrator:
         )
 
         try:
+            self._video_recorder.record_for_session(runtime)
+        except Exception as ex:
+            runtime.status = SessionStatus.ERROR
+            self._write_session_manifest(runtime)
+            self._append_session_event(
+                events_path=events_path,
+                payload={
+                    "event": "SESSION_ERROR",
+                    "session_id": session_id,
+                    "scenario_id": scenario_id,
+                    "unix_ts": time.time(),
+                    "t_rel_sec": max(0.0, time.monotonic() - t0_mono),
+                    "details": f"stage=start_video err={type(ex).__name__}",
+                },
+            )
+            emit_log(
+                self._bus,
+                "ERROR",
+                "orchestrator",
+                "SESSION_ERROR",
+                f"session_id={session_id} scenario_id={scenario_id} stage=start_video err={type(ex).__name__}",
+            )
+            raise
+
+        try:
             self._gps_tx_runner.start(runtime)
         except Exception as ex:
+            try:
+                self._video_recorder.stop_record_for_session(runtime)
+            except Exception:
+                pass
             runtime.status = SessionStatus.ERROR
             runtime.handles.pop("gps_tx_proc", None)
             self._write_session_manifest(runtime)
@@ -936,11 +967,11 @@ class Orchestrator:
         active.duration_sec = duration_sec
         self._write_session_manifest(active)
 
-        stop_error: Optional[Exception] = None
+        stop_errors: list[str] = []
         try:
             self._gps_tx_runner.stop(active)
         except Exception as ex:
-            stop_error = ex
+            stop_errors.append(f"stop_gps_tx:{type(ex).__name__}")
             active.status = SessionStatus.ERROR
             self._write_session_manifest(active)
             self._append_session_event(
@@ -952,6 +983,23 @@ class Orchestrator:
                     "unix_ts": time.time(),
                     "t_rel_sec": duration_sec,
                     "details": f"stage=stop_gps_tx err={type(ex).__name__}",
+                },
+            )
+        try:
+            self._video_recorder.stop_record_for_session(active)
+        except Exception as ex:
+            stop_errors.append(f"stop_video:{type(ex).__name__}")
+            active.status = SessionStatus.ERROR
+            self._write_session_manifest(active)
+            self._append_session_event(
+                events_path=events_path,
+                payload={
+                    "event": "SESSION_ERROR",
+                    "session_id": session_id,
+                    "scenario_id": scenario_id,
+                    "unix_ts": time.time(),
+                    "t_rel_sec": duration_sec,
+                    "details": f"stage=stop_video err={type(ex).__name__}",
                 },
             )
 
@@ -966,14 +1014,14 @@ class Orchestrator:
             },
         )
 
-        if stop_error is None:
+        if not stop_errors:
             active.status = SessionStatus.STOPPED
         self._write_session_manifest(active)
 
         with self._lock:
             self._active_test_session = None
 
-        if stop_error is None:
+        if not stop_errors:
             emit_log(
                 self._bus,
                 "INFO",
@@ -987,11 +1035,11 @@ class Orchestrator:
                 "ERROR",
                 "orchestrator",
                 "SESSION_ERROR",
-                f"session_id={session_id} scenario_id={scenario_id} stage=stop_gps_tx err={type(stop_error).__name__}",
+                f"session_id={session_id} scenario_id={scenario_id} stage=stop err={','.join(stop_errors)}",
             )
         self._set_phase(OrchestratorPhase.PREPARED, f"session_id={session_id}")
-        if stop_error is not None:
-            raise RuntimeError(f"stop_gps_tx_failed:{type(stop_error).__name__}") from stop_error
+        if stop_errors:
+            raise RuntimeError(f"stop_session_failed:{','.join(stop_errors)}")
         return {
             "session_id": session_id,
             "manifest": str(manifest_path),

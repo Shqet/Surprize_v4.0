@@ -196,25 +196,37 @@ class VideoChannelDaemonService:
                 if now_mono - self._preview_last_log >= self._preview_log_every_sec:
                     emit_log(self._bus, "INFO", self._name, "VIDEO_PREVIEW_TICK", f"path={path}")
                     self._preview_last_log = now_mono
-                w = self._worker
-                if w is not None and hasattr(w, "send_cmd"):
-                    if not self._is_worker_stream_connected(w):
-                        next_tick = time.monotonic() + max(0.2, self._preview_period_sec)
-                        continue
-                    try:
-                        w.send_cmd({"cmd": "SAVE_PREVIEW", "path": path})
-                        if now_mono - self._preview_last_log <= 0.001:
-                            emit_log(self._bus, "INFO", self._name, "VIDEO_PREVIEW_CMD_SENT", f"path={path}")
-                    except Exception as ex:
-                        emit_log(
-                            self._bus,
-                            "ERROR",
-                            self._name,
-                            "VIDEO_PREVIEW_CMD_SEND_FAIL",
-                            f"err={type(ex).__name__}",
-                        )
+                sent = self.save_preview(path)
+                if sent and now_mono - self._preview_last_log <= 0.001:
+                    emit_log(self._bus, "INFO", self._name, "VIDEO_PREVIEW_CMD_SENT", f"path={path}")
 
             next_tick = time.monotonic() + max(0.2, self._preview_period_sec)
+
+    def save_preview(self, path: str) -> bool:
+        """
+        Ask worker process to write latest frame into `path` as JPG.
+        Returns True when command was sent, False if stream is not ready.
+        """
+        if not isinstance(path, str) or not path.strip():
+            return False
+
+        w = self._worker
+        if w is None or not hasattr(w, "send_cmd"):
+            return False
+        if not self._is_worker_stream_connected(w):
+            return False
+        try:
+            w.send_cmd({"cmd": "SAVE_PREVIEW", "path": path})
+            return True
+        except Exception as ex:
+            emit_log(
+                self._bus,
+                "ERROR",
+                self._name,
+                "VIDEO_PREVIEW_CMD_SEND_FAIL",
+                f"err={type(ex).__name__}",
+            )
+            return False
 
     def _is_worker_stream_connected(self, worker: Any) -> bool:
         """

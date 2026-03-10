@@ -288,6 +288,14 @@ def test_start_stop_test_session_writes_manifest_and_events(tmp_path: Path, monk
             session_ctx.handles.pop("gps_tx_proc", None)
 
     orch._gps_tx_runner = _FakeGpsTxRunner()
+    orch._video_recorder = type(
+        "_FakeVideoRecorder",
+        (),
+        {
+            "record_for_session": staticmethod(lambda session_ctx: session_ctx.handles.__setitem__("video_recording", {})),
+            "stop_record_for_session": staticmethod(lambda session_ctx: session_ctx.handles.pop("video_recording", None)),
+        },
+    )()
 
     started = orch.start_test_session()
     assert orch.phase == OrchestratorPhase.TEST_RUNNING
@@ -374,6 +382,14 @@ def test_start_test_session_marks_error_when_gps_tx_fails(tmp_path: Path, monkey
             return None
 
     orch._gps_tx_runner = _FailingGpsTxRunner()
+    orch._video_recorder = type(
+        "_FakeVideoRecorder",
+        (),
+        {
+            "record_for_session": staticmethod(lambda session_ctx: session_ctx.handles.__setitem__("video_recording", {})),
+            "stop_record_for_session": staticmethod(lambda session_ctx: session_ctx.handles.pop("video_recording", None)),
+        },
+    )()
 
     orch.prepare_mayak_test(
         head_start_rpm=100,
