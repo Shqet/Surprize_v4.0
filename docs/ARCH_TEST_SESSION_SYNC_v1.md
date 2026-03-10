@@ -179,6 +179,25 @@ Monitoring animation:
 - follows session master clock
 - pauses/stops with session stop
 
+### User Settings (persisted)
+
+Runtime-related options are configured in `Настройки` and persisted between app sessions:
+
+- `auto_stop_after_gps_sec`:
+  - delay before automatic test stop after GPS TX process exits
+  - default: `10.0 sec`
+- `monitor_anim_without_test`:
+  - allow trajectory animation without active test session
+  - default: `true`
+- `gps_nav_default_path`:
+  - default ephemerides path for GPS SDR Sim input field
+  - applied to UI on startup
+
+The settings panel must provide:
+
+- immediate apply for runtime-safe options
+- `Reset to defaults` action restoring the defaults above
+
 ## Acceptance (v1)
 
 1. Starting test creates a new session folder with manifest and logs.
@@ -186,4 +205,3 @@ Monitoring animation:
 3. `trajectory_timeline.csv` is generated and indexed by `t_rel_sec`.
 4. Replay can align visible+thermal+trajectory by one timeline cursor.
 5. On partial channel failure, session continues in degraded mode with explicit logs.
-

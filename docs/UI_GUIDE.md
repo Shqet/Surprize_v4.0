@@ -191,3 +191,19 @@ UI — это наблюдатель и диспетчер intent.
 Orchestrator — единственный управляющий центр.
 
 Нарушение этих ролей запрещено.
+
+---
+
+# 12. Persisted UI Settings (v2)
+
+Settings tab (`l_options`) stores user preferences between sessions via Qt settings storage:
+
+- `auto_stop_after_gps_sec` (default `10.0`)
+- `monitor_anim_without_test` (default `true`)
+- `gps_nav_default_path` (default `data/ephemerides/brdc0430.25n`)
+
+Rules:
+
+- settings are applied on startup before user actions
+- changing a setting updates runtime behavior immediately when safe
+- "Reset to defaults" restores all keys to defaults and re-applies them

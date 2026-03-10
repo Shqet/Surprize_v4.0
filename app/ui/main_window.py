@@ -10,7 +10,7 @@ from bisect import bisect_left
 from pathlib import Path
 from typing import Any, Optional, cast
 
-from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -71,6 +71,8 @@ _DEFAULT_PLUTO_TX_ATTEN_DB = -20.0
 _DEFAULT_GPS_ORIGIN_LAT = 55.7558
 _DEFAULT_GPS_ORIGIN_LON = 37.6176
 _DEFAULT_GPS_ORIGIN_H_M = 156.0
+_DEFAULT_AUTO_STOP_AFTER_GPS_SEC = 10.0
+_DEFAULT_ANIM_WITHOUT_TEST = True
 
 
 class _PrepareTestSignals(QObject):
@@ -204,6 +206,11 @@ class MainWindow(QMainWindow):
         self._start_session_task: Optional[_StartSessionFlowTask] = None
         self._stop_session_task: Optional[_StopSessionFlowTask] = None
         self._session_runtime_last: dict[str, Any] = {}
+        self._settings_store = QSettings("Surprize", "SurprizeShell")
+        self._settings = self._load_ui_settings()
+        self._anim_without_test_enabled: bool = bool(
+            self._settings.get("monitor_anim_without_test", _DEFAULT_ANIM_WITHOUT_TEST)
+        )
         self._ui_debug: bool = str(os.getenv("SURPRIZE_UI_DEBUG", "0")).strip().lower() in (
             "1",
             "true",
@@ -226,6 +233,7 @@ class MainWindow(QMainWindow):
         self._gl_functional_buttons: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_functionalButtons")
         self._gl_functional_buttons_m: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_functionalButtons_m")
         self._gl_replay: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_replay")
+        self._gl_options: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_options")
 
         self._editor: Optional[ConfigJsonEditor] = None
         self._init_editor()
@@ -278,8 +286,15 @@ class MainWindow(QMainWindow):
         self._gps_finish_h_lbl: Optional[QLabel] = None
         self._pluto_rf_bw_spin: Optional[QDoubleSpinBox] = None
         self._pluto_tx_atten_spin: Optional[QDoubleSpinBox] = None
+        self._opt_auto_stop_spin: Optional[QDoubleSpinBox] = None
+        self._opt_anim_without_test_chk: Optional[QCheckBox] = None
+        self._opt_nav_default_edit: Optional[QLineEdit] = None
+        self._opt_nav_default_browse: Optional[QPushButton] = None
+        self._opt_reset_defaults_btn: Optional[QPushButton] = None
         self._last_trajectory_end_local: Optional[tuple[float, float, float]] = None
         self._init_sdr_options_panel()
+        self._init_options_panel()
+        self._apply_ui_settings_to_runtime()
 
         # Mayak panel refs
         self._mayak_profile_combo: Optional[QComboBox] = None
@@ -405,6 +420,46 @@ class MainWindow(QMainWindow):
             ic["psi_deg"] = 0.0
         return out
 
+    def _load_ui_settings(self) -> dict[str, Any]:
+        nav_path = str(self._settings_store.value("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH) or "").strip()
+        if not nav_path:
+            nav_path = _DEFAULT_GPS_NAV_PATH
+        auto_stop = self._settings_store.value("auto_stop_after_gps_sec", _DEFAULT_AUTO_STOP_AFTER_GPS_SEC)
+        anim = self._settings_store.value("monitor_anim_without_test", _DEFAULT_ANIM_WITHOUT_TEST)
+        try:
+            auto_stop_val = float(auto_stop)
+        except Exception:
+            auto_stop_val = _DEFAULT_AUTO_STOP_AFTER_GPS_SEC
+        auto_stop_val = max(0.0, min(3600.0, auto_stop_val))
+        anim_val = str(anim).strip().lower() in ("1", "true", "yes", "on")
+        return {
+            "gps_nav_default_path": nav_path,
+            "auto_stop_after_gps_sec": auto_stop_val,
+            "monitor_anim_without_test": anim_val,
+        }
+
+    def _save_ui_settings(self) -> None:
+        self._settings_store.setValue("gps_nav_default_path", str(self._settings.get("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH)))
+        self._settings_store.setValue(
+            "auto_stop_after_gps_sec",
+            float(self._settings.get("auto_stop_after_gps_sec", _DEFAULT_AUTO_STOP_AFTER_GPS_SEC)),
+        )
+        self._settings_store.setValue(
+            "monitor_anim_without_test",
+            bool(self._settings.get("monitor_anim_without_test", _DEFAULT_ANIM_WITHOUT_TEST)),
+        )
+        self._settings_store.sync()
+
+    def _apply_ui_settings_to_runtime(self) -> None:
+        nav = str(self._settings.get("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH)).strip()
+        if self._gps_nav_path_edit is not None:
+            self._gps_nav_path_edit.setText(nav)
+        auto_stop = float(self._settings.get("auto_stop_after_gps_sec", _DEFAULT_AUTO_STOP_AFTER_GPS_SEC))
+        self._orch.set_auto_stop_after_gps_sec(auto_stop)
+        self._anim_without_test_enabled = bool(
+            self._settings.get("monitor_anim_without_test", _DEFAULT_ANIM_WITHOUT_TEST)
+        )
+
     # ---------------- UI init ----------------
 
     def _init_editor(self) -> None:
@@ -450,13 +505,8 @@ class MainWindow(QMainWindow):
             if w is not None:
                 w.setParent(None)
                 w.deleteLater()
-        self._m_anim_without_test_chk = QCheckBox("Анимировать полет без испытания", self)
-        self._m_anim_without_test_chk.setChecked(True)
-        self._m_anim_without_test_chk.toggled.connect(self._on_monitor_anim_toggled)
         vl.addWidget(self._traj_view_m)
-        vl.addWidget(self._m_anim_without_test_chk)
         vl.setStretch(0, 1)
-        vl.setStretch(1, 0)
         self._traj_view_m.set_status("Мониторинг траектории (3D)\nОжидание подготовленного сценария")
 
     def _init_monitor_params_panel(self) -> None:
@@ -537,6 +587,52 @@ class MainWindow(QMainWindow):
         gl.setColumnStretch(0, 2)
         gl.setColumnStretch(1, 1)
 
+    def _init_options_panel(self) -> None:
+        gl = self._gl_options
+        if gl is None:
+            return
+        self._clear_layout(gl)
+
+        box = QGroupBox("Пользовательские настройки", self)
+        form = QFormLayout(box)
+
+        self._opt_auto_stop_spin = QDoubleSpinBox(box)
+        self._opt_auto_stop_spin.setRange(0.0, 3600.0)
+        self._opt_auto_stop_spin.setDecimals(1)
+        self._opt_auto_stop_spin.setSingleStep(1.0)
+        self._opt_auto_stop_spin.setValue(float(self._settings.get("auto_stop_after_gps_sec", _DEFAULT_AUTO_STOP_AFTER_GPS_SEC)))
+        self._opt_auto_stop_spin.valueChanged.connect(self._on_setting_auto_stop_changed)
+
+        self._opt_anim_without_test_chk = QCheckBox("Анимировать полет без испытания", box)
+        self._opt_anim_without_test_chk.setChecked(
+            bool(self._settings.get("monitor_anim_without_test", _DEFAULT_ANIM_WITHOUT_TEST))
+        )
+        self._opt_anim_without_test_chk.toggled.connect(self._on_setting_anim_without_test_toggled)
+
+        self._opt_nav_default_edit = QLineEdit(box)
+        self._opt_nav_default_edit.setText(str(self._settings.get("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH)))
+        self._opt_nav_default_edit.setPlaceholderText(_DEFAULT_GPS_NAV_PATH)
+        self._opt_nav_default_edit.editingFinished.connect(self._on_setting_nav_path_edited)
+        self._opt_nav_default_browse = QPushButton("...", box)
+        self._opt_nav_default_browse.setFixedWidth(34)
+        self._opt_nav_default_browse.clicked.connect(self._on_setting_nav_path_browse)
+        nav_row = QHBoxLayout()
+        nav_row.setContentsMargins(0, 0, 0, 0)
+        nav_row.addWidget(self._opt_nav_default_edit)
+        nav_row.addWidget(self._opt_nav_default_browse)
+
+        self._opt_reset_defaults_btn = QPushButton("Вернуть к дефолтным", box)
+        self._opt_reset_defaults_btn.clicked.connect(self._on_settings_reset_defaults_clicked)
+
+        form.addRow("Авто-стоп после завершения GPS TX, сек", self._opt_auto_stop_spin)
+        form.addRow("", self._opt_anim_without_test_chk)
+        form.addRow("Дефолтный путь к эфемеридам", nav_row)
+        form.addRow(self._opt_reset_defaults_btn)
+
+        gl.addWidget(box, 0, 0)
+        gl.setRowStretch(1, 1)
+        gl.setColumnStretch(0, 1)
+
     def _init_rtsp_previews(self) -> None:
         if self._vl_rtsp_visible is not None:
             w = RtspPreviewWidget(_DEFAULT_PREVIEW_VISIBLE, title="Visible", poll_ms=200, parent=self)
@@ -562,7 +658,7 @@ class MainWindow(QMainWindow):
         gps_form = QFormLayout(gps_box)
 
         self._gps_nav_path_edit = QLineEdit(gps_box)
-        self._gps_nav_path_edit.setText(_DEFAULT_GPS_NAV_PATH)
+        self._gps_nav_path_edit.setText(str(self._settings.get("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH)))
         self._gps_nav_path_edit.setPlaceholderText("data/ephemerides/brdc0430.25n")
         self._btn_gps_nav_browse = QPushButton("...", gps_box)
         self._btn_gps_nav_browse.setFixedWidth(34)
@@ -1689,7 +1785,7 @@ class MainWindow(QMainWindow):
         self._refresh_gps_finish_point()
 
     def _start_monitor_trajectory_animation(self) -> None:
-        enabled = self._m_anim_without_test_chk is None or self._m_anim_without_test_chk.isChecked()
+        enabled = bool(self._anim_without_test_enabled)
         if not enabled:
             self._monitor_timer.stop()
             self._traj_view_m.set_status("Мониторинг траектории (3D)\nАнимация отключена оператором")
@@ -1828,6 +1924,9 @@ class MainWindow(QMainWindow):
             self._m_distance_lbl.setText(f"{dist:.2f}")
 
     def _on_monitor_anim_toggled(self, checked: bool) -> None:
+        self._anim_without_test_enabled = bool(checked)
+        self._settings["monitor_anim_without_test"] = bool(checked)
+        self._save_ui_settings()
         if not checked:
             self._monitor_timer.stop()
             self._traj_view_m.set_status("Мониторинг траектории (3D)\nАнимация отключена оператором")
@@ -1835,6 +1934,56 @@ class MainWindow(QMainWindow):
             return
         if self._monitor_points:
             self._apply_monitor_points(list(self._monitor_points), self._monitor_duration_sec)
+
+    def _on_setting_auto_stop_changed(self, value: float) -> None:
+        v = max(0.0, min(3600.0, float(value)))
+        self._settings["auto_stop_after_gps_sec"] = v
+        self._save_ui_settings()
+        self._orch.set_auto_stop_after_gps_sec(v)
+
+    def _on_setting_anim_without_test_toggled(self, checked: bool) -> None:
+        self._on_monitor_anim_toggled(bool(checked))
+
+    def _on_setting_nav_path_edited(self) -> None:
+        txt = self._opt_nav_default_edit.text().strip() if self._opt_nav_default_edit is not None else ""
+        if not txt:
+            txt = _DEFAULT_GPS_NAV_PATH
+            if self._opt_nav_default_edit is not None:
+                self._opt_nav_default_edit.setText(txt)
+        self._settings["gps_nav_default_path"] = txt
+        self._save_ui_settings()
+        if self._gps_nav_path_edit is not None:
+            self._gps_nav_path_edit.setText(txt)
+
+    def _on_setting_nav_path_browse(self) -> None:
+        current = self._opt_nav_default_edit.text().strip() if self._opt_nav_default_edit is not None else ""
+        start_dir = os.path.dirname(current) if current else ""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Выберите дефолтный файл эфемерид",
+            start_dir,
+            "Ephemeris files (*.*n);;All files (*.*)",
+        )
+        if not file_path:
+            return
+        if self._opt_nav_default_edit is not None:
+            self._opt_nav_default_edit.setText(file_path)
+        self._on_setting_nav_path_edited()
+
+    def _on_settings_reset_defaults_clicked(self) -> None:
+        self._settings = {
+            "gps_nav_default_path": _DEFAULT_GPS_NAV_PATH,
+            "auto_stop_after_gps_sec": _DEFAULT_AUTO_STOP_AFTER_GPS_SEC,
+            "monitor_anim_without_test": _DEFAULT_ANIM_WITHOUT_TEST,
+        }
+        if self._opt_auto_stop_spin is not None:
+            self._opt_auto_stop_spin.setValue(_DEFAULT_AUTO_STOP_AFTER_GPS_SEC)
+        if self._opt_anim_without_test_chk is not None:
+            self._opt_anim_without_test_chk.setChecked(_DEFAULT_ANIM_WITHOUT_TEST)
+        if self._opt_nav_default_edit is not None:
+            self._opt_nav_default_edit.setText(_DEFAULT_GPS_NAV_PATH)
+        self._save_ui_settings()
+        self._apply_ui_settings_to_runtime()
 
     def _on_gps_origin_changed(self, _value: float) -> None:
         self._refresh_gps_finish_point()
@@ -1918,7 +2067,8 @@ class MainWindow(QMainWindow):
             self._gps_nav_path_edit.setText(file_path)
 
     def get_sdr_options(self) -> dict[str, Any]:
-        nav = self._gps_nav_path_edit.text().strip() if self._gps_nav_path_edit is not None else _DEFAULT_GPS_NAV_PATH
+        nav_default = str(self._settings.get("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH))
+        nav = self._gps_nav_path_edit.text().strip() if self._gps_nav_path_edit is not None else nav_default
         static_sec = float(self._gps_static_sec_spin.value()) if self._gps_static_sec_spin is not None else _DEFAULT_GPS_STATIC_SEC
         origin_lat = float(self._gps_origin_lat_spin.value()) if self._gps_origin_lat_spin is not None else _DEFAULT_GPS_ORIGIN_LAT
         origin_lon = float(self._gps_origin_lon_spin.value()) if self._gps_origin_lon_spin is not None else _DEFAULT_GPS_ORIGIN_LON
@@ -1927,7 +2077,7 @@ class MainWindow(QMainWindow):
         tx_atten_db = float(self._pluto_tx_atten_spin.value()) if self._pluto_tx_atten_spin is not None else _DEFAULT_PLUTO_TX_ATTEN_DB
 
         if not nav:
-            nav = _DEFAULT_GPS_NAV_PATH
+            nav = nav_default
 
         return {
             "gps_sdr_sim": {
@@ -1947,10 +2097,11 @@ class MainWindow(QMainWindow):
         opts = self.get_sdr_options()
         gps = opts.get("gps_sdr_sim", {}) if isinstance(opts, dict) else {}
         pluto = opts.get("pluto_player", {}) if isinstance(opts, dict) else {}
+        nav_default = str(self._settings.get("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH))
         return {
             "services": {
                 "gps_sdr_sim": {
-                    "nav": gps.get("nav", _DEFAULT_GPS_NAV_PATH),
+                    "nav": gps.get("nav", nav_default),
                     "static_sec": gps.get("static_sec", _DEFAULT_GPS_STATIC_SEC),
                     "origin_lat": gps.get("origin_lat", _DEFAULT_GPS_ORIGIN_LAT),
                     "origin_lon": gps.get("origin_lon", _DEFAULT_GPS_ORIGIN_LON),

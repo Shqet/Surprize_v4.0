@@ -127,6 +127,13 @@ class Orchestrator:
         with self._lock:
             return self._phase
 
+    def set_auto_stop_after_gps_sec(self, value: float) -> None:
+        v = max(0.0, min(3600.0, float(value)))
+        self._auto_stop_after_gps_sec = v
+
+    def get_auto_stop_after_gps_sec(self) -> float:
+        return float(self._auto_stop_after_gps_sec)
+
     def start(self, profile_name: str, overrides: dict | None = None) -> None:
         with self._lock:
             if self._state in (OrchestratorState.PRECHECK, OrchestratorState.RUNNING, OrchestratorState.STOPPING):

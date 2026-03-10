@@ -394,6 +394,18 @@ def test_get_test_session_runtime_state_is_inactive_by_default() -> None:
     assert rt["gps_tx"]["state"] == "not_running"
 
 
+def test_set_auto_stop_after_gps_sec_clamps_range() -> None:
+    bus = EventBus()
+    sm = _FakeServiceManager({})
+    orch = Orchestrator(bus, sm)
+
+    orch.set_auto_stop_after_gps_sec(-5.0)
+    assert orch.get_auto_stop_after_gps_sec() == 0.0
+
+    orch.set_auto_stop_after_gps_sec(12.5)
+    assert abs(orch.get_auto_stop_after_gps_sec() - 12.5) < 1e-6
+
+
 def test_start_test_session_marks_error_when_gps_tx_fails(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     nav = tmp_path / "brdc.nav"
