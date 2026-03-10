@@ -295,6 +295,9 @@ class MainWindow(QMainWindow):
         self._opt_nav_default_browse: Optional[QPushButton] = None
         self._opt_session_output_root_edit: Optional[QLineEdit] = None
         self._opt_session_output_root_browse: Optional[QPushButton] = None
+        self._session_output_root_m_edit: Optional[QLineEdit] = None
+        self._btn_session_output_root_m_browse: Optional[QPushButton] = None
+        self._btn_session_output_root_m_default: Optional[QPushButton] = None
         self._opt_reset_defaults_btn: Optional[QPushButton] = None
         self._last_trajectory_end_local: Optional[tuple[float, float, float]] = None
         self._init_sdr_options_panel()
