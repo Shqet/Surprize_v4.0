@@ -229,6 +229,26 @@
         </item>
        </layout>
       </widget>
+      <widget class="QWidget" name="replayTab">
+       <attribute name="title">
+        <string>Просмотр</string>
+       </attribute>
+       <layout class="QGridLayout" name="gridLayout_5">
+        <item row="0" column="0">
+         <layout class="QGridLayout" name="l_replay"/>
+        </item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="optionsTab">
+       <attribute name="title">
+        <string>Настройки</string>
+       </attribute>
+       <layout class="QGridLayout" name="gridLayout_6">
+        <item row="0" column="0">
+         <layout class="QGridLayout" name="l_options"/>
+        </item>
+       </layout>
+      </widget>
      </widget>
     </item>
    </layout>
