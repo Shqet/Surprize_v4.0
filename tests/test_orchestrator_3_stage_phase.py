@@ -8,6 +8,7 @@ from typing import Any
 from app.core.event_bus import EventBus
 from app.orchestrator.orchestrator import Orchestrator
 from app.orchestrator.states import OrchestratorPhase
+from app.orchestrator.session_runtime import SessionStatus
 
 
 class _FakeServiceManager:
@@ -273,6 +274,21 @@ def test_start_stop_test_session_writes_manifest_and_events(tmp_path: Path, monk
         sdr_options={"gps_sdr_sim": {"nav": str(nav), "static_sec": 0.0}},
     )
 
+    monkeypatch.setattr(
+        orch,
+        "_build_session_gps_tx_config",
+        lambda _prepared: {"pluto_exe": "PlutoPlayer.exe", "iq_path": "dummy.bin", "tx_atten_db": -20.0, "rf_bw_mhz": 3.0},
+    )
+
+    class _FakeGpsTxRunner:
+        def start(self, session_ctx) -> None:
+            session_ctx.handles["gps_tx_proc"] = object()
+
+        def stop(self, session_ctx) -> None:
+            session_ctx.handles.pop("gps_tx_proc", None)
+
+    orch._gps_tx_runner = _FakeGpsTxRunner()
+
     started = orch.start_test_session()
     assert orch.phase == OrchestratorPhase.TEST_RUNNING
     session_id = started["session_id"]
@@ -288,7 +304,8 @@ def test_start_stop_test_session_writes_manifest_and_events(tmp_path: Path, monk
     assert manifest_running["scenario_id"].startswith("scn_")
     assert manifest_running["paths"]["events_log"] == str(events_path)
     assert manifest_running["paths"]["manifest"] == str(manifest_path)
-    assert manifest_running["handles"] == []
+    assert "gps_tx_cfg" in manifest_running["handles"]
+    assert "prepared_scenario" in manifest_running["handles"]
 
     stopped = orch.stop_test_session()
     assert stopped["session_id"] == session_id
@@ -320,6 +337,68 @@ def test_start_test_session_requires_prepared_scenario() -> None:
         assert False, "expected RuntimeError"
     except RuntimeError as ex:
         assert str(ex) == "scenario_not_prepared"
+
+
+def test_start_test_session_marks_error_when_gps_tx_fails(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    nav = tmp_path / "brdc.nav"
+    nav.write_text("dummy", encoding="utf-8")
+    traj_dir = tmp_path / "ballistics" / "run1"
+    traj_dir.mkdir(parents=True, exist_ok=True)
+    traj = traj_dir / "trajectory.csv"
+    traj.write_text("t,X,Y,Z\n0,0,0,0\n", encoding="utf-8")
+    diag = traj_dir / "diagnostics.csv"
+    diag.write_text("t,V\n0,0\n", encoding="utf-8")
+
+    bus = EventBus()
+    mayak = _MayakService(ready=True)
+    sm = _FakeServiceManager({"mayak_spindle": mayak})
+    orch = Orchestrator(bus, sm)
+
+    monkeypatch.setattr(
+        orch,
+        "_find_latest_trajectory_artifact",
+        lambda: {"run_dir": str(traj_dir), "trajectory_csv": str(traj), "diagnostics_csv": str(diag)},
+    )
+    monkeypatch.setattr(
+        orch,
+        "_build_session_gps_tx_config",
+        lambda _prepared: {"pluto_exe": "PlutoPlayer.exe", "iq_path": "dummy.bin", "tx_atten_db": -20.0, "rf_bw_mhz": 3.0},
+    )
+
+    class _FailingGpsTxRunner:
+        def start(self, _session_ctx) -> None:
+            raise RuntimeError("boom")
+
+        def stop(self, _session_ctx) -> None:
+            return None
+
+    orch._gps_tx_runner = _FailingGpsTxRunner()
+
+    orch.prepare_mayak_test(
+        head_start_rpm=100,
+        head_end_rpm=200,
+        tail_start_rpm=300,
+        tail_end_rpm=400,
+        profile_type="linear",
+        duration_sec=5.0,
+        sdr_options={"gps_sdr_sim": {"nav": str(nav), "static_sec": 0.0}},
+    )
+
+    try:
+        orch.start_test_session()
+        assert False, "expected RuntimeError"
+    except RuntimeError as ex:
+        assert "boom" in str(ex) or "RuntimeError" in str(ex)
+
+    # Not running after failed start.
+    assert orch._active_test_session is None
+
+    sessions_root = tmp_path / "outputs" / "sessions"
+    manifests = sorted(sessions_root.glob("*/session_manifest.json"))
+    assert manifests, "manifest should exist for failed session start"
+    manifest = json.loads(manifests[-1].read_text(encoding="utf-8"))
+    assert manifest["status"] == SessionStatus.ERROR.value
 
 
 def test_pluto_probe_fast_exit_rc0_is_not_ready(tmp_path: Path, monkeypatch) -> None:

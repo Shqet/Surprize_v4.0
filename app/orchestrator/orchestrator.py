@@ -6,8 +6,6 @@ import shutil
 import subprocess
 import threading
 import time
-from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -20,6 +18,8 @@ from app.orchestrator.mayak_controller import (
     read_mayak_mode,
     resolve_mayak_controller,
 )
+from app.orchestrator.session_gps_tx import SessionGpsTxRunner
+from app.orchestrator.session_runtime import SessionRuntime, SessionStatus
 from app.orchestrator.states import OrchestratorPhase, OrchestratorState
 from app.profiles.loader import load_profile
 from app.services.gps_sdr_sim.engine import prepare_nmea_input
@@ -65,28 +65,6 @@ def count_leaf_values(d: object) -> int:
     return 1
 
 
-class SessionStatus(str, Enum):
-    CREATED = "CREATED"
-    STARTING = "STARTING"
-    RUNNING = "RUNNING"
-    STOPPING = "STOPPING"
-    STOPPED = "STOPPED"
-    ERROR = "ERROR"
-
-
-@dataclass
-class SessionRuntime:
-    session_id: str
-    scenario_id: str
-    t0_unix: float
-    t0_monotonic: float
-    status: SessionStatus
-    paths: dict[str, str]
-    handles: dict[str, Any] = field(default_factory=dict)
-    t1_unix: Optional[float] = None
-    duration_sec: Optional[float] = None
-
-
 class Orchestrator:
     """
     v4:
@@ -123,6 +101,7 @@ class Orchestrator:
         self._active_scenario_id: Optional[str] = None
         self._prepared_scenario: Optional[dict[str, Any]] = None
         self._active_test_session: Optional[SessionRuntime] = None
+        self._gps_tx_runner = SessionGpsTxRunner(bus)
         self._mayak_mode: str = "real"
         self._mayak_stub = MayakStubController()
 
@@ -873,6 +852,8 @@ class Orchestrator:
                 "manifest": str(manifest_path),
             },
         )
+        runtime.handles["prepared_scenario"] = prepared
+        runtime.handles["gps_tx_cfg"] = self._build_session_gps_tx_config(prepared)
         self._write_session_manifest(runtime)
 
         runtime.status = SessionStatus.STARTING
@@ -887,6 +868,32 @@ class Orchestrator:
                 "t_rel_sec": 0.0,
             },
         )
+
+        try:
+            self._gps_tx_runner.start(runtime)
+        except Exception as ex:
+            runtime.status = SessionStatus.ERROR
+            runtime.handles.pop("gps_tx_proc", None)
+            self._write_session_manifest(runtime)
+            self._append_session_event(
+                events_path=events_path,
+                payload={
+                    "event": "SESSION_ERROR",
+                    "session_id": session_id,
+                    "scenario_id": scenario_id,
+                    "unix_ts": time.time(),
+                    "t_rel_sec": max(0.0, time.monotonic() - t0_mono),
+                    "details": f"stage=start_gps_tx err={type(ex).__name__}",
+                },
+            )
+            emit_log(
+                self._bus,
+                "ERROR",
+                "orchestrator",
+                "SESSION_ERROR",
+                f"session_id={session_id} scenario_id={scenario_id} stage=start_gps_tx err={type(ex).__name__}",
+            )
+            raise
 
         runtime.status = SessionStatus.RUNNING
         self._write_session_manifest(runtime)
@@ -929,6 +936,25 @@ class Orchestrator:
         active.duration_sec = duration_sec
         self._write_session_manifest(active)
 
+        stop_error: Optional[Exception] = None
+        try:
+            self._gps_tx_runner.stop(active)
+        except Exception as ex:
+            stop_error = ex
+            active.status = SessionStatus.ERROR
+            self._write_session_manifest(active)
+            self._append_session_event(
+                events_path=events_path,
+                payload={
+                    "event": "SESSION_ERROR",
+                    "session_id": session_id,
+                    "scenario_id": scenario_id,
+                    "unix_ts": time.time(),
+                    "t_rel_sec": duration_sec,
+                    "details": f"stage=stop_gps_tx err={type(ex).__name__}",
+                },
+            )
+
         self._append_session_event(
             events_path=events_path,
             payload={
@@ -940,20 +966,32 @@ class Orchestrator:
             },
         )
 
-        active.status = SessionStatus.STOPPED
+        if stop_error is None:
+            active.status = SessionStatus.STOPPED
         self._write_session_manifest(active)
 
         with self._lock:
             self._active_test_session = None
 
-        emit_log(
-            self._bus,
-            "INFO",
-            "orchestrator",
-            "SESSION_STOP",
-            f"session_id={session_id} scenario_id={scenario_id} duration_sec={duration_sec:.3f}",
-        )
+        if stop_error is None:
+            emit_log(
+                self._bus,
+                "INFO",
+                "orchestrator",
+                "SESSION_STOP",
+                f"session_id={session_id} scenario_id={scenario_id} duration_sec={duration_sec:.3f}",
+            )
+        else:
+            emit_log(
+                self._bus,
+                "ERROR",
+                "orchestrator",
+                "SESSION_ERROR",
+                f"session_id={session_id} scenario_id={scenario_id} stage=stop_gps_tx err={type(stop_error).__name__}",
+            )
         self._set_phase(OrchestratorPhase.PREPARED, f"session_id={session_id}")
+        if stop_error is not None:
+            raise RuntimeError(f"stop_gps_tx_failed:{type(stop_error).__name__}") from stop_error
         return {
             "session_id": session_id,
             "manifest": str(manifest_path),
@@ -1702,6 +1740,39 @@ class Orchestrator:
                 "origin_h": origin_h,
             },
             "pluto_player": {"rf_bw_mhz": rf_bw, "tx_atten_db": tx_att},
+        }
+
+    def _build_session_gps_tx_config(self, prepared: dict[str, Any]) -> dict[str, Any]:
+        scenario_id = str(prepared.get("scenario_id", "scn_unknown"))
+        iq_path = (Path("outputs") / "scenarios" / scenario_id / "gps_preflight" / "gpssim_iq.bin").resolve()
+        if not iq_path.exists():
+            raise FileNotFoundError(f"gps_preflight_iq_missing={iq_path.as_posix()}")
+
+        sdr = prepared.get("sdr_options")
+        gps = sdr.get("gps_sdr_sim") if isinstance(sdr, dict) else {}
+        pluto = sdr.get("pluto_player") if isinstance(sdr, dict) else {}
+        if not isinstance(gps, dict):
+            gps = {}
+        if not isinstance(pluto, dict):
+            pluto = {}
+
+        services_snapshot = prepared.get("services_snapshot")
+        gps_service = services_snapshot.get("gps_sdr_sim") if isinstance(services_snapshot, dict) else {}
+        if not isinstance(gps_service, dict):
+            gps_service = {}
+
+        pluto_exe = self._resolve_pluto_player_executable(gps_service, pluto)
+        tx_atten_db = float(pluto.get("tx_atten_db", -20.0) or -20.0)
+        rf_bw_mhz = float(pluto.get("rf_bw_mhz", 3.0) or 3.0)
+        host = str(pluto.get("host", "") or pluto.get("ip", "") or "").strip()
+
+        return {
+            "pluto_exe": str(Path(pluto_exe).resolve()),
+            "iq_path": str(iq_path),
+            "tx_atten_db": tx_atten_db,
+            "rf_bw_mhz": rf_bw_mhz,
+            "host": host,
+            "graceful_stop_timeout_sec": 3.0,
         }
 
     def _check_sdr_readiness(self, prepared: dict[str, Any]) -> tuple[bool, str]:
