@@ -1792,15 +1792,12 @@ class MainWindow(QMainWindow):
 
     def _start_monitor_trajectory_animation(self, *, force: bool = False) -> None:
         enabled = bool(self._anim_without_test_enabled)
-        if (not force) and (not enabled):
-            self._monitor_timer.stop()
-            self._traj_view_m.set_status("Мониторинг траектории (3D)\nАнимация отключена оператором")
-            self._log_info("UI_MONITOR_ANIM_SKIPPED", "reason=disabled_by_operator")
-            return
+        active = bool(self._session_runtime_last.get("active", False))
+        animate = bool(force or active or enabled)
 
         points = list(self._latest_trajectory_points)
         if points:
-            self._apply_monitor_points(points, self._trajectory_duration_sec)
+            self._apply_monitor_points(points, self._trajectory_duration_sec, animate=animate)
             return
 
         run_dir = getattr(self._traj_ctl, "last_run_dir", None)
@@ -1826,7 +1823,9 @@ class MainWindow(QMainWindow):
         points = list(points_raw) if isinstance(points_raw, list) else []
         duration_raw = payload.get("duration_sec") if isinstance(payload, dict) else None
         duration = float(duration_raw) if isinstance(duration_raw, (int, float)) else None
-        self._apply_monitor_points(points, duration)
+        active = bool(self._session_runtime_last.get("active", False))
+        animate = bool(active or self._anim_without_test_enabled)
+        self._apply_monitor_points(points, duration, animate=animate)
 
     def _on_monitor_trajectory_loaded_fail(self, seq: int, error: str) -> None:
         if seq != self._monitor_load_seq:
@@ -1837,6 +1836,8 @@ class MainWindow(QMainWindow):
         self,
         points: list[tuple[float, float, float]],
         duration_sec: Optional[float],
+        *,
+        animate: bool = True,
     ) -> None:
         self._monitor_timer.stop()
         if not points:
@@ -1862,12 +1863,19 @@ class MainWindow(QMainWindow):
 
         self._traj_view_m.set_points(points)
         self._update_monitor_params(0)
+        self._traj_view_m.set_marker_point(points[0])
         self._traj_view_m.set_status(None)
-        self._monitor_timer.start()
-        self._log_info(
-            "UI_MONITOR_ANIM_START",
-            f"points={len(points)} duration_sec={self._monitor_duration_sec:.3f}",
-        )
+        if animate:
+            self._monitor_timer.start()
+            self._log_info(
+                "UI_MONITOR_ANIM_START",
+                f"points={len(points)} duration_sec={self._monitor_duration_sec:.3f}",
+            )
+        else:
+            self._log_info(
+                "UI_MONITOR_ANIM_STATIC",
+                f"points={len(points)} reason=disabled_by_operator",
+            )
 
     def _on_monitor_timer_tick(self) -> None:
         points = self._monitor_points
@@ -1945,11 +1953,14 @@ class MainWindow(QMainWindow):
             return
         if not checked:
             self._monitor_timer.stop()
-            self._traj_view_m.set_status("Мониторинг траектории (3D)\nАнимация отключена оператором")
+            if self._monitor_points:
+                self._apply_monitor_points(list(self._monitor_points), self._monitor_duration_sec, animate=False)
+            else:
+                self._traj_view_m.set_status("Мониторинг траектории (3D)\nАнимация отключена оператором")
             self._log_info("UI_MONITOR_ANIM_STOP", "reason=disabled_by_operator")
             return
         if self._monitor_points:
-            self._apply_monitor_points(list(self._monitor_points), self._monitor_duration_sec)
+            self._apply_monitor_points(list(self._monitor_points), self._monitor_duration_sec, animate=True)
 
     def _on_setting_auto_stop_changed(self, value: float) -> None:
         v = max(0.0, min(3600.0, float(value)))
