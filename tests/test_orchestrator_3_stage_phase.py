@@ -287,6 +287,9 @@ def test_start_stop_test_session_writes_manifest_and_events(tmp_path: Path, monk
         def stop(self, session_ctx) -> None:
             session_ctx.handles.pop("gps_tx_proc", None)
 
+        def describe(self, _session_ctx) -> dict[str, object]:
+            return {"state": "running", "pid": 1234, "exit_code": None}
+
     orch._gps_tx_runner = _FakeGpsTxRunner()
     orch._trajectory_ticker = type(
         "_FakeTrajectoryTicker",
@@ -294,6 +297,7 @@ def test_start_stop_test_session_writes_manifest_and_events(tmp_path: Path, monk
         {
             "start": staticmethod(lambda session_ctx: session_ctx.handles.__setitem__("trajectory_ticker", object())),
             "stop": staticmethod(lambda session_ctx: session_ctx.handles.pop("trajectory_ticker", None)),
+            "describe": staticmethod(lambda _session_ctx: {"state": "running"}),
         },
     )()
     orch._video_recorder = type(
@@ -302,6 +306,13 @@ def test_start_stop_test_session_writes_manifest_and_events(tmp_path: Path, monk
         {
             "record_for_session": staticmethod(lambda session_ctx: session_ctx.handles.__setitem__("video_recording", {})),
             "stop_record_for_session": staticmethod(lambda session_ctx: session_ctx.handles.pop("video_recording", None)),
+            "describe": staticmethod(
+                lambda _session_ctx: {
+                    "state": "running",
+                    "degraded": False,
+                    "channels": [{"channel": "visible", "frames_written": 1, "degraded": False}],
+                }
+            ),
         },
     )()
 
@@ -330,6 +341,13 @@ def test_start_stop_test_session_writes_manifest_and_events(tmp_path: Path, monk
     tl_lines = [x for x in timeline_path.read_text(encoding="utf-8").splitlines() if x.strip()]
     assert len(tl_lines) >= 2
     assert tl_lines[0] == "t_rel_sec,x,y,z,speed"
+
+    rt = orch.get_test_session_runtime_state()
+    assert rt["active"] is True
+    assert rt["status"] == "RUNNING"
+    assert rt["session_id"] == session_id
+    assert rt["video"]["state"] == "running"
+    assert rt["gps_tx"]["state"] == "running"
 
     stopped = orch.stop_test_session()
     assert stopped["session_id"] == session_id
@@ -361,6 +379,18 @@ def test_start_test_session_requires_prepared_scenario() -> None:
         assert False, "expected RuntimeError"
     except RuntimeError as ex:
         assert str(ex) == "scenario_not_prepared"
+
+
+def test_get_test_session_runtime_state_is_inactive_by_default() -> None:
+    bus = EventBus()
+    sm = _FakeServiceManager({})
+    orch = Orchestrator(bus, sm)
+
+    rt = orch.get_test_session_runtime_state()
+    assert rt["active"] is False
+    assert rt["status"] == "STOPPED"
+    assert rt["video"]["state"] == "not_running"
+    assert rt["gps_tx"]["state"] == "not_running"
 
 
 def test_start_test_session_marks_error_when_gps_tx_fails(tmp_path: Path, monkeypatch) -> None:

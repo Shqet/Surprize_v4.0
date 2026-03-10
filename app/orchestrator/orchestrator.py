@@ -842,6 +842,43 @@ class Orchestrator:
         """
         return self.stop_test_session()
 
+    def get_test_session_runtime_state(self) -> dict[str, Any]:
+        with self._lock:
+            active = self._active_test_session
+            phase = self._phase.value
+        if active is None:
+            return {
+                "active": False,
+                "phase": phase,
+                "session_id": None,
+                "status": SessionStatus.STOPPED.value,
+                "elapsed_sec": 0.0,
+                "video": {"state": "not_running", "degraded": False, "channels": []},
+                "gps_tx": {"state": "not_running", "pid": None, "exit_code": None},
+                "trajectory_ticker": {"state": "not_running"},
+                "degraded": False,
+                "error": False,
+            }
+
+        elapsed = max(0.0, time.monotonic() - float(active.t0_monotonic))
+        video = self._video_recorder.describe(active)
+        gps = self._gps_tx_runner.describe(active)
+        ticker = self._trajectory_ticker.describe(active)
+        degraded = bool(video.get("degraded", False))
+        error = active.status == SessionStatus.ERROR
+        return {
+            "active": True,
+            "phase": phase,
+            "session_id": active.session_id,
+            "status": active.status.value,
+            "elapsed_sec": elapsed,
+            "video": video,
+            "gps_tx": gps,
+            "trajectory_ticker": ticker,
+            "degraded": degraded,
+            "error": error,
+        }
+
     def start_test_session(self) -> dict[str, str]:
         """
         Start lightweight test session (no Mayak dependency).

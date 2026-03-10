@@ -120,6 +120,15 @@ class SessionGpsTxRunner:
             f"status=stopped mode={stop_mode} rc={int(rc) if rc is not None else 'none'}",
         )
 
+    def describe(self, session_ctx: SessionRuntime) -> dict[str, Any]:
+        proc = session_ctx.handles.get("gps_tx_proc")
+        if not isinstance(proc, subprocess.Popen):
+            return {"state": "not_running", "pid": None, "exit_code": None}
+        rc = proc.poll()
+        if rc is None:
+            return {"state": "running", "pid": int(proc.pid) if proc.pid is not None else None, "exit_code": None}
+        return {"state": "exited", "pid": int(proc.pid) if proc.pid is not None else None, "exit_code": int(rc)}
+
     def _emit_session_event(self, session_ctx: SessionRuntime, event: str, details: str) -> None:
         t_rel = max(0.0, time.monotonic() - float(session_ctx.t0_monotonic))
         msg = f"session_id={session_ctx.session_id} t_rel_sec={t_rel:.3f} {details}".strip()
@@ -143,4 +152,3 @@ class SessionGpsTxRunner:
         text = (stderr or stdout or "").strip().splitlines()
         tail = text[-1] if text else "no_output"
         return f"rc={rc} msg={tail}"
-

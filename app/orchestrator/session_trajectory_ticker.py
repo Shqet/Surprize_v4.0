@@ -85,6 +85,13 @@ class SessionTrajectoryTicker:
             f"session_id={session_ctx.session_id} status=stopped",
         )
 
+    def describe(self, session_ctx: SessionRuntime) -> dict[str, object]:
+        handle = session_ctx.handles.get("trajectory_ticker")
+        if not isinstance(handle, _TickerHandle):
+            return {"state": "not_running"}
+        alive = bool(handle.thread.is_alive())
+        return {"state": "running" if alive else "stopped"}
+
     @staticmethod
     def _load_timeline(path: Path) -> list[tuple[float, float, float, float, float]]:
         out: list[tuple[float, float, float, float, float]] = []

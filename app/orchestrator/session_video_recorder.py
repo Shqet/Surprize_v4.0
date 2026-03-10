@@ -134,6 +134,34 @@ class SessionVideoRecorder:
             f"status=stopped channels={len(channels)} degraded={degraded}",
         )
 
+    def describe(self, session_ctx: SessionRuntime) -> dict[str, Any]:
+        handle = session_ctx.handles.get("video_recording")
+        if not isinstance(handle, dict):
+            return {"state": "not_running", "degraded": False, "channels": []}
+        channels = handle.get("channels")
+        if not isinstance(channels, list):
+            channels = []
+        out_channels: list[dict[str, Any]] = []
+        degraded = False
+        has_alive = False
+        for chan in channels:
+            if not isinstance(chan, _ChannelCtx):
+                continue
+            alive = bool(chan.thread is not None and chan.thread.is_alive())
+            has_alive = has_alive or alive
+            degraded = degraded or bool(chan.degraded)
+            out_channels.append(
+                {
+                    "channel": chan.channel,
+                    "alive": alive,
+                    "frames_written": int(chan.frames_written),
+                    "failures": int(chan.failures),
+                    "degraded": bool(chan.degraded),
+                }
+            )
+        state = "running" if has_alive else "stopped"
+        return {"state": state, "degraded": degraded, "channels": out_channels}
+
     def _record_loop(self, session_ctx: SessionRuntime, chan: _ChannelCtx) -> None:
         writer: Any = None
         frame_idx = 0

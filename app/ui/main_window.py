@@ -143,6 +143,39 @@ class _ReadinessCheckTask(QRunnable):
             self.signals.fail.emit(f"{type(ex).__name__}: {ex}")
 
 
+class _SessionFlowSignals(QObject):
+    done = pyqtSignal(object)
+    fail = pyqtSignal(str)
+
+
+class _StartSessionFlowTask(QRunnable):
+    def __init__(self, *, orchestrator: Orchestrator) -> None:
+        super().__init__()
+        self._orch = orchestrator
+        self.signals = _SessionFlowSignals()
+
+    def run(self) -> None:
+        try:
+            payload = self._orch.start_test_session_flow()
+            self.signals.done.emit(payload)
+        except Exception as ex:
+            self.signals.fail.emit(f"{type(ex).__name__}: {ex}")
+
+
+class _StopSessionFlowTask(QRunnable):
+    def __init__(self, *, orchestrator: Orchestrator) -> None:
+        super().__init__()
+        self._orch = orchestrator
+        self.signals = _SessionFlowSignals()
+
+    def run(self) -> None:
+        try:
+            payload = self._orch.stop_test_session_flow()
+            self.signals.done.emit(payload)
+        except Exception as ex:
+            self.signals.fail.emit(f"{type(ex).__name__}: {ex}")
+
+
 class MainWindow(QMainWindow):
     def __init__(self, orchestrator: Orchestrator, bridge: UIBridge) -> None:
         super().__init__()
@@ -157,6 +190,9 @@ class MainWindow(QMainWindow):
         self._last_sent_mayak_duration_sec: Optional[float] = None
         self._prepare_task: Optional[_PrepareTestTask] = None
         self._readiness_task: Optional[_ReadinessCheckTask] = None
+        self._start_session_task: Optional[_StartSessionFlowTask] = None
+        self._stop_session_task: Optional[_StopSessionFlowTask] = None
+        self._session_runtime_last: dict[str, Any] = {}
         self._ui_debug: bool = str(os.getenv("SURPRIZE_UI_DEBUG", "0")).strip().lower() in (
             "1",
             "true",
@@ -243,8 +279,15 @@ class MainWindow(QMainWindow):
         self._btn_prepare_test: Optional[QPushButton] = None
         self._btn_check_readiness_m: Optional[QPushButton] = None
         self._btn_start_test_m: Optional[QPushButton] = None
+        self._btn_stop_test_m: Optional[QPushButton] = None
         self._prep_progress: Optional[QProgressBar] = None
         self._readiness_progress_m: Optional[QProgressBar] = None
+        self._lbl_session_id_m: Optional[QLabel] = None
+        self._lbl_session_status_m: Optional[QLabel] = None
+        self._lbl_session_elapsed_m: Optional[QLabel] = None
+        self._lbl_session_video_m: Optional[QLabel] = None
+        self._lbl_session_gps_m: Optional[QLabel] = None
+        self._lbl_session_degraded_m: Optional[QLabel] = None
         self._init_functional_buttons()
 
         self._traj_loader = TrajectoryCsvLoader()
@@ -270,6 +313,11 @@ class MainWindow(QMainWindow):
 
         self._connect_actions()
         self._connect_bridge()
+        self._runtime_ui_timer = QTimer(self)
+        self._runtime_ui_timer.setInterval(100)
+        self._runtime_ui_timer.timeout.connect(self._on_runtime_ui_tick)
+        self._runtime_ui_timer.start()
+        self._on_runtime_ui_tick()
 
     # ---------------- config source ----------------
 
@@ -646,17 +694,33 @@ class MainWindow(QMainWindow):
             self._btn_check_readiness_m.setObjectName("btn_check_readiness_m")
             self._btn_start_test_m = QPushButton("Начать испытание", self)
             self._btn_start_test_m.setObjectName("btn_start_test_m")
+            self._btn_stop_test_m = QPushButton("Остановить испытание", self)
+            self._btn_stop_test_m.setObjectName("btn_stop_test_m")
             self._readiness_progress_m = QProgressBar(self)
             self._readiness_progress_m.setObjectName("pb_readiness_check_m")
             self._readiness_progress_m.setRange(0, 100)
             self._readiness_progress_m.setValue(0)
             self._readiness_progress_m.setVisible(False)
             self._readiness_progress_m.setTextVisible(True)
+            self._lbl_session_id_m = QLabel("Сессия: -", self)
+            self._lbl_session_status_m = QLabel("Статус: -", self)
+            self._lbl_session_elapsed_m = QLabel("Время: 00:00.0", self)
+            self._lbl_session_video_m = QLabel("Видео: -", self)
+            self._lbl_session_gps_m = QLabel("GPS TX: -", self)
+            self._lbl_session_degraded_m = QLabel("Режим: -", self)
             glm.addWidget(self._btn_check_readiness_m, 0, 0)
             glm.addWidget(self._btn_start_test_m, 0, 1)
-            glm.addWidget(self._readiness_progress_m, 1, 0, 1, 2)
+            glm.addWidget(self._btn_stop_test_m, 0, 2)
+            glm.addWidget(self._readiness_progress_m, 1, 0, 1, 3)
+            glm.addWidget(self._lbl_session_id_m, 2, 0, 1, 3)
+            glm.addWidget(self._lbl_session_status_m, 3, 0, 1, 3)
+            glm.addWidget(self._lbl_session_elapsed_m, 4, 0, 1, 3)
+            glm.addWidget(self._lbl_session_video_m, 5, 0, 1, 3)
+            glm.addWidget(self._lbl_session_gps_m, 6, 0, 1, 3)
+            glm.addWidget(self._lbl_session_degraded_m, 7, 0, 1, 3)
             glm.setColumnStretch(0, 1)
             glm.setColumnStretch(1, 1)
+            glm.setColumnStretch(2, 1)
 
     # ---------------- wiring ----------------
 
@@ -679,6 +743,8 @@ class MainWindow(QMainWindow):
             self._btn_check_readiness_m.clicked.connect(self._on_monitor_check_readiness_clicked)
         if self._btn_start_test_m is not None:
             self._btn_start_test_m.clicked.connect(self._on_monitor_start_test_clicked)
+        if self._btn_stop_test_m is not None:
+            self._btn_stop_test_m.clicked.connect(self._on_monitor_stop_test_clicked)
 
     def _connect_bridge(self) -> None:
         try:
@@ -931,10 +997,9 @@ class MainWindow(QMainWindow):
     def _set_readiness_check_running(self, running: bool) -> None:
         if self._btn_check_readiness_m is not None:
             self._btn_check_readiness_m.setEnabled(not running)
-        if self._btn_start_test_m is not None:
-            self._btn_start_test_m.setEnabled(not running)
 
         if self._readiness_progress_m is None:
+            self._refresh_monitor_flow_controls(self._session_runtime_last)
             return
 
         if running:
@@ -946,6 +1011,7 @@ class MainWindow(QMainWindow):
             self._readiness_progress_m.setRange(0, 100)
             self._readiness_progress_m.setValue(100)
             self._readiness_progress_m.setVisible(False)
+        self._refresh_monitor_flow_controls(self._session_runtime_last)
 
     def _on_readiness_progress(self, value: int, message: str) -> None:
         if self._readiness_progress_m is not None:
@@ -988,6 +1054,7 @@ class MainWindow(QMainWindow):
         self._readiness_task = None
         report = payload if isinstance(payload, dict) else {}
         self._present_readiness_report(report)
+        self._on_runtime_ui_tick()
 
     @staticmethod
     def _status_icon_html(kind: str) -> str:
@@ -1063,9 +1130,102 @@ class MainWindow(QMainWindow):
         self._readiness_task = None
         self._log_error("UI_MONITOR_READINESS_FAILED", f"err={error}")
         QMessageBox.critical(self, "Мониторинг", f"Ошибка проверки готовности: {error}")
+        self._on_runtime_ui_tick()
+
+    def _on_runtime_ui_tick(self) -> None:
+        try:
+            state = self._orch.get_test_session_runtime_state()
+        except Exception:
+            state = {
+                "active": False,
+                "status": "ERROR",
+                "elapsed_sec": 0.0,
+                "video": {"state": "not_running", "degraded": False, "channels": []},
+                "gps_tx": {"state": "not_running"},
+                "degraded": False,
+                "error": True,
+            }
+        self._session_runtime_last = state if isinstance(state, dict) else {}
+        self._render_runtime_state(self._session_runtime_last)
+        self._refresh_monitor_flow_controls(self._session_runtime_last)
+
+    def _render_runtime_state(self, state: dict[str, Any]) -> None:
+        session_id = str(state.get("session_id") or "-")
+        status = str(state.get("status") or "-")
+        elapsed = float(state.get("elapsed_sec") or 0.0)
+        video = state.get("video") if isinstance(state.get("video"), dict) else {}
+        gps = state.get("gps_tx") if isinstance(state.get("gps_tx"), dict) else {}
+        degraded = bool(state.get("degraded", False))
+        error = bool(state.get("error", False))
+
+        if self._lbl_session_id_m is not None:
+            self._lbl_session_id_m.setText(f"Сессия: {session_id}")
+        if self._lbl_session_status_m is not None:
+            self._lbl_session_status_m.setText(f"Статус: {status}")
+            if error:
+                self._lbl_session_status_m.setStyleSheet("color:#c62828;")
+            elif status in ("RUNNING", "STARTING", "STOPPING"):
+                self._lbl_session_status_m.setStyleSheet("color:#2e7d32;")
+            else:
+                self._lbl_session_status_m.setStyleSheet("")
+        if self._lbl_session_elapsed_m is not None:
+            self._lbl_session_elapsed_m.setText(f"Время: {self._format_elapsed(elapsed)}")
+        if self._lbl_session_video_m is not None:
+            video_state = str(video.get("state", "not_running"))
+            channels = video.get("channels") if isinstance(video.get("channels"), list) else []
+            channel_txt_parts: list[str] = []
+            for item in channels:
+                if isinstance(item, dict):
+                    nm = str(item.get("channel", "?"))
+                    fr = int(item.get("frames_written", 0))
+                    d = bool(item.get("degraded", False))
+                    suffix = " degraded" if d else ""
+                    channel_txt_parts.append(f"{nm}:{fr}{suffix}")
+            channels_txt = ", ".join(channel_txt_parts) if channel_txt_parts else "нет данных"
+            self._lbl_session_video_m.setText(f"Видео: {video_state} [{channels_txt}]")
+        if self._lbl_session_gps_m is not None:
+            gps_state = str(gps.get("state", "not_running"))
+            pid = gps.get("pid")
+            pid_txt = f", pid={pid}" if isinstance(pid, int) else ""
+            self._lbl_session_gps_m.setText(f"GPS TX: {gps_state}{pid_txt}")
+        if self._lbl_session_degraded_m is not None:
+            mode_txt = "degraded" if degraded else "normal"
+            err_txt = "ERROR" if error else "ok"
+            self._lbl_session_degraded_m.setText(f"Режим: {mode_txt}, состояние: {err_txt}")
+            if error:
+                self._lbl_session_degraded_m.setStyleSheet("color:#c62828;")
+            elif degraded:
+                self._lbl_session_degraded_m.setStyleSheet("color:#f9a825;")
+            else:
+                self._lbl_session_degraded_m.setStyleSheet("color:#2e7d32;")
+
+    def _refresh_monitor_flow_controls(self, state: dict[str, Any]) -> None:
+        status = str(state.get("status") or "STOPPED")
+        active = bool(state.get("active", False))
+        busy = (self._readiness_task is not None) or (self._start_session_task is not None) or (self._stop_session_task is not None)
+        can_start = (not busy) and (not active) and status in ("STOPPED", "ERROR")
+        can_stop = (not busy) and active and status in ("CREATED", "STARTING", "RUNNING", "STOPPING", "ERROR")
+
+        if self._btn_check_readiness_m is not None:
+            self._btn_check_readiness_m.setEnabled((not busy) and (not active))
+        if self._btn_start_test_m is not None:
+            self._btn_start_test_m.setEnabled(can_start)
+        if self._btn_stop_test_m is not None:
+            self._btn_stop_test_m.setEnabled(can_stop)
+
+    @staticmethod
+    def _format_elapsed(value_sec: float) -> str:
+        v = max(0.0, float(value_sec))
+        mm = int(v // 60.0)
+        ss = int(v % 60.0)
+        ds = int((v - int(v)) * 10.0)
+        return f"{mm:02d}:{ss:02d}.{ds:d}"
 
     def _on_monitor_check_readiness_clicked(self) -> None:
-        if self._readiness_task is not None:
+        if self._readiness_task is not None or self._start_session_task is not None or self._stop_session_task is not None:
+            return
+        if bool(self._session_runtime_last.get("active", False)):
+            self.statusBar().showMessage("Нельзя запускать readiness во время активной сессии", 2500)
             return
 
         self._set_readiness_check_running(True)
@@ -1077,25 +1237,60 @@ class MainWindow(QMainWindow):
         QThreadPool.globalInstance().start(task)
 
     def _on_monitor_start_test_clicked(self) -> None:
-        if self._readiness_task is not None:
+        if self._readiness_task is not None or self._start_session_task is not None or self._stop_session_task is not None:
             self.statusBar().showMessage("Дождитесь завершения проверки готовности", 2500)
             return
-        try:
-            flow = self._orch.start_test_session_flow()
-            ready = bool(flow.get("started")) if isinstance(flow, dict) else False
-            if ready:
-                session = flow.get("session") if isinstance(flow, dict) else {}
-                session_id = str(session.get("session_id", "unknown")) if isinstance(session, dict) else "unknown"
-                self._log_info("UI_MONITOR_START_TEST", f"status=ok session_id={session_id}")
-                QMessageBox.information(self, "Мониторинг", f"Испытание началось\nСессия: {session_id}")
-                self.statusBar().showMessage(f"Испытание началось ({session_id})", 3000)
-            else:
-                self._log_error("UI_MONITOR_START_TEST", "status=blocked readiness=0")
-                report = flow.get("readiness") if isinstance(flow, dict) else {}
-                self._present_readiness_report(report if isinstance(report, dict) else {})
-        except Exception as ex:
-            self._log_error("UI_MONITOR_START_TEST_FAILED", f"err={type(ex).__name__}")
-            QMessageBox.critical(self, "Мониторинг", f"Не удалось начать испытание: {type(ex).__name__}")
+        task = _StartSessionFlowTask(orchestrator=self._orch)
+        self._start_session_task = task
+        self._refresh_monitor_flow_controls(self._session_runtime_last)
+        task.signals.done.connect(self._on_monitor_start_flow_done)
+        task.signals.fail.connect(self._on_monitor_start_flow_fail)
+        QThreadPool.globalInstance().start(task)
+
+    def _on_monitor_stop_test_clicked(self) -> None:
+        if self._readiness_task is not None or self._start_session_task is not None or self._stop_session_task is not None:
+            return
+        task = _StopSessionFlowTask(orchestrator=self._orch)
+        self._stop_session_task = task
+        self._refresh_monitor_flow_controls(self._session_runtime_last)
+        task.signals.done.connect(self._on_monitor_stop_flow_done)
+        task.signals.fail.connect(self._on_monitor_stop_flow_fail)
+        QThreadPool.globalInstance().start(task)
+
+    def _on_monitor_start_flow_done(self, payload: object) -> None:
+        self._start_session_task = None
+        flow = payload if isinstance(payload, dict) else {}
+        ready = bool(flow.get("started")) if isinstance(flow, dict) else False
+        if ready:
+            session = flow.get("session") if isinstance(flow, dict) else {}
+            session_id = str(session.get("session_id", "unknown")) if isinstance(session, dict) else "unknown"
+            self._log_info("UI_MONITOR_START_TEST", f"status=ok session_id={session_id}")
+            self.statusBar().showMessage(f"Испытание началось ({session_id})", 3000)
+        else:
+            self._log_error("UI_MONITOR_START_TEST", "status=blocked readiness=0")
+            report = flow.get("readiness") if isinstance(flow, dict) else {}
+            self._present_readiness_report(report if isinstance(report, dict) else {})
+        self._on_runtime_ui_tick()
+
+    def _on_monitor_start_flow_fail(self, error: str) -> None:
+        self._start_session_task = None
+        self._log_error("UI_MONITOR_START_TEST_FAILED", f"err={error}")
+        QMessageBox.critical(self, "Мониторинг", f"Не удалось начать испытание: {error}")
+        self._on_runtime_ui_tick()
+
+    def _on_monitor_stop_flow_done(self, payload: object) -> None:
+        self._stop_session_task = None
+        data = payload if isinstance(payload, dict) else {}
+        session_id = str(data.get("session_id", "unknown")) if isinstance(data, dict) else "unknown"
+        self._log_info("UI_MONITOR_STOP_TEST", f"status=ok session_id={session_id}")
+        self.statusBar().showMessage(f"Испытание остановлено ({session_id})", 3000)
+        self._on_runtime_ui_tick()
+
+    def _on_monitor_stop_flow_fail(self, error: str) -> None:
+        self._stop_session_task = None
+        self._log_error("UI_MONITOR_STOP_TEST_FAILED", f"err={error}")
+        QMessageBox.critical(self, "Мониторинг", f"Не удалось остановить испытание: {error}")
+        self._on_runtime_ui_tick()
 
     @staticmethod
     def _build_camera_warning_text(warnings: list[object]) -> str:
