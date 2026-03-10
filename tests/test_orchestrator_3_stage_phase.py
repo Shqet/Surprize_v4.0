@@ -957,3 +957,43 @@ def test_check_sdr_readiness_retries_with_default_pluto_host_on_iio_error(tmp_pa
     assert ok is True
     assert detail == ""
     assert calls == [None, "192.168.2.1"]
+
+
+def test_check_sdr_readiness_retries_once_on_transient_probe_failure(tmp_path: Path, monkeypatch) -> None:
+    nav = tmp_path / "brdc.nav"
+    nav.write_text("dummy", encoding="utf-8")
+    iq = tmp_path / "probe_iq.bin"
+    iq.write_bytes(b"\x00\x01")
+
+    bus = EventBus()
+    mayak = _MayakService(ready=True)
+    sm = _FakeServiceManager({"mayak_spindle": mayak})
+    orch = Orchestrator(bus, sm)
+
+    prepared = {
+        "sdr_options": {
+            "gps_sdr_sim": {"nav": str(nav), "origin_lat": 55.0, "origin_lon": 37.0, "origin_h": 100.0},
+            "pluto_player": {"rf_bw_mhz": 3.0, "tx_atten_db": -20.0},
+        },
+        "services_snapshot": {"gps_sdr_sim": {}},
+    }
+
+    monkeypatch.setattr(orch, "_resolve_gps_sdr_sim_executable", lambda *_args, **_kwargs: "gps-sdr-sim.exe")
+    monkeypatch.setattr(orch, "_resolve_pluto_player_executable", lambda *_args, **_kwargs: "PlutoPlayer.exe")
+    monkeypatch.setattr(orch, "_ensure_sdr_probe_iq", lambda **_kwargs: iq)
+    monkeypatch.setattr("app.orchestrator.orchestrator.time.sleep", lambda _sec: None)
+
+    calls = {"n": 0}
+
+    def _fake_run_pluto_probe(**_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return False, "pluto_probe_inconclusive"
+        return True, ""
+
+    monkeypatch.setattr(orch, "_run_pluto_probe", _fake_run_pluto_probe)
+
+    ok, detail = orch._check_sdr_readiness(prepared)
+    assert ok is True
+    assert detail == ""
+    assert calls["n"] == 2

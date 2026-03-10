@@ -2162,34 +2162,66 @@ class Orchestrator:
         except Exception as ex:
             return False, f"probe_iq_failed:{type(ex).__name__}:{ex}"
 
-        ok, detail = self._run_pluto_probe(
-            pluto_exe=pluto_exe,
-            iq_path=probe_iq,
-            tx_atten_db=tx_atten_db,
-            rf_bw_mhz=rf_bw_mhz,
-            host=pluto_host or None,
-        )
-        if (not ok) and isinstance(detail, str) and "failed_creating_iio_context" in detail:
-            fallback_host = "192.168.2.1"
-            if (not pluto_host) or (pluto_host != fallback_host):
-                ok2, detail2 = self._run_pluto_probe(
-                    pluto_exe=pluto_exe,
-                    iq_path=probe_iq,
-                    tx_atten_db=tx_atten_db,
-                    rf_bw_mhz=rf_bw_mhz,
-                    host=fallback_host,
-                )
-                if ok2:
-                    emit_log(
-                        self._bus,
-                        "INFO",
-                        "orchestrator",
-                        "ORCH_SDR_PROBE_OK",
-                        f"mode=retry_host host={fallback_host}",
+        def _probe_with_optional_host_fallback() -> tuple[bool, str]:
+            ok0, detail0 = self._run_pluto_probe(
+                pluto_exe=pluto_exe,
+                iq_path=probe_iq,
+                tx_atten_db=tx_atten_db,
+                rf_bw_mhz=rf_bw_mhz,
+                host=pluto_host or None,
+            )
+            if (not ok0) and isinstance(detail0, str) and "failed_creating_iio_context" in detail0:
+                fallback_host = "192.168.2.1"
+                if (not pluto_host) or (pluto_host != fallback_host):
+                    ok1, detail1 = self._run_pluto_probe(
+                        pluto_exe=pluto_exe,
+                        iq_path=probe_iq,
+                        tx_atten_db=tx_atten_db,
+                        rf_bw_mhz=rf_bw_mhz,
+                        host=fallback_host,
                     )
-                    return True, ""
-                return False, detail2
-        return (ok, detail)
+                    if ok1:
+                        emit_log(
+                            self._bus,
+                            "INFO",
+                            "orchestrator",
+                            "ORCH_SDR_PROBE_OK",
+                            f"mode=retry_host host={fallback_host}",
+                        )
+                        return True, ""
+                    return False, detail1
+            return ok0, detail0
+
+        def _is_transient_probe_failure(detail_txt: str) -> bool:
+            detail_l = str(detail_txt or "").lower()
+            if not detail_l:
+                return False
+            if "failed_creating_iio_context" in detail_l:
+                return True
+            if "pluto_probe_inconclusive" in detail_l:
+                return True
+            if "pluto_probe_exception" in detail_l:
+                return True
+            return False
+
+        max_attempts = 2
+        last_detail = "pluto_probe_inconclusive"
+        for attempt in range(1, max_attempts + 1):
+            ok, detail = _probe_with_optional_host_fallback()
+            if ok:
+                return True, ""
+            last_detail = str(detail or "")
+            if attempt >= max_attempts or (not _is_transient_probe_failure(last_detail)):
+                break
+            emit_log(
+                self._bus,
+                "WARNING",
+                "orchestrator",
+                "SERVICE_ERROR",
+                f"stage=sdr_probe warn=transient_retry attempt={attempt} detail={last_detail}",
+            )
+            time.sleep(0.4)
+        return False, last_detail
 
     def _ensure_sdr_probe_iq(
         self,
