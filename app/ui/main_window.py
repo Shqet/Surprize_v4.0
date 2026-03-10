@@ -1436,8 +1436,8 @@ class MainWindow(QMainWindow):
         if active and (not self._runtime_prev_active):
             self._start_monitor_trajectory_animation(force=True)
         if (not active) and self._runtime_prev_active:
-            if bool(self._anim_without_test_enabled):
-                # Operator requested to stop animation after test end.
+            if not bool(self._anim_without_test_enabled):
+                # Operator disabled animation outside active test.
                 self._monitor_timer.stop()
                 self._log_info("UI_MONITOR_ANIM_STOP", "reason=test_finished")
         self._runtime_prev_active = active
