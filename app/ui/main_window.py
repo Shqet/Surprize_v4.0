@@ -73,6 +73,7 @@ _DEFAULT_GPS_ORIGIN_LON = 37.6176
 _DEFAULT_GPS_ORIGIN_H_M = 156.0
 _DEFAULT_AUTO_STOP_AFTER_GPS_SEC = 10.0
 _DEFAULT_ANIM_WITHOUT_TEST = True
+_DEFAULT_SESSION_OUTPUT_ROOT = "outputs/sessions"
 
 
 class _PrepareTestSignals(QObject):
@@ -292,6 +293,8 @@ class MainWindow(QMainWindow):
         self._opt_anim_without_test_chk: Optional[QCheckBox] = None
         self._opt_nav_default_edit: Optional[QLineEdit] = None
         self._opt_nav_default_browse: Optional[QPushButton] = None
+        self._opt_session_output_root_edit: Optional[QLineEdit] = None
+        self._opt_session_output_root_browse: Optional[QPushButton] = None
         self._opt_reset_defaults_btn: Optional[QPushButton] = None
         self._last_trajectory_end_local: Optional[tuple[float, float, float]] = None
         self._init_sdr_options_panel()
@@ -330,6 +333,9 @@ class MainWindow(QMainWindow):
         self._lbl_session_video_m: Optional[QLabel] = None
         self._lbl_session_gps_m: Optional[QLabel] = None
         self._lbl_session_degraded_m: Optional[QLabel] = None
+        self._session_output_root_m_edit: Optional[QLineEdit] = None
+        self._btn_session_output_root_m_browse: Optional[QPushButton] = None
+        self._btn_session_output_root_m_default: Optional[QPushButton] = None
         self._btn_replay_open_m: Optional[QPushButton] = None
         self._btn_replay_play_m: Optional[QPushButton] = None
         self._replay_slider_m: Optional[QSlider] = None
@@ -426,6 +432,10 @@ class MainWindow(QMainWindow):
         nav_path = str(self._settings_store.value("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH) or "").strip()
         if not nav_path:
             nav_path = _DEFAULT_GPS_NAV_PATH
+        session_output_root_raw = str(
+            self._settings_store.value("session_output_root", _DEFAULT_SESSION_OUTPUT_ROOT) or ""
+        ).strip()
+        session_output_root = self._normalize_session_output_root(session_output_root_raw)
         auto_stop = self._settings_store.value("auto_stop_after_gps_sec", _DEFAULT_AUTO_STOP_AFTER_GPS_SEC)
         anim = self._settings_store.value("monitor_anim_without_test", _DEFAULT_ANIM_WITHOUT_TEST)
         try:
@@ -436,12 +446,17 @@ class MainWindow(QMainWindow):
         anim_val = str(anim).strip().lower() in ("1", "true", "yes", "on")
         return {
             "gps_nav_default_path": nav_path,
+            "session_output_root": session_output_root,
             "auto_stop_after_gps_sec": auto_stop_val,
             "monitor_anim_without_test": anim_val,
         }
 
     def _save_ui_settings(self) -> None:
         self._settings_store.setValue("gps_nav_default_path", str(self._settings.get("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH)))
+        self._settings_store.setValue(
+            "session_output_root",
+            str(self._settings.get("session_output_root", _DEFAULT_SESSION_OUTPUT_ROOT)),
+        )
         self._settings_store.setValue(
             "auto_stop_after_gps_sec",
             float(self._settings.get("auto_stop_after_gps_sec", _DEFAULT_AUTO_STOP_AFTER_GPS_SEC)),
@@ -456,11 +471,30 @@ class MainWindow(QMainWindow):
         nav = str(self._settings.get("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH)).strip()
         if self._gps_nav_path_edit is not None:
             self._gps_nav_path_edit.setText(nav)
+        session_output_root = self._normalize_session_output_root(
+            str(self._settings.get("session_output_root", _DEFAULT_SESSION_OUTPUT_ROOT))
+        )
+        self._settings["session_output_root"] = session_output_root
+        try:
+            applied_output_root = self._orch.set_test_session_output_root(session_output_root)
+        except Exception:
+            applied_output_root = self._orch.get_test_session_output_root()
+        if self._session_output_root_m_edit is not None:
+            self._session_output_root_m_edit.setText(applied_output_root)
+        if self._opt_session_output_root_edit is not None:
+            self._opt_session_output_root_edit.setText(applied_output_root)
         auto_stop = float(self._settings.get("auto_stop_after_gps_sec", _DEFAULT_AUTO_STOP_AFTER_GPS_SEC))
         self._orch.set_auto_stop_after_gps_sec(auto_stop)
         self._anim_without_test_enabled = bool(
             self._settings.get("monitor_anim_without_test", _DEFAULT_ANIM_WITHOUT_TEST)
         )
+
+    @staticmethod
+    def _normalize_session_output_root(value: str) -> str:
+        txt = str(value or "").strip()
+        if not txt:
+            txt = _DEFAULT_SESSION_OUTPUT_ROOT
+        return str(Path(txt).expanduser().resolve())
 
     # ---------------- UI init ----------------
 
@@ -623,12 +657,27 @@ class MainWindow(QMainWindow):
         nav_row.addWidget(self._opt_nav_default_edit)
         nav_row.addWidget(self._opt_nav_default_browse)
 
+        self._opt_session_output_root_edit = QLineEdit(box)
+        self._opt_session_output_root_edit.setText(
+            str(self._settings.get("session_output_root", _DEFAULT_SESSION_OUTPUT_ROOT))
+        )
+        self._opt_session_output_root_edit.setPlaceholderText(_DEFAULT_SESSION_OUTPUT_ROOT)
+        self._opt_session_output_root_edit.editingFinished.connect(self._on_setting_session_output_root_edited)
+        self._opt_session_output_root_browse = QPushButton("...", box)
+        self._opt_session_output_root_browse.setFixedWidth(34)
+        self._opt_session_output_root_browse.clicked.connect(self._on_setting_session_output_root_browse)
+        session_root_row = QHBoxLayout()
+        session_root_row.setContentsMargins(0, 0, 0, 0)
+        session_root_row.addWidget(self._opt_session_output_root_edit)
+        session_root_row.addWidget(self._opt_session_output_root_browse)
+
         self._opt_reset_defaults_btn = QPushButton("Вернуть к дефолтным", box)
         self._opt_reset_defaults_btn.clicked.connect(self._on_settings_reset_defaults_clicked)
 
         form.addRow("Авто-стоп после завершения GPS TX, сек", self._opt_auto_stop_spin)
         form.addRow("", self._opt_anim_without_test_chk)
         form.addRow("Дефолтный путь к эфемеридам", nav_row)
+        form.addRow("Папка сессий по умолчанию", session_root_row)
         form.addRow(self._opt_reset_defaults_btn)
 
         gl.addWidget(box, 0, 0)
@@ -901,16 +950,31 @@ class MainWindow(QMainWindow):
             self._lbl_session_video_m = QLabel("Видео: -", self)
             self._lbl_session_gps_m = QLabel("GPS TX: -", self)
             self._lbl_session_degraded_m = QLabel("Режим: -", self)
+            self._session_output_root_m_edit = QLineEdit(self)
+            self._session_output_root_m_edit.setText(str(self._settings.get("session_output_root", _DEFAULT_SESSION_OUTPUT_ROOT)))
+            self._session_output_root_m_edit.setPlaceholderText(_DEFAULT_SESSION_OUTPUT_ROOT)
+            self._btn_session_output_root_m_browse = QPushButton("...", self)
+            self._btn_session_output_root_m_browse.setFixedWidth(34)
+            self._btn_session_output_root_m_default = QPushButton("Путь по умолчанию", self)
+            session_row = QHBoxLayout()
+            session_row.setContentsMargins(0, 0, 0, 0)
+            session_row.addWidget(self._session_output_root_m_edit, 1)
+            session_row.addWidget(self._btn_session_output_root_m_browse)
+            session_row.addWidget(self._btn_session_output_root_m_default)
+            session_row_widget = QWidget(self)
+            session_row_widget.setLayout(session_row)
             glm.addWidget(self._btn_check_readiness_m, 0, 0)
             glm.addWidget(self._btn_start_test_m, 0, 1)
             glm.addWidget(self._btn_stop_test_m, 0, 2)
             glm.addWidget(self._readiness_progress_m, 1, 0, 1, 3)
-            glm.addWidget(self._lbl_session_id_m, 2, 0, 1, 3)
-            glm.addWidget(self._lbl_session_status_m, 3, 0, 1, 3)
-            glm.addWidget(self._lbl_session_elapsed_m, 4, 0, 1, 3)
-            glm.addWidget(self._lbl_session_video_m, 5, 0, 1, 3)
-            glm.addWidget(self._lbl_session_gps_m, 6, 0, 1, 3)
-            glm.addWidget(self._lbl_session_degraded_m, 7, 0, 1, 3)
+            glm.addWidget(QLabel("Папка результатов:", self), 2, 0, 1, 3)
+            glm.addWidget(session_row_widget, 3, 0, 1, 3)
+            glm.addWidget(self._lbl_session_id_m, 4, 0, 1, 3)
+            glm.addWidget(self._lbl_session_status_m, 5, 0, 1, 3)
+            glm.addWidget(self._lbl_session_elapsed_m, 6, 0, 1, 3)
+            glm.addWidget(self._lbl_session_video_m, 7, 0, 1, 3)
+            glm.addWidget(self._lbl_session_gps_m, 8, 0, 1, 3)
+            glm.addWidget(self._lbl_session_degraded_m, 9, 0, 1, 3)
             glm.setColumnStretch(0, 1)
             glm.setColumnStretch(1, 1)
             glm.setColumnStretch(2, 1)
@@ -938,6 +1002,12 @@ class MainWindow(QMainWindow):
             self._btn_start_test_m.clicked.connect(self._on_monitor_start_test_clicked)
         if self._btn_stop_test_m is not None:
             self._btn_stop_test_m.clicked.connect(self._on_monitor_stop_test_clicked)
+        if self._session_output_root_m_edit is not None:
+            self._session_output_root_m_edit.editingFinished.connect(self._on_monitor_session_output_root_edited)
+        if self._btn_session_output_root_m_browse is not None:
+            self._btn_session_output_root_m_browse.clicked.connect(self._on_monitor_session_output_root_browse)
+        if self._btn_session_output_root_m_default is not None:
+            self._btn_session_output_root_m_default.clicked.connect(self._on_monitor_session_output_root_use_default)
         if self._btn_replay_open_m is not None:
             self._btn_replay_open_m.clicked.connect(self._on_replay_open_session_clicked)
         if self._btn_replay_play_m is not None:
@@ -1434,6 +1504,13 @@ class MainWindow(QMainWindow):
             self._btn_start_test_m.setEnabled(can_start)
         if self._btn_stop_test_m is not None:
             self._btn_stop_test_m.setEnabled(can_stop)
+        can_change_output_root = (not busy) and (not active)
+        if self._session_output_root_m_edit is not None:
+            self._session_output_root_m_edit.setEnabled(can_change_output_root)
+        if self._btn_session_output_root_m_browse is not None:
+            self._btn_session_output_root_m_browse.setEnabled(can_change_output_root)
+        if self._btn_session_output_root_m_default is not None:
+            self._btn_session_output_root_m_default.setEnabled(can_change_output_root)
 
     @staticmethod
     def _format_elapsed(value_sec: float) -> str:
@@ -1444,7 +1521,7 @@ class MainWindow(QMainWindow):
         return f"{mm:02d}:{ss:02d}.{ds:d}"
 
     def _on_replay_open_session_clicked(self) -> None:
-        base_dir = str((Path("outputs") / "sessions").resolve())
+        base_dir = str(Path(self._orch.get_test_session_output_root()).resolve())
         selected = QFileDialog.getExistingDirectory(self, "Открыть offline-сессию", base_dir)
         if not selected:
             return
@@ -2022,9 +2099,34 @@ class MainWindow(QMainWindow):
             self._opt_nav_default_edit.setText(file_path)
         self._on_setting_nav_path_edited()
 
+    def _on_setting_session_output_root_edited(self) -> None:
+        txt = self._opt_session_output_root_edit.text().strip() if self._opt_session_output_root_edit is not None else ""
+        normalized = self._normalize_session_output_root(txt)
+        try:
+            applied = self._orch.set_test_session_output_root(normalized)
+        except Exception as ex:
+            QMessageBox.critical(self, "Настройки", f"Не удалось применить папку сессий:\n{type(ex).__name__}: {ex}")
+            return
+        self._settings["session_output_root"] = applied
+        self._save_ui_settings()
+        if self._opt_session_output_root_edit is not None:
+            self._opt_session_output_root_edit.setText(applied)
+        if self._session_output_root_m_edit is not None:
+            self._session_output_root_m_edit.setText(applied)
+
+    def _on_setting_session_output_root_browse(self) -> None:
+        current = self._opt_session_output_root_edit.text().strip() if self._opt_session_output_root_edit is not None else ""
+        selected = QFileDialog.getExistingDirectory(self, "Выберите папку сессий по умолчанию", current)
+        if not selected:
+            return
+        if self._opt_session_output_root_edit is not None:
+            self._opt_session_output_root_edit.setText(selected)
+        self._on_setting_session_output_root_edited()
+
     def _on_settings_reset_defaults_clicked(self) -> None:
         self._settings = {
             "gps_nav_default_path": _DEFAULT_GPS_NAV_PATH,
+            "session_output_root": self._normalize_session_output_root(_DEFAULT_SESSION_OUTPUT_ROOT),
             "auto_stop_after_gps_sec": _DEFAULT_AUTO_STOP_AFTER_GPS_SEC,
             "monitor_anim_without_test": _DEFAULT_ANIM_WITHOUT_TEST,
         }
@@ -2034,6 +2136,8 @@ class MainWindow(QMainWindow):
             self._opt_anim_without_test_chk.setChecked(_DEFAULT_ANIM_WITHOUT_TEST)
         if self._opt_nav_default_edit is not None:
             self._opt_nav_default_edit.setText(_DEFAULT_GPS_NAV_PATH)
+        if self._opt_session_output_root_edit is not None:
+            self._opt_session_output_root_edit.setText(self._settings["session_output_root"])
         self._save_ui_settings()
         self._apply_ui_settings_to_runtime()
 
@@ -2124,6 +2228,38 @@ class MainWindow(QMainWindow):
             nav_default = _DEFAULT_GPS_NAV_PATH
         if self._gps_nav_path_edit is not None:
             self._gps_nav_path_edit.setText(nav_default)
+
+    def _on_monitor_session_output_root_edited(self) -> None:
+        txt = self._session_output_root_m_edit.text().strip() if self._session_output_root_m_edit is not None else ""
+        normalized = self._normalize_session_output_root(txt)
+        try:
+            applied = self._orch.set_test_session_output_root(normalized)
+        except Exception as ex:
+            QMessageBox.critical(self, "Мониторинг", f"Не удалось применить папку результатов:\n{type(ex).__name__}: {ex}")
+            return
+        if self._session_output_root_m_edit is not None:
+            self._session_output_root_m_edit.setText(applied)
+
+    def _on_monitor_session_output_root_browse(self) -> None:
+        current = self._session_output_root_m_edit.text().strip() if self._session_output_root_m_edit is not None else ""
+        selected = QFileDialog.getExistingDirectory(self, "Выберите папку для результатов сессии", current)
+        if not selected:
+            return
+        if self._session_output_root_m_edit is not None:
+            self._session_output_root_m_edit.setText(selected)
+        self._on_monitor_session_output_root_edited()
+
+    def _on_monitor_session_output_root_use_default(self) -> None:
+        default_root = self._normalize_session_output_root(
+            str(self._settings.get("session_output_root", _DEFAULT_SESSION_OUTPUT_ROOT))
+        )
+        try:
+            applied = self._orch.set_test_session_output_root(default_root)
+        except Exception as ex:
+            QMessageBox.critical(self, "Мониторинг", f"Не удалось применить дефолтную папку:\n{type(ex).__name__}: {ex}")
+            return
+        if self._session_output_root_m_edit is not None:
+            self._session_output_root_m_edit.setText(applied)
 
     def get_sdr_options(self) -> dict[str, Any]:
         nav_default = str(self._settings.get("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH))

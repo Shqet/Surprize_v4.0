@@ -406,6 +406,18 @@ def test_set_auto_stop_after_gps_sec_clamps_range() -> None:
     assert abs(orch.get_auto_stop_after_gps_sec() - 12.5) < 1e-6
 
 
+def test_set_test_session_output_root_resolves_and_creates(tmp_path: Path) -> None:
+    bus = EventBus()
+    sm = _FakeServiceManager({})
+    orch = Orchestrator(bus, sm)
+
+    target = tmp_path / "custom" / "sessions_root"
+    out = orch.set_test_session_output_root(str(target))
+    assert Path(out) == target.resolve()
+    assert target.exists()
+    assert orch.get_test_session_output_root() == str(target.resolve())
+
+
 def test_start_test_session_marks_error_when_gps_tx_fails(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     nav = tmp_path / "brdc.nav"

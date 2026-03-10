@@ -109,6 +109,7 @@ class Orchestrator:
         self._trajectory_ticker = SessionTrajectoryTicker(bus)
         self._video_recorder = SessionVideoRecorder(bus, self._sm.get_services)
         self._auto_stop_after_gps_sec: float = 10.0
+        self._session_output_root: Path = (Path("outputs") / "sessions").resolve()
         self._mayak_mode: str = "real"
         self._mayak_stub = MayakStubController()
 
@@ -133,6 +134,18 @@ class Orchestrator:
 
     def get_auto_stop_after_gps_sec(self) -> float:
         return float(self._auto_stop_after_gps_sec)
+
+    def set_test_session_output_root(self, value: str) -> str:
+        txt = str(value or "").strip()
+        if not txt:
+            txt = str(Path("outputs") / "sessions")
+        root = Path(txt).expanduser().resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        self._session_output_root = root
+        return str(root)
+
+    def get_test_session_output_root(self) -> str:
+        return str(self._session_output_root)
 
     def start(self, profile_name: str, overrides: dict | None = None) -> None:
         with self._lock:
@@ -902,7 +915,7 @@ class Orchestrator:
 
         session_id = self._next_test_session_id()
         scenario_id = str(prepared.get("scenario_id", "none"))
-        out_dir = (Path("outputs") / "sessions" / session_id).resolve()
+        out_dir = (Path(self.get_test_session_output_root()) / session_id).resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
         events_path = out_dir / "events.log"
         manifest_path = out_dir / "session_manifest.json"
