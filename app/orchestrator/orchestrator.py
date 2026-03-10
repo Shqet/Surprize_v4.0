@@ -6,6 +6,8 @@ import shutil
 import subprocess
 import threading
 import time
+from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -63,6 +65,28 @@ def count_leaf_values(d: object) -> int:
     return 1
 
 
+class SessionStatus(str, Enum):
+    CREATED = "CREATED"
+    STARTING = "STARTING"
+    RUNNING = "RUNNING"
+    STOPPING = "STOPPING"
+    STOPPED = "STOPPED"
+    ERROR = "ERROR"
+
+
+@dataclass
+class SessionRuntime:
+    session_id: str
+    scenario_id: str
+    t0_unix: float
+    t0_monotonic: float
+    status: SessionStatus
+    paths: dict[str, str]
+    handles: dict[str, Any] = field(default_factory=dict)
+    t1_unix: Optional[float] = None
+    duration_sec: Optional[float] = None
+
+
 class Orchestrator:
     """
     v4:
@@ -98,7 +122,7 @@ class Orchestrator:
         self._test_session_seq: int = 0
         self._active_scenario_id: Optional[str] = None
         self._prepared_scenario: Optional[dict[str, Any]] = None
-        self._active_test_session: Optional[dict[str, Any]] = None
+        self._active_test_session: Optional[SessionRuntime] = None
         self._mayak_mode: str = "real"
         self._mayak_stub = MayakStubController()
 
@@ -836,20 +860,23 @@ class Orchestrator:
 
         t0_unix = time.time()
         t0_mono = time.monotonic()
-        manifest = {
-            "session_id": session_id,
-            "scenario_id": scenario_id,
-            "status": "RUNNING",
-            "t0_unix": t0_unix,
-            "t0_monotonic": t0_mono,
-            "t1_unix": None,
-            "duration_sec": None,
-            "paths": {
-                "events_log": str(events_path),
-            },
-        }
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
+        runtime = SessionRuntime(
+            session_id=session_id,
+            scenario_id=scenario_id,
+            t0_unix=t0_unix,
+            t0_monotonic=t0_mono,
+            status=SessionStatus.CREATED,
+            paths={
+                "out_dir": str(out_dir),
+                "events_log": str(events_path),
+                "manifest": str(manifest_path),
+            },
+        )
+        self._write_session_manifest(runtime)
+
+        runtime.status = SessionStatus.STARTING
+        self._write_session_manifest(runtime)
         self._append_session_event(
             events_path=events_path,
             payload={
@@ -861,16 +888,11 @@ class Orchestrator:
             },
         )
 
+        runtime.status = SessionStatus.RUNNING
+        self._write_session_manifest(runtime)
+
         with self._lock:
-            self._active_test_session = {
-                "session_id": session_id,
-                "scenario_id": scenario_id,
-                "out_dir": str(out_dir),
-                "events_path": str(events_path),
-                "manifest_path": str(manifest_path),
-                "t0_unix": t0_unix,
-                "t0_monotonic": t0_mono,
-            }
+            self._active_test_session = runtime
 
         emit_log(
             self._bus,
@@ -889,19 +911,24 @@ class Orchestrator:
 
     def stop_test_session(self) -> dict[str, str]:
         with self._lock:
-            active = dict(self._active_test_session) if isinstance(self._active_test_session, dict) else None
+            active = self._active_test_session
 
         if active is None:
             raise RuntimeError("test_session_not_running")
 
-        session_id = str(active.get("session_id", "none"))
-        scenario_id = str(active.get("scenario_id", "none"))
-        t0_mono = float(active.get("t0_monotonic", time.monotonic()))
+        session_id = active.session_id
+        scenario_id = active.scenario_id
+        t0_mono = float(active.t0_monotonic)
         t1_unix = time.time()
         duration_sec = max(0.0, time.monotonic() - t0_mono)
 
-        events_path = Path(str(active.get("events_path", "")))
-        manifest_path = Path(str(active.get("manifest_path", "")))
+        events_path = Path(active.paths.get("events_log", ""))
+        manifest_path = Path(active.paths.get("manifest", ""))
+        active.status = SessionStatus.STOPPING
+        active.t1_unix = t1_unix
+        active.duration_sec = duration_sec
+        self._write_session_manifest(active)
+
         self._append_session_event(
             events_path=events_path,
             payload={
@@ -913,20 +940,8 @@ class Orchestrator:
             },
         )
 
-        manifest: dict[str, Any] = {}
-        if manifest_path.exists():
-            try:
-                parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
-                if isinstance(parsed, dict):
-                    manifest = parsed
-            except Exception:
-                manifest = {}
-        manifest["session_id"] = session_id
-        manifest["scenario_id"] = scenario_id
-        manifest["status"] = "STOPPED"
-        manifest["t1_unix"] = t1_unix
-        manifest["duration_sec"] = duration_sec
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        active.status = SessionStatus.STOPPED
+        self._write_session_manifest(active)
 
         with self._lock:
             self._active_test_session = None
@@ -1569,6 +1584,22 @@ class Orchestrator:
         line = json.dumps(payload, ensure_ascii=False)
         with events_path.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
+
+    def _write_session_manifest(self, runtime: SessionRuntime) -> None:
+        manifest_path = Path(runtime.paths.get("manifest", ""))
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "session_id": runtime.session_id,
+            "scenario_id": runtime.scenario_id,
+            "status": runtime.status.value,
+            "t0_unix": runtime.t0_unix,
+            "t0_monotonic": runtime.t0_monotonic,
+            "t1_unix": runtime.t1_unix,
+            "duration_sec": runtime.duration_sec,
+            "paths": dict(runtime.paths),
+            "handles": sorted(list(runtime.handles.keys())),
+        }
+        manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _begin_scenario_id(self) -> str:
         scenario_id = self._next_scenario_id()

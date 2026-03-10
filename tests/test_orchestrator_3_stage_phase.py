@@ -286,6 +286,9 @@ def test_start_stop_test_session_writes_manifest_and_events(tmp_path: Path, monk
     assert manifest_running["status"] == "RUNNING"
     assert manifest_running["session_id"] == session_id
     assert manifest_running["scenario_id"].startswith("scn_")
+    assert manifest_running["paths"]["events_log"] == str(events_path)
+    assert manifest_running["paths"]["manifest"] == str(manifest_path)
+    assert manifest_running["handles"] == []
 
     stopped = orch.stop_test_session()
     assert stopped["session_id"] == session_id
