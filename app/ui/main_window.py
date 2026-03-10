@@ -1082,13 +1082,14 @@ class MainWindow(QMainWindow):
             return
         try:
             report = self._orch.check_readiness()
-            warnings = report.get("warnings", []) if isinstance(report, dict) else []
-            cam_warn = self._build_camera_warning_text(warnings if isinstance(warnings, list) else [])
-            if cam_warn:
-                QMessageBox.warning(self, "Мониторинг", cam_warn)
-            self._orch.start_test_flow()
-            self._log_info("UI_MONITOR_START_TEST", "status=ok")
-            self.statusBar().showMessage("Испытание запущено", 3000)
+            ready = bool(report.get("ready_to_start")) if isinstance(report, dict) else False
+            if ready:
+                self._log_info("UI_MONITOR_START_TEST", "status=ok mode=mock_only")
+                QMessageBox.information(self, "Мониторинг", "Испытание началось")
+                self.statusBar().showMessage("Испытание началось", 3000)
+            else:
+                self._log_error("UI_MONITOR_START_TEST", "status=blocked readiness=0")
+                self._present_readiness_report(report if isinstance(report, dict) else {})
         except Exception as ex:
             self._log_error("UI_MONITOR_START_TEST_FAILED", f"err={type(ex).__name__}")
             QMessageBox.critical(self, "Мониторинг", f"Не удалось начать испытание: {type(ex).__name__}")
