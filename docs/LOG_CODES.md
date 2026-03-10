@@ -23,6 +23,7 @@ All log messages use k=v format in `message`.
 - `MAYAK_TEST_ABORT`
 - `ORCH_READINESS`
 - `ORCH_SDR_PROBE_OK`
+- `ORCH_SDR_PROBE_FAIL`
 - `ORCH_GPS_PREFLIGHT_DONE`
 
 ## Session

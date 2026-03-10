@@ -2204,9 +2204,18 @@ class Orchestrator:
 
         max_attempts = 2
         last_detail = "pluto_probe_inconclusive"
+        attempts_used = 0
         for attempt in range(1, max_attempts + 1):
+            attempts_used = attempt
             ok, detail = _probe_with_optional_host_fallback()
             if ok:
+                emit_log(
+                    self._bus,
+                    "INFO",
+                    "orchestrator",
+                    "ORCH_SDR_PROBE_OK",
+                    f"probe_attempts={attempts_used} probe_retry_count={max(0, attempts_used - 1)}",
+                )
                 return True, ""
             last_detail = str(detail or "")
             if attempt >= max_attempts or (not _is_transient_probe_failure(last_detail)):
@@ -2219,6 +2228,17 @@ class Orchestrator:
                 f"stage=sdr_probe warn=transient_retry attempt={attempt} detail={last_detail}",
             )
             time.sleep(0.4)
+        emit_log(
+            self._bus,
+            "ERROR",
+            "orchestrator",
+            "ORCH_SDR_PROBE_FAIL",
+            (
+                f"probe_attempts={attempts_used} "
+                f"probe_retry_count={max(0, attempts_used - 1)} "
+                f"detail={last_detail or 'unknown'}"
+            ),
+        )
         return False, last_detail
 
     def _ensure_sdr_probe_iq(

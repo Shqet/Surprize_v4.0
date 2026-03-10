@@ -58,9 +58,17 @@ Typical blocking keys:
 
 - `trajectory_missing`
 - `gps_nav_missing`
+- `gps_nav_not_found=<abs_path>`
 - `mayak_not_ready`
 - `sdr_not_ready`
 - `pluto_input_failed:<ErrType>`
+
+Notes:
+
+- If ephemerides path is invalid, report may contain both:
+  - direct nav reason (`gps_nav_missing` or `gps_nav_not_found=...`)
+  - generic SDR blocker (`sdr_not_ready`)
+  This duplication is intentional for backward-compatible UI checks.
 
 Typical warning keys:
 
