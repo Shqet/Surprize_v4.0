@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -591,6 +592,87 @@ def test_start_test_session_flow_blocks_when_readiness_not_ready(tmp_path: Path,
     readiness = out["readiness"]
     assert readiness["ready_to_start"] is False
     assert "sdr_not_ready" in readiness["blocking_errors"]
+
+
+def test_session_auto_stops_after_gps_finish(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    nav = tmp_path / "brdc.nav"
+    nav.write_text("dummy", encoding="utf-8")
+    traj_dir = tmp_path / "ballistics" / "run1"
+    traj_dir.mkdir(parents=True, exist_ok=True)
+    traj = traj_dir / "trajectory.csv"
+    traj.write_text("t,X,Y,Z\n0.0,0,0,0\n0.2,1,0,0\n", encoding="utf-8")
+    diag = traj_dir / "diagnostics.csv"
+    diag.write_text("t,V\n0,0\n", encoding="utf-8")
+
+    bus = EventBus()
+    mayak = _MayakService(ready=True)
+    sm = _FakeServiceManager({"mayak_spindle": mayak})
+    orch = Orchestrator(bus, sm)
+
+    monkeypatch.setattr(
+        orch,
+        "_find_latest_trajectory_artifact",
+        lambda: {"run_dir": str(traj_dir), "trajectory_csv": str(traj), "diagnostics_csv": str(diag)},
+    )
+    monkeypatch.setattr(
+        orch,
+        "_build_session_gps_tx_config",
+        lambda _prepared: {"pluto_exe": "PlutoPlayer.exe", "iq_path": "dummy.bin", "tx_atten_db": -20.0, "rf_bw_mhz": 3.0},
+    )
+    orch._auto_stop_after_gps_sec = 0.0
+
+    class _GpsExitedRunner:
+        def start(self, session_ctx) -> None:
+            session_ctx.handles["gps_tx_proc"] = object()
+
+        def stop(self, session_ctx) -> None:
+            session_ctx.handles.pop("gps_tx_proc", None)
+
+        def describe(self, _session_ctx) -> dict[str, object]:
+            return {"state": "exited", "pid": 123, "exit_code": 0}
+
+    orch._gps_tx_runner = _GpsExitedRunner()
+    orch._trajectory_ticker = type(
+        "_FakeTrajectoryTicker",
+        (),
+        {
+            "start": staticmethod(lambda session_ctx: session_ctx.handles.__setitem__("trajectory_ticker", object())),
+            "stop": staticmethod(lambda session_ctx: session_ctx.handles.pop("trajectory_ticker", None)),
+            "describe": staticmethod(lambda _session_ctx: {"state": "running"}),
+        },
+    )()
+    orch._video_recorder = type(
+        "_FakeVideoRecorder",
+        (),
+        {
+            "record_for_session": staticmethod(lambda session_ctx: session_ctx.handles.__setitem__("video_recording", {})),
+            "stop_record_for_session": staticmethod(lambda session_ctx: session_ctx.handles.pop("video_recording", None)),
+            "describe": staticmethod(lambda _session_ctx: {"state": "running", "degraded": False, "channels": []}),
+        },
+    )()
+
+    orch.prepare_mayak_test(
+        head_start_rpm=100,
+        head_end_rpm=200,
+        tail_start_rpm=300,
+        tail_end_rpm=400,
+        profile_type="linear",
+        duration_sec=5.0,
+        sdr_options={"gps_sdr_sim": {"nav": str(nav), "static_sec": 0.0}},
+    )
+    started = orch.start_test_session()
+    manifest_path = Path(started["manifest"])
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if orch._active_test_session is None:
+            break
+        time.sleep(0.02)
+    assert orch._active_test_session is None
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["status"] == "STOPPED"
 
 
 def test_pluto_probe_fast_exit_rc0_is_not_ready(tmp_path: Path, monkeypatch) -> None:

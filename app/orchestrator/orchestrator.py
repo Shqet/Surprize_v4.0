@@ -108,6 +108,7 @@ class Orchestrator:
         self._gps_tx_runner = SessionGpsTxRunner(bus)
         self._trajectory_ticker = SessionTrajectoryTicker(bus)
         self._video_recorder = SessionVideoRecorder(bus, self._sm.get_services)
+        self._auto_stop_after_gps_sec: float = 10.0
         self._mayak_mode: str = "real"
         self._mayak_stub = MayakStubController()
 
@@ -1019,6 +1020,7 @@ class Orchestrator:
 
         with self._lock:
             self._active_test_session = runtime
+        self._start_session_auto_stop_watcher(runtime)
 
         emit_log(
             self._bus,
@@ -1048,6 +1050,7 @@ class Orchestrator:
         t0_mono = float(active.t0_monotonic)
         t1_unix = time.time()
         duration_sec = max(0.0, time.monotonic() - t0_mono)
+        self._stop_session_auto_stop_watcher(active)
 
         events_path = Path(active.paths.get("events_log", ""))
         manifest_path = Path(active.paths.get("manifest", ""))
@@ -1151,6 +1154,75 @@ class Orchestrator:
             "manifest": str(manifest_path),
             "events": str(events_path),
         }
+
+    def _start_session_auto_stop_watcher(self, session_ctx: SessionRuntime) -> None:
+        stop_event = threading.Event()
+        thr = threading.Thread(
+            target=self._session_auto_stop_worker,
+            args=(session_ctx, stop_event),
+            name=f"session.autostop.{session_ctx.session_id}",
+            daemon=True,
+        )
+        session_ctx.handles["auto_stop_watcher"] = {"stop_event": stop_event, "thread": thr}
+        thr.start()
+
+    def _stop_session_auto_stop_watcher(self, session_ctx: SessionRuntime) -> None:
+        handle = session_ctx.handles.get("auto_stop_watcher")
+        if not isinstance(handle, dict):
+            return
+        stop_event = handle.get("stop_event")
+        thr = handle.get("thread")
+        if isinstance(stop_event, threading.Event):
+            stop_event.set()
+        if isinstance(thr, threading.Thread) and thr.is_alive() and thr is not threading.current_thread():
+            thr.join(timeout=0.7)
+        session_ctx.handles.pop("auto_stop_watcher", None)
+
+    def _session_auto_stop_worker(self, session_ctx: SessionRuntime, stop_event: threading.Event) -> None:
+        exit_seen_at: Optional[float] = None
+        while not stop_event.is_set():
+            with self._lock:
+                active = self._active_test_session
+            if active is not session_ctx:
+                return
+            if session_ctx.status not in (SessionStatus.STARTING, SessionStatus.RUNNING):
+                return
+
+            gps_state = self._gps_tx_runner.describe(session_ctx)
+            state = str(gps_state.get("state", "not_running"))
+            if state == "exited":
+                if exit_seen_at is None:
+                    exit_seen_at = time.monotonic()
+                    emit_log(
+                        self._bus,
+                        "INFO",
+                        "orchestrator",
+                        "SESSION_AUTO_STOP_ARMED",
+                        f"session_id={session_ctx.session_id} delay_sec={self._auto_stop_after_gps_sec:.1f}",
+                    )
+                if (time.monotonic() - exit_seen_at) >= float(self._auto_stop_after_gps_sec):
+                    emit_log(
+                        self._bus,
+                        "INFO",
+                        "orchestrator",
+                        "SESSION_AUTO_STOP_TRIGGER",
+                        f"session_id={session_ctx.session_id} reason=gps_tx_finished",
+                    )
+                    try:
+                        self.stop_test_session()
+                    except Exception as ex:
+                        emit_log(
+                            self._bus,
+                            "ERROR",
+                            "orchestrator",
+                            "SESSION_ERROR",
+                            f"session_id={session_ctx.session_id} stage=auto_stop err={type(ex).__name__}",
+                        )
+                    return
+            elif state == "running":
+                exit_seen_at = None
+
+            time.sleep(0.2)
 
     def generate_gps_signal_preflight(
         self,

@@ -225,6 +225,7 @@ class MainWindow(QMainWindow):
         self._gl_gps_sdr_options_m: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_gpsSDRSim_options_m")
         self._gl_functional_buttons: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_functionalButtons")
         self._gl_functional_buttons_m: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_functionalButtons_m")
+        self._gl_replay: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_replay")
 
         self._editor: Optional[ConfigJsonEditor] = None
         self._init_editor()
@@ -232,6 +233,7 @@ class MainWindow(QMainWindow):
         # 3D view + controller
         self._traj_view = Trajectory3DView(self)
         self._traj_view_m = Trajectory3DView(self)
+        self._traj_view_r = Trajectory3DView(self)
         self._latest_trajectory_points: list[tuple[float, float, float]] = []
         self._monitor_points: list[tuple[float, float, float]] = []
         self._monitor_cum_dist_m: list[float] = []
@@ -262,6 +264,7 @@ class MainWindow(QMainWindow):
         self._init_trajectory_view()
         self._init_monitor_trajectory_view()
         self._init_monitor_params_panel()
+        self._init_replay_panel()
 
         self._init_rtsp_previews()
         self._gps_nav_path_edit: Optional[QLineEdit] = None
@@ -478,6 +481,15 @@ class MainWindow(QMainWindow):
         form.addRow("Пройдено, м", self._m_distance_lbl)
 
         gl.addWidget(box, 0, 0)
+        gl.setRowStretch(1, 1)
+        gl.setColumnStretch(0, 1)
+
+    def _init_replay_panel(self) -> None:
+        gl = self._gl_replay
+        if gl is None:
+            return
+        self._clear_layout(gl)
+
         replay_box = QGroupBox("Replay sync (offline)", self)
         replay_form = QFormLayout(replay_box)
 
@@ -519,9 +531,11 @@ class MainWindow(QMainWindow):
         replay_form.addRow(self._lbl_replay_traj_info_m)
         replay_form.addRow(img_row)
 
-        gl.addWidget(replay_box, 1, 0)
-        gl.setRowStretch(2, 1)
-        gl.setColumnStretch(0, 1)
+        self._traj_view_r.set_status("Replay trajectory (3D)\nОткройте завершенную сессию")
+        gl.addWidget(self._traj_view_r, 0, 0)
+        gl.addWidget(replay_box, 0, 1)
+        gl.setColumnStretch(0, 2)
+        gl.setColumnStretch(1, 1)
 
     def _init_rtsp_previews(self) -> None:
         if self._vl_rtsp_visible is not None:
@@ -1361,8 +1375,7 @@ class MainWindow(QMainWindow):
             self._lbl_replay_session_m.setText(f"Сессия: {session_dir.name}")
 
         pts = [(x, y, z) for (_t, x, y, z, _s) in timeline]
-        self._monitor_timer.stop()
-        self._traj_view_m.set_points(pts)
+        self._traj_view_r.set_points(pts)
         self._set_replay_t_rel(self._replay_t_rel_sec, from_slider=False)
 
     def _release_replay_caps(self) -> None:
@@ -1461,7 +1474,7 @@ class MainWindow(QMainWindow):
 
         idx = self._nearest_timeline_index(t)
         pt = self._replay_timeline[idx]
-        self._traj_view_m.set_marker_point((pt[1], pt[2], pt[3]))
+        self._traj_view_r.set_marker_point((pt[1], pt[2], pt[3]))
         if self._lbl_replay_traj_info_m is not None:
             self._lbl_replay_traj_info_m.setText(
                 f"Trajectory: idx={idx} t={pt[0]:.3f} x={pt[1]:.1f} y={pt[2]:.1f} z={pt[3]:.1f} v={pt[4]:.2f}"
