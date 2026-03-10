@@ -338,6 +338,7 @@ class MainWindow(QMainWindow):
         self._lbl_session_video_m: Optional[QLabel] = None
         self._lbl_session_gps_m: Optional[QLabel] = None
         self._lbl_session_degraded_m: Optional[QLabel] = None
+        self._lbl_last_test_result_m: Optional[QLabel] = None
         self._session_output_root_m_edit: Optional[QLineEdit] = None
         self._btn_session_output_root_m_browse: Optional[QPushButton] = None
         self._btn_session_output_root_m_default: Optional[QPushButton] = None
@@ -955,6 +956,7 @@ class MainWindow(QMainWindow):
             self._lbl_session_video_m = QLabel("Видео: -", self)
             self._lbl_session_gps_m = QLabel("GPS трансляция: -", self)
             self._lbl_session_degraded_m = QLabel("Режим: -", self)
+            self._lbl_last_test_result_m = QLabel("Последнее испытание: не запускалось", self)
             self._session_output_root_m_edit = QLineEdit(self)
             self._session_output_root_m_edit.setText(str(self._settings.get("session_output_root", _DEFAULT_SESSION_OUTPUT_ROOT)))
             self._session_output_root_m_edit.setPlaceholderText(_DEFAULT_SESSION_OUTPUT_ROOT)
@@ -980,6 +982,7 @@ class MainWindow(QMainWindow):
             glm.addWidget(self._lbl_session_video_m, 7, 0, 1, 3)
             glm.addWidget(self._lbl_session_gps_m, 8, 0, 1, 3)
             glm.addWidget(self._lbl_session_degraded_m, 9, 0, 1, 3)
+            glm.addWidget(self._lbl_last_test_result_m, 10, 0, 1, 3)
             glm.setColumnStretch(0, 1)
             glm.setColumnStretch(1, 1)
             glm.setColumnStretch(2, 1)
@@ -1862,9 +1865,11 @@ class MainWindow(QMainWindow):
                 self._session_out_dir_hints[session_id] = out_dir
             self._log_info("UI_MONITOR_START_TEST", f"status=ok session_id={session_id}")
             self.statusBar().showMessage(f"Испытание началось ({session_id})", 3000)
+            self._set_last_test_result_label(f"Последнее испытание: выполняется ({session_id})", "#1565c0")
             self._start_monitor_trajectory_animation(force=True)
         else:
             self._log_error("UI_MONITOR_START_TEST", "status=blocked readiness=0")
+            self._set_last_test_result_label("Последнее испытание: запуск отклонен (проверка не пройдена)", "#c62828")
             report = flow.get("readiness") if isinstance(flow, dict) else {}
             self._present_readiness_report(report if isinstance(report, dict) else {})
         self._on_runtime_ui_tick()
@@ -1873,6 +1878,7 @@ class MainWindow(QMainWindow):
         self._start_session_task = None
         self._set_start_test_flow_running(False)
         self._log_error("UI_MONITOR_START_TEST_FAILED", f"err={error}")
+        self._set_last_test_result_label("Последнее испытание: ошибка запуска", "#c62828")
         QMessageBox.critical(self, "Мониторинг", f"Не удалось начать испытание: {error}")
         self._on_runtime_ui_tick()
 
@@ -1891,6 +1897,7 @@ class MainWindow(QMainWindow):
     def _on_monitor_stop_flow_fail(self, error: str) -> None:
         self._stop_session_task = None
         self._log_error("UI_MONITOR_STOP_TEST_FAILED", f"err={error}")
+        self._set_last_test_result_label("Последнее испытание: ошибка остановки", "#c62828")
         QMessageBox.critical(self, "Мониторинг", f"Не удалось остановить испытание: {error}")
         self._on_runtime_ui_tick()
 
@@ -1898,6 +1905,7 @@ class MainWindow(QMainWindow):
         sid = str(session_id or "unknown")
         out = str(out_dir or "").strip()
         self.statusBar().showMessage(f"Испытание завершено ({sid}). Результаты сохранены.", 5000)
+        self._set_last_test_result_label(f"Последнее испытание: успешно завершено ({sid})", "#2e7d32")
         if out:
             QMessageBox.information(
                 self,
@@ -1908,6 +1916,15 @@ class MainWindow(QMainWindow):
                     f"Папка: {out}"
                 ),
             )
+
+    def _set_last_test_result_label(self, text: str, color: str = "") -> None:
+        if self._lbl_last_test_result_m is None:
+            return
+        self._lbl_last_test_result_m.setText(str(text))
+        if color:
+            self._lbl_last_test_result_m.setStyleSheet(f"color:{color};")
+        else:
+            self._lbl_last_test_result_m.setStyleSheet("")
 
     @staticmethod
     def _build_camera_warning_text(warnings: list[object]) -> str:
