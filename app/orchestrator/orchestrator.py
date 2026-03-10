@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import csv
+import math
 import shlex
 import shutil
 import subprocess
@@ -870,6 +872,51 @@ class Orchestrator:
                 "t_rel_sec": 0.0,
             },
         )
+        try:
+            timeline_path = self._build_session_trajectory_timeline(runtime, prepared)
+            runtime.paths["trajectory_timeline"] = str(timeline_path)
+            runtime.handles["trajectory_timeline_meta"] = {
+                "points": int(runtime.handles.get("trajectory_points_count", 0)),
+                "duration_sec": float(runtime.handles.get("trajectory_duration_sec", 0.0)),
+            }
+            self._append_session_event(
+                events_path=events_path,
+                payload={
+                    "event": "SESSION_TRAJECTORY_TIMELINE_READY",
+                    "session_id": session_id,
+                    "scenario_id": scenario_id,
+                    "unix_ts": time.time(),
+                    "t_rel_sec": max(0.0, time.monotonic() - t0_mono),
+                    "details": (
+                        f"path={timeline_path.as_posix()} "
+                        f"points={int(runtime.handles.get('trajectory_points_count', 0))} "
+                        f"duration_sec={float(runtime.handles.get('trajectory_duration_sec', 0.0)):.3f}"
+                    ),
+                },
+            )
+            self._write_session_manifest(runtime)
+        except Exception as ex:
+            runtime.status = SessionStatus.ERROR
+            self._write_session_manifest(runtime)
+            self._append_session_event(
+                events_path=events_path,
+                payload={
+                    "event": "SESSION_ERROR",
+                    "session_id": session_id,
+                    "scenario_id": scenario_id,
+                    "unix_ts": time.time(),
+                    "t_rel_sec": max(0.0, time.monotonic() - t0_mono),
+                    "details": f"stage=start_timeline err={type(ex).__name__}",
+                },
+            )
+            emit_log(
+                self._bus,
+                "ERROR",
+                "orchestrator",
+                "SESSION_ERROR",
+                f"session_id={session_id} scenario_id={scenario_id} stage=start_timeline err={type(ex).__name__}",
+            )
+            raise
 
         try:
             self._video_recorder.record_for_session(runtime)
@@ -945,6 +992,7 @@ class Orchestrator:
             "out_dir": str(out_dir),
             "manifest": str(manifest_path),
             "events": str(events_path),
+            "trajectory_timeline": str(Path(runtime.paths.get("trajectory_timeline", ""))),
         }
 
     def stop_test_session(self) -> dict[str, str]:
@@ -1664,6 +1712,92 @@ class Orchestrator:
         with self._lock:
             self._test_session_seq += 1
             return f"sess_{int(time.time() * 1000)}_{self._test_session_seq}"
+
+    def _build_session_trajectory_timeline(self, runtime: SessionRuntime, prepared: dict[str, Any]) -> Path:
+        trajectory = prepared.get("trajectory")
+        traj_csv = trajectory.get("trajectory_csv") if isinstance(trajectory, dict) else None
+        if not isinstance(traj_csv, str) or not traj_csv.strip():
+            raise FileNotFoundError("trajectory_missing")
+
+        src_path = Path(traj_csv).resolve()
+        if not src_path.exists():
+            raise FileNotFoundError(f"trajectory_not_found={src_path.as_posix()}")
+
+        with src_path.open("r", encoding="utf-8", newline="") as fh:
+            reader = csv.reader(fh)
+            headers = next(reader, None)
+            if not headers:
+                raise ValueError("trajectory_header_missing")
+
+            norm = [str(x).strip().lower() for x in headers]
+            for key in ("x", "y", "z", "t"):
+                if key not in norm:
+                    raise ValueError(f"trajectory_column_missing={key}")
+            ix = norm.index("x")
+            iy = norm.index("y")
+            iz = norm.index("z")
+            it = norm.index("t")
+
+            points: list[tuple[float, float, float, float]] = []
+            for row in reader:
+                if not row:
+                    continue
+                if len(row) <= max(ix, iy, iz, it):
+                    continue
+                try:
+                    t = float(row[it])
+                    x = float(row[ix])
+                    y = float(row[iy])
+                    z = float(row[iz])
+                except Exception:
+                    continue
+                points.append((t, x, y, z))
+
+        if not points:
+            raise ValueError("trajectory_no_valid_rows")
+
+        t0_src = float(points[0][0])
+        deltas: list[float] = []
+        for i, (t, _x, _y, _z) in enumerate(points):
+            dt = float(t) - t0_src
+            if dt < -1e-6:
+                raise ValueError(f"trajectory_negative_time_at={i}")
+            if i > 0 and dt + 1e-6 < deltas[-1]:
+                raise ValueError(f"trajectory_time_not_monotonic_at={i}")
+            deltas.append(max(0.0, dt))
+
+        start_rel = max(0.0, time.monotonic() - float(runtime.t0_monotonic))
+        out_path = Path(runtime.paths["out_dir"]) / "trajectory_timeline.csv"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        prev_xyz: tuple[float, float, float] | None = None
+        prev_t_rel: float | None = None
+        with out_path.open("w", encoding="utf-8", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["t_rel_sec", "x", "y", "z", "speed"])
+            for i, (_t, x, y, z) in enumerate(points):
+                t_rel = start_rel + deltas[i]
+                if prev_t_rel is None:
+                    speed = 0.0
+                else:
+                    dt = max(0.0, t_rel - prev_t_rel)
+                    if dt <= 1e-9 or prev_xyz is None:
+                        speed = 0.0
+                    else:
+                        dx = float(x) - prev_xyz[0]
+                        dy = float(y) - prev_xyz[1]
+                        dz = float(z) - prev_xyz[2]
+                        speed = math.sqrt(dx * dx + dy * dy + dz * dz) / dt
+                w.writerow([f"{t_rel:.3f}", f"{float(x):.6f}", f"{float(y):.6f}", f"{float(z):.6f}", f"{speed:.6f}"])
+                prev_t_rel = t_rel
+                prev_xyz = (float(x), float(y), float(z))
+
+        total_duration = max(0.0, deltas[-1])
+        runtime.handles["trajectory_points_count"] = len(points)
+        runtime.handles["trajectory_duration_sec"] = total_duration
+        if total_duration < 0.0:
+            raise ValueError("trajectory_duration_invalid")
+        return out_path
 
     def _append_session_event(self, *, events_path: Path, payload: dict[str, Any]) -> None:
         events_path.parent.mkdir(parents=True, exist_ok=True)
