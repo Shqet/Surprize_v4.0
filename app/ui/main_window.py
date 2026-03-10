@@ -206,6 +206,7 @@ class MainWindow(QMainWindow):
         self._start_session_task: Optional[_StartSessionFlowTask] = None
         self._stop_session_task: Optional[_StopSessionFlowTask] = None
         self._session_runtime_last: dict[str, Any] = {}
+        self._runtime_prev_active: bool = False
         self._settings_store = QSettings("Surprize", "SurprizeShell")
         self._settings = self._load_ui_settings()
         self._anim_without_test_enabled: bool = bool(
@@ -1340,6 +1341,10 @@ class MainWindow(QMainWindow):
                 "error": True,
             }
         self._session_runtime_last = state if isinstance(state, dict) else {}
+        active = bool(self._session_runtime_last.get("active", False))
+        if active and (not self._runtime_prev_active):
+            self._start_monitor_trajectory_animation(force=True)
+        self._runtime_prev_active = active
         self._render_runtime_state(self._session_runtime_last)
         self._refresh_monitor_flow_controls(self._session_runtime_last)
 
@@ -1715,6 +1720,7 @@ class MainWindow(QMainWindow):
             session_id = str(session.get("session_id", "unknown")) if isinstance(session, dict) else "unknown"
             self._log_info("UI_MONITOR_START_TEST", f"status=ok session_id={session_id}")
             self.statusBar().showMessage(f"Испытание началось ({session_id})", 3000)
+            self._start_monitor_trajectory_animation(force=True)
         else:
             self._log_error("UI_MONITOR_START_TEST", "status=blocked readiness=0")
             report = flow.get("readiness") if isinstance(flow, dict) else {}
@@ -1784,9 +1790,9 @@ class MainWindow(QMainWindow):
             self._last_trajectory_end_local = None
         self._refresh_gps_finish_point()
 
-    def _start_monitor_trajectory_animation(self) -> None:
+    def _start_monitor_trajectory_animation(self, *, force: bool = False) -> None:
         enabled = bool(self._anim_without_test_enabled)
-        if not enabled:
+        if (not force) and (not enabled):
             self._monitor_timer.stop()
             self._traj_view_m.set_status("Мониторинг траектории (3D)\nАнимация отключена оператором")
             self._log_info("UI_MONITOR_ANIM_SKIPPED", "reason=disabled_by_operator")
@@ -1872,13 +1878,18 @@ class MainWindow(QMainWindow):
             self._traj_view_m.set_marker_point(points[0])
             return
 
-        started = self._monitor_started_at
-        if started is None:
-            self._monitor_started_at = time.monotonic()
-            started = self._monitor_started_at
-        elapsed = max(0.0, time.monotonic() - float(started))
         d = max(self._monitor_duration_sec, 0.001)
-        t = elapsed % d
+        active = bool(self._session_runtime_last.get("active", False))
+        if active:
+            elapsed = max(0.0, float(self._session_runtime_last.get("elapsed_sec", 0.0)))
+            t = min(elapsed, d)
+        else:
+            started = self._monitor_started_at
+            if started is None:
+                self._monitor_started_at = time.monotonic()
+                started = self._monitor_started_at
+            elapsed = max(0.0, time.monotonic() - float(started))
+            t = elapsed % d
         idx = int((t / d) * (len(points) - 1))
         idx = max(0, min(len(points) - 1, idx))
         self._traj_view_m.set_marker_point(points[idx])
@@ -1927,6 +1938,11 @@ class MainWindow(QMainWindow):
         self._anim_without_test_enabled = bool(checked)
         self._settings["monitor_anim_without_test"] = bool(checked)
         self._save_ui_settings()
+        if bool(self._session_runtime_last.get("active", False)):
+            # During active test we always animate marker by runtime session clock.
+            if self._monitor_points and not self._monitor_timer.isActive():
+                self._monitor_timer.start()
+            return
         if not checked:
             self._monitor_timer.stop()
             self._traj_view_m.set_status("Мониторинг траектории (3D)\nАнимация отключена оператором")
