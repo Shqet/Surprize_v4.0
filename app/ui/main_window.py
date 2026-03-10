@@ -208,6 +208,8 @@ class MainWindow(QMainWindow):
         self._stop_session_task: Optional[_StopSessionFlowTask] = None
         self._session_runtime_last: dict[str, Any] = {}
         self._runtime_prev_active: bool = False
+        self._last_finished_session_notified: Optional[str] = None
+        self._session_out_dir_hints: dict[str, str] = {}
         self._settings_store = QSettings("Surprize", "SurprizeShell")
         self._settings = self._load_ui_settings()
         self._anim_without_test_enabled: bool = bool(
@@ -1422,6 +1424,7 @@ class MainWindow(QMainWindow):
         self._on_runtime_ui_tick()
 
     def _on_runtime_ui_tick(self) -> None:
+        prev_state = self._session_runtime_last if isinstance(self._session_runtime_last, dict) else {}
         try:
             state = self._orch.get_test_session_runtime_state()
         except Exception:
@@ -1443,6 +1446,11 @@ class MainWindow(QMainWindow):
                 # Operator disabled animation outside active test.
                 self._monitor_timer.stop()
                 self._log_info("UI_MONITOR_ANIM_STOP", "reason=test_finished")
+            finished_session_id = str(prev_state.get("session_id") or "").strip()
+            if finished_session_id and finished_session_id != str(self._last_finished_session_notified or ""):
+                out_dir = str(self._session_out_dir_hints.get(finished_session_id, "")).strip()
+                self._show_test_finished_notification(finished_session_id, out_dir)
+                self._last_finished_session_notified = finished_session_id
         self._runtime_prev_active = active
         self._render_runtime_state(self._session_runtime_last)
         self._refresh_monitor_flow_controls(self._session_runtime_last)
@@ -1849,6 +1857,9 @@ class MainWindow(QMainWindow):
         if ready:
             session = flow.get("session") if isinstance(flow, dict) else {}
             session_id = str(session.get("session_id", "unknown")) if isinstance(session, dict) else "unknown"
+            out_dir = str(session.get("out_dir", "")).strip() if isinstance(session, dict) else ""
+            if session_id and out_dir:
+                self._session_out_dir_hints[session_id] = out_dir
             self._log_info("UI_MONITOR_START_TEST", f"status=ok session_id={session_id}")
             self.statusBar().showMessage(f"Испытание началось ({session_id})", 3000)
             self._start_monitor_trajectory_animation(force=True)
@@ -1870,20 +1881,11 @@ class MainWindow(QMainWindow):
         data = payload if isinstance(payload, dict) else {}
         session_id = str(data.get("session_id", "unknown")) if isinstance(data, dict) else "unknown"
         out_dir = str(data.get("out_dir", "")).strip() if isinstance(data, dict) else ""
+        if session_id and out_dir:
+            self._session_out_dir_hints[session_id] = out_dir
         self._log_info("UI_MONITOR_STOP_TEST", f"status=ok session_id={session_id}")
-        if out_dir:
-            self.statusBar().showMessage(f"Испытание завершено ({session_id}). Результаты сохранены.", 5000)
-            QMessageBox.information(
-                self,
-                "Мониторинг",
-                (
-                    f"Испытание успешно завершено ({session_id}).\n"
-                    "Результаты сохранены.\n\n"
-                    f"Папка: {out_dir}"
-                ),
-            )
-        else:
-            self.statusBar().showMessage(f"Испытание завершено ({session_id}). Результаты сохранены.", 5000)
+        self._show_test_finished_notification(session_id, out_dir)
+        self._last_finished_session_notified = session_id
         self._on_runtime_ui_tick()
 
     def _on_monitor_stop_flow_fail(self, error: str) -> None:
@@ -1891,6 +1893,21 @@ class MainWindow(QMainWindow):
         self._log_error("UI_MONITOR_STOP_TEST_FAILED", f"err={error}")
         QMessageBox.critical(self, "Мониторинг", f"Не удалось остановить испытание: {error}")
         self._on_runtime_ui_tick()
+
+    def _show_test_finished_notification(self, session_id: str, out_dir: str) -> None:
+        sid = str(session_id or "unknown")
+        out = str(out_dir or "").strip()
+        self.statusBar().showMessage(f"Испытание завершено ({sid}). Результаты сохранены.", 5000)
+        if out:
+            QMessageBox.information(
+                self,
+                "Мониторинг",
+                (
+                    f"Испытание успешно завершено ({sid}).\n"
+                    "Результаты сохранены.\n\n"
+                    f"Папка: {out}"
+                ),
+            )
 
     @staticmethod
     def _build_camera_warning_text(warnings: list[object]) -> str:
