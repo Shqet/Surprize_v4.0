@@ -1,12 +1,17 @@
 ﻿from __future__ import annotations
 
 import copy
+import csv
+import json
 import math
 import os
 import time
+from bisect import bisect_left
+from pathlib import Path
 from typing import Any, Optional, cast
 
-from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, pyqtSignal
+from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -23,6 +28,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -39,6 +45,11 @@ from app.ui.trajectory.generate_controller import GenerateController
 from app.ui.trajectory.trajectory_3d_view import Trajectory3DView
 from app.ui.widgets.config_json_editor import ConfigJsonEditor
 from app.ui.widgets.rtsp_preview import RtspPreviewWidget
+
+try:
+    import cv2  # type: ignore
+except Exception:  # pragma: no cover
+    cv2 = None  # type: ignore
 
 _DEFAULT_CONFIG_JSON: dict[str, Any] = {
     "simulation": {"dt": 0.002, "t_max": 120.0, "max_steps": 2000000},
@@ -228,6 +239,17 @@ class MainWindow(QMainWindow):
         self._monitor_duration_sec: float = 0.0
         self._monitor_started_at: Optional[float] = None
         self._monitor_load_seq: int = 0
+        self._replay_session_dir: Optional[Path] = None
+        self._replay_timeline: list[tuple[float, float, float, float, float]] = []
+        self._replay_visible_frames: list[tuple[float, int]] = []
+        self._replay_thermal_frames: list[tuple[float, int]] = []
+        self._replay_duration_sec: float = 0.0
+        self._replay_t_rel_sec: float = 0.0
+        self._replay_playing: bool = False
+        self._replay_play_started_mono: float = 0.0
+        self._replay_play_started_t_rel: float = 0.0
+        self._replay_cap_visible: Any = None
+        self._replay_cap_thermal: Any = None
         self._m_speed_lbl: Optional[QLabel] = None
         self._m_coords_lbl: Optional[QLabel] = None
         self._m_geo_lbl: Optional[QLabel] = None
@@ -288,6 +310,16 @@ class MainWindow(QMainWindow):
         self._lbl_session_video_m: Optional[QLabel] = None
         self._lbl_session_gps_m: Optional[QLabel] = None
         self._lbl_session_degraded_m: Optional[QLabel] = None
+        self._btn_replay_open_m: Optional[QPushButton] = None
+        self._btn_replay_play_m: Optional[QPushButton] = None
+        self._replay_slider_m: Optional[QSlider] = None
+        self._lbl_replay_session_m: Optional[QLabel] = None
+        self._lbl_replay_trel_m: Optional[QLabel] = None
+        self._lbl_replay_visible_info_m: Optional[QLabel] = None
+        self._lbl_replay_thermal_info_m: Optional[QLabel] = None
+        self._lbl_replay_traj_info_m: Optional[QLabel] = None
+        self._lbl_replay_visible_img_m: Optional[QLabel] = None
+        self._lbl_replay_thermal_img_m: Optional[QLabel] = None
         self._init_functional_buttons()
 
         self._traj_loader = TrajectoryCsvLoader()
@@ -318,6 +350,10 @@ class MainWindow(QMainWindow):
         self._runtime_ui_timer.timeout.connect(self._on_runtime_ui_tick)
         self._runtime_ui_timer.start()
         self._on_runtime_ui_tick()
+        self._replay_timer = QTimer(self)
+        self._replay_timer.setInterval(125)
+        self._replay_timer.timeout.connect(self._on_replay_timer_tick)
+        self._replay_timer.start()
 
     # ---------------- config source ----------------
 
@@ -442,7 +478,49 @@ class MainWindow(QMainWindow):
         form.addRow("Пройдено, м", self._m_distance_lbl)
 
         gl.addWidget(box, 0, 0)
-        gl.setRowStretch(1, 1)
+        replay_box = QGroupBox("Replay sync (offline)", self)
+        replay_form = QFormLayout(replay_box)
+
+        self._btn_replay_open_m = QPushButton("Открыть сессию", replay_box)
+        self._btn_replay_play_m = QPushButton("Play", replay_box)
+        self._btn_replay_play_m.setCheckable(True)
+        self._btn_replay_play_m.setEnabled(False)
+        hdr_row = QHBoxLayout()
+        hdr_row.setContentsMargins(0, 0, 0, 0)
+        hdr_row.addWidget(self._btn_replay_open_m)
+        hdr_row.addWidget(self._btn_replay_play_m)
+
+        self._lbl_replay_session_m = QLabel("Сессия: -", replay_box)
+        self._lbl_replay_trel_m = QLabel("t_rel: 0.000 c", replay_box)
+        self._replay_slider_m = QSlider(Qt.Orientation.Horizontal, replay_box)
+        self._replay_slider_m.setRange(0, 0)
+        self._replay_slider_m.setEnabled(False)
+
+        self._lbl_replay_visible_info_m = QLabel("Visible: -", replay_box)
+        self._lbl_replay_thermal_info_m = QLabel("Thermal: -", replay_box)
+        self._lbl_replay_traj_info_m = QLabel("Trajectory: -", replay_box)
+        self._lbl_replay_visible_img_m = QLabel("no frame", replay_box)
+        self._lbl_replay_thermal_img_m = QLabel("no frame", replay_box)
+        for img_lbl in (self._lbl_replay_visible_img_m, self._lbl_replay_thermal_img_m):
+            img_lbl.setMinimumSize(240, 135)
+            img_lbl.setStyleSheet("border:1px solid #666; background:#111; color:#ddd;")
+            img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        img_row = QHBoxLayout()
+        img_row.setContentsMargins(0, 0, 0, 0)
+        img_row.addWidget(self._lbl_replay_visible_img_m)
+        img_row.addWidget(self._lbl_replay_thermal_img_m)
+
+        replay_form.addRow(hdr_row)
+        replay_form.addRow(self._lbl_replay_session_m)
+        replay_form.addRow(self._lbl_replay_trel_m)
+        replay_form.addRow(self._replay_slider_m)
+        replay_form.addRow(self._lbl_replay_visible_info_m)
+        replay_form.addRow(self._lbl_replay_thermal_info_m)
+        replay_form.addRow(self._lbl_replay_traj_info_m)
+        replay_form.addRow(img_row)
+
+        gl.addWidget(replay_box, 1, 0)
+        gl.setRowStretch(2, 1)
         gl.setColumnStretch(0, 1)
 
     def _init_rtsp_previews(self) -> None:
@@ -745,6 +823,12 @@ class MainWindow(QMainWindow):
             self._btn_start_test_m.clicked.connect(self._on_monitor_start_test_clicked)
         if self._btn_stop_test_m is not None:
             self._btn_stop_test_m.clicked.connect(self._on_monitor_stop_test_clicked)
+        if self._btn_replay_open_m is not None:
+            self._btn_replay_open_m.clicked.connect(self._on_replay_open_session_clicked)
+        if self._btn_replay_play_m is not None:
+            self._btn_replay_play_m.clicked.connect(self._on_replay_play_toggled)
+        if self._replay_slider_m is not None:
+            self._replay_slider_m.valueChanged.connect(self._on_replay_slider_changed)
 
     def _connect_bridge(self) -> None:
         try:
@@ -1221,6 +1305,262 @@ class MainWindow(QMainWindow):
         ds = int((v - int(v)) * 10.0)
         return f"{mm:02d}:{ss:02d}.{ds:d}"
 
+    def _on_replay_open_session_clicked(self) -> None:
+        base_dir = str((Path("outputs") / "sessions").resolve())
+        selected = QFileDialog.getExistingDirectory(self, "Открыть offline-сессию", base_dir)
+        if not selected:
+            return
+        try:
+            self._load_replay_session(Path(selected))
+            self.statusBar().showMessage(f"Replay: загружена сессия {Path(selected).name}", 3000)
+        except Exception as ex:
+            self._log_error("UI_REPLAY_LOAD_FAILED", f"err={type(ex).__name__} detail={ex}")
+            QMessageBox.critical(self, "Replay", f"Не удалось загрузить сессию: {type(ex).__name__}\n{ex}")
+
+    def _load_replay_session(self, session_dir: Path) -> None:
+        manifest_path = session_dir / "session_manifest.json"
+        if not manifest_path.exists():
+            raise FileNotFoundError(f"manifest_missing={manifest_path.as_posix()}")
+        try:
+            manifest = cast(dict[str, Any], json.loads(manifest_path.read_text(encoding="utf-8")))
+        except Exception:
+            manifest = {}
+        status = str(manifest.get("status", "")) if isinstance(manifest, dict) else ""
+        if status and status != "STOPPED":
+            raise RuntimeError(f"session_not_finished status={status}")
+
+        timeline = self._read_replay_timeline(session_dir / "trajectory_timeline.csv")
+        if not timeline:
+            raise RuntimeError("trajectory_timeline_empty")
+
+        self._release_replay_caps()
+        self._replay_session_dir = session_dir
+        self._replay_timeline = timeline
+        self._replay_visible_frames = self._read_replay_frames(session_dir / "video" / "visible_frames.csv")
+        self._replay_thermal_frames = self._read_replay_frames(session_dir / "video" / "thermal_frames.csv")
+        self._replay_duration_sec = max(0.0, float(timeline[-1][0] - timeline[0][0]))
+        self._replay_t_rel_sec = float(timeline[0][0])
+        self._replay_playing = False
+        self._replay_play_started_mono = 0.0
+        self._replay_play_started_t_rel = self._replay_t_rel_sec
+
+        if cv2 is not None:
+            v_mp4 = session_dir / "video" / "visible.mp4"
+            t_mp4 = session_dir / "video" / "thermal.mp4"
+            self._replay_cap_visible = cv2.VideoCapture(str(v_mp4)) if v_mp4.exists() else None
+            self._replay_cap_thermal = cv2.VideoCapture(str(t_mp4)) if t_mp4.exists() else None
+
+        if self._replay_slider_m is not None:
+            self._replay_slider_m.setEnabled(True)
+            self._replay_slider_m.setRange(0, max(0, int(self._replay_duration_sec * 1000.0)))
+        if self._btn_replay_play_m is not None:
+            self._btn_replay_play_m.setEnabled(True)
+            self._btn_replay_play_m.setChecked(False)
+            self._btn_replay_play_m.setText("Play")
+        if self._lbl_replay_session_m is not None:
+            self._lbl_replay_session_m.setText(f"Сессия: {session_dir.name}")
+
+        pts = [(x, y, z) for (_t, x, y, z, _s) in timeline]
+        self._monitor_timer.stop()
+        self._traj_view_m.set_points(pts)
+        self._set_replay_t_rel(self._replay_t_rel_sec, from_slider=False)
+
+    def _release_replay_caps(self) -> None:
+        for cap in (self._replay_cap_visible, self._replay_cap_thermal):
+            try:
+                if cap is not None and hasattr(cap, "release"):
+                    cap.release()
+            except Exception:
+                pass
+        self._replay_cap_visible = None
+        self._replay_cap_thermal = None
+
+    def _read_replay_timeline(self, path: Path) -> list[tuple[float, float, float, float, float]]:
+        if not path.exists():
+            raise FileNotFoundError(f"timeline_missing={path.as_posix()}")
+        out: list[tuple[float, float, float, float, float]] = []
+        with path.open("r", encoding="utf-8", newline="") as fh:
+            reader = csv.reader(fh)
+            _hdr = next(reader, None)
+            for row in reader:
+                if not row or len(row) < 5:
+                    continue
+                try:
+                    out.append((float(row[0]), float(row[1]), float(row[2]), float(row[3]), float(row[4])))
+                except Exception:
+                    continue
+        return out
+
+    def _read_replay_frames(self, path: Path) -> list[tuple[float, int]]:
+        if not path.exists():
+            return []
+        out: list[tuple[float, int]] = []
+        with path.open("r", encoding="utf-8", newline="") as fh:
+            reader = csv.reader(fh)
+            _hdr = next(reader, None)
+            for row in reader:
+                if not row or len(row) < 3:
+                    continue
+                try:
+                    out.append((float(row[2]), int(row[0])))
+                except Exception:
+                    continue
+        return out
+
+    def _on_replay_play_toggled(self, checked: bool) -> None:
+        if not self._replay_timeline:
+            if self._btn_replay_play_m is not None:
+                self._btn_replay_play_m.setChecked(False)
+            return
+        self._replay_playing = bool(checked)
+        if self._btn_replay_play_m is not None:
+            self._btn_replay_play_m.setText("Pause" if checked else "Play")
+        if checked:
+            self._replay_play_started_mono = time.monotonic()
+            self._replay_play_started_t_rel = float(self._replay_t_rel_sec)
+
+    def _on_replay_slider_changed(self, value: int) -> None:
+        if not self._replay_timeline:
+            return
+        t0 = float(self._replay_timeline[0][0])
+        t = t0 + max(0.0, float(value) / 1000.0)
+        self._set_replay_t_rel(t, from_slider=True)
+
+    def _on_replay_timer_tick(self) -> None:
+        if not self._replay_playing or not self._replay_timeline:
+            return
+        elapsed = max(0.0, time.monotonic() - self._replay_play_started_mono)
+        t = self._replay_play_started_t_rel + elapsed
+        t_max = float(self._replay_timeline[-1][0])
+        if t >= t_max:
+            t = t_max
+            self._replay_playing = False
+            if self._btn_replay_play_m is not None:
+                self._btn_replay_play_m.setChecked(False)
+                self._btn_replay_play_m.setText("Play")
+        self._set_replay_t_rel(t, from_slider=False)
+
+    def _set_replay_t_rel(self, t_rel: float, *, from_slider: bool) -> None:
+        if not self._replay_timeline:
+            return
+        t_min = float(self._replay_timeline[0][0])
+        t_max = float(self._replay_timeline[-1][0])
+        self._replay_t_rel_sec = min(max(float(t_rel), t_min), t_max)
+        if self._replay_slider_m is not None and not from_slider:
+            self._replay_slider_m.blockSignals(True)
+            self._replay_slider_m.setValue(max(0, int((self._replay_t_rel_sec - t_min) * 1000.0)))
+            self._replay_slider_m.blockSignals(False)
+        self._render_replay_state()
+
+    def _render_replay_state(self) -> None:
+        if not self._replay_timeline:
+            return
+        t = float(self._replay_t_rel_sec)
+        if self._lbl_replay_trel_m is not None:
+            self._lbl_replay_trel_m.setText(f"t_rel: {t:.3f} c")
+
+        idx = self._nearest_timeline_index(t)
+        pt = self._replay_timeline[idx]
+        self._traj_view_m.set_marker_point((pt[1], pt[2], pt[3]))
+        if self._lbl_replay_traj_info_m is not None:
+            self._lbl_replay_traj_info_m.setText(
+                f"Trajectory: idx={idx} t={pt[0]:.3f} x={pt[1]:.1f} y={pt[2]:.1f} z={pt[3]:.1f} v={pt[4]:.2f}"
+            )
+
+        vis = self._nearest_frame(self._replay_visible_frames, t)
+        thr = self._nearest_frame(self._replay_thermal_frames, t)
+        self._render_replay_channel(
+            name="Visible",
+            frame_info=vis,
+            label_info=self._lbl_replay_visible_info_m,
+            label_img=self._lbl_replay_visible_img_m,
+            cap=self._replay_cap_visible,
+        )
+        self._render_replay_channel(
+            name="Thermal",
+            frame_info=thr,
+            label_info=self._lbl_replay_thermal_info_m,
+            label_img=self._lbl_replay_thermal_img_m,
+            cap=self._replay_cap_thermal,
+        )
+
+    def _render_replay_channel(
+        self,
+        *,
+        name: str,
+        frame_info: Optional[tuple[float, int]],
+        label_info: Optional[QLabel],
+        label_img: Optional[QLabel],
+        cap: Any,
+    ) -> None:
+        if frame_info is None:
+            if label_info is not None:
+                label_info.setText(f"{name}: gap/no-frame")
+            if label_img is not None:
+                label_img.setText("no frame")
+                label_img.setPixmap(QPixmap())
+            return
+
+        t_frame, idx = frame_info
+        if label_info is not None:
+            label_info.setText(f"{name}: frame={idx} t={t_frame:.3f}")
+        if label_img is None:
+            return
+        pix = self._read_video_frame_pixmap(cap, idx)
+        if pix is None:
+            label_img.setText("frame n/a")
+            label_img.setPixmap(QPixmap())
+            return
+        label_img.setText("")
+        label_img.setPixmap(
+            pix.scaled(
+                label_img.width(),
+                label_img.height(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+    def _read_video_frame_pixmap(self, cap: Any, frame_idx: int) -> Optional[QPixmap]:
+        if cv2 is None or cap is None:
+            return None
+        try:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(frame_idx) - 1))
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                return None
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb.shape
+            qimg = QImage(rgb.data, int(w), int(h), int(ch * w), QImage.Format.Format_RGB888)
+            return QPixmap.fromImage(qimg.copy())
+        except Exception:
+            return None
+
+    @staticmethod
+    def _nearest_frame(frames: list[tuple[float, int]], t_rel: float) -> Optional[tuple[float, int]]:
+        if not frames:
+            return None
+        values = [x[0] for x in frames]
+        pos = bisect_left(values, float(t_rel))
+        if pos <= 0:
+            return frames[0]
+        if pos >= len(frames):
+            return frames[-1]
+        a = frames[pos - 1]
+        b = frames[pos]
+        return a if abs(a[0] - t_rel) <= abs(b[0] - t_rel) else b
+
+    def _nearest_timeline_index(self, t_rel: float) -> int:
+        if not self._replay_timeline:
+            return 0
+        values = [x[0] for x in self._replay_timeline]
+        pos = bisect_left(values, float(t_rel))
+        if pos <= 0:
+            return 0
+        if pos >= len(values):
+            return len(values) - 1
+        return pos - 1 if abs(values[pos - 1] - t_rel) <= abs(values[pos] - t_rel) else pos
+
     def _on_monitor_check_readiness_clicked(self) -> None:
         if self._readiness_task is not None or self._start_session_task is not None or self._stop_session_task is not None:
             return
@@ -1639,6 +1979,13 @@ class MainWindow(QMainWindow):
         bus = getattr(self._bridge, "_bus", None)
         if bus is not None:
             emit_log(bus, level="ERROR", source="ui", code=code, message=message)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        try:
+            self._release_replay_caps()
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     @staticmethod
     def _format_opt_bool(v: object) -> str:
