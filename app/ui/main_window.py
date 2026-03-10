@@ -677,7 +677,7 @@ class MainWindow(QMainWindow):
         self._opt_reset_defaults_btn = QPushButton("Вернуть к дефолтным", box)
         self._opt_reset_defaults_btn.clicked.connect(self._on_settings_reset_defaults_clicked)
 
-        form.addRow("Авто-стоп после завершения GPS TX, сек", self._opt_auto_stop_spin)
+        form.addRow("Авто-стоп после завершения GPS трансляции, сек", self._opt_auto_stop_spin)
         form.addRow("", self._opt_anim_without_test_chk)
         form.addRow("Дефолтный путь к эфемеридам", nav_row)
         form.addRow("Папка сессий по умолчанию", session_root_row)
@@ -951,7 +951,7 @@ class MainWindow(QMainWindow):
             self._lbl_session_status_m = QLabel("Статус: -", self)
             self._lbl_session_elapsed_m = QLabel("Время: 00:00.0", self)
             self._lbl_session_video_m = QLabel("Видео: -", self)
-            self._lbl_session_gps_m = QLabel("GPS TX: -", self)
+            self._lbl_session_gps_m = QLabel("GPS трансляция: -", self)
             self._lbl_session_degraded_m = QLabel("Режим: -", self)
             self._session_output_root_m_edit = QLineEdit(self)
             self._session_output_root_m_edit.setText(str(self._settings.get("session_output_root", _DEFAULT_SESSION_OUTPUT_ROOT)))
@@ -1172,18 +1172,21 @@ class MainWindow(QMainWindow):
         QThreadPool.globalInstance().start(task)
 
     def _confirm_prepare_test(self) -> bool:
-        answer = QMessageBox.question(
-            self,
-            "Подготовка к тесту",
-            (
-                "Сейчас будет подготовлен GPS-сигнал для испытания.\n"
-                "Операция может занять некоторое время.\n\n"
-                "Продолжить?"
-            ),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Подготовка к тесту")
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setText(
+            "Сейчас будет подготовлен GPS-сигнал для испытания.\n"
+            "Операция может занять некоторое время.\n\n"
+            "Продолжить?"
         )
-        return answer == QMessageBox.StandardButton.Yes
+        yes_btn = msg.addButton(QMessageBox.StandardButton.Yes)
+        no_btn = msg.addButton(QMessageBox.StandardButton.No)
+        yes_btn.setText("Да")
+        no_btn.setText("Нет")
+        msg.setDefaultButton(cast(QPushButton, no_btn))
+        msg.exec()
+        return msg.clickedButton() == yes_btn
 
     def _validate_prepare_inputs(self) -> list[str]:
         errors: list[str] = []
@@ -1323,7 +1326,7 @@ class MainWindow(QMainWindow):
             msg.setText("Результат проверки готовности систем")
             msg.setInformativeText(details_html)
             msg.exec()
-            self.statusBar().showMessage("Readiness: готово", 3000)
+            self.statusBar().showMessage("Проверка готовности: готово", 3000)
             return
 
         self._log_error("UI_MONITOR_READINESS", f"ready=0 blocking={blocking_txt} warnings={warnings_txt}")
@@ -1333,7 +1336,7 @@ class MainWindow(QMainWindow):
         msg.setText("Результат проверки готовности систем")
         msg.setInformativeText(details_html)
         msg.exec()
-        self.statusBar().showMessage("Readiness: не готово", 3000)
+        self.statusBar().showMessage("Проверка готовности: не готово", 3000)
 
     def _on_readiness_done(self, payload: object) -> None:
         self._set_readiness_check_running(False)
@@ -1456,7 +1459,7 @@ class MainWindow(QMainWindow):
         if self._lbl_session_id_m is not None:
             self._lbl_session_id_m.setText(f"Сессия: {session_id}")
         if self._lbl_session_status_m is not None:
-            self._lbl_session_status_m.setText(f"Статус: {status}")
+            self._lbl_session_status_m.setText(f"Статус: {self._session_status_ru(status)}")
             if error:
                 self._lbl_session_status_m.setStyleSheet("color:#c62828;")
             elif status in ("RUNNING", "STARTING", "STOPPING"):
@@ -1474,18 +1477,18 @@ class MainWindow(QMainWindow):
                     nm = str(item.get("channel", "?"))
                     fr = int(item.get("frames_written", 0))
                     d = bool(item.get("degraded", False))
-                    suffix = " degraded" if d else ""
+                    suffix = " (деградация)" if d else ""
                     channel_txt_parts.append(f"{nm}:{fr}{suffix}")
             channels_txt = ", ".join(channel_txt_parts) if channel_txt_parts else "нет данных"
-            self._lbl_session_video_m.setText(f"Видео: {video_state} [{channels_txt}]")
+            self._lbl_session_video_m.setText(f"Видео: {self._runtime_component_state_ru(video_state)} [{channels_txt}]")
         if self._lbl_session_gps_m is not None:
             gps_state = str(gps.get("state", "not_running"))
             pid = gps.get("pid")
             pid_txt = f", pid={pid}" if isinstance(pid, int) else ""
-            self._lbl_session_gps_m.setText(f"GPS TX: {gps_state}{pid_txt}")
+            self._lbl_session_gps_m.setText(f"GPS трансляция: {self._runtime_component_state_ru(gps_state)}{pid_txt}")
         if self._lbl_session_degraded_m is not None:
-            mode_txt = "degraded" if degraded else "normal"
-            err_txt = "ERROR" if error else "ok"
+            mode_txt = "деградация" if degraded else "нормальный"
+            err_txt = "ошибка" if error else "ок"
             self._lbl_session_degraded_m.setText(f"Режим: {mode_txt}, состояние: {err_txt}")
             if error:
                 self._lbl_session_degraded_m.setStyleSheet("color:#c62828;")
@@ -1493,6 +1496,30 @@ class MainWindow(QMainWindow):
                 self._lbl_session_degraded_m.setStyleSheet("color:#f9a825;")
             else:
                 self._lbl_session_degraded_m.setStyleSheet("color:#2e7d32;")
+
+    @staticmethod
+    def _session_status_ru(status: str) -> str:
+        mapping = {
+            "CREATED": "создано",
+            "STARTING": "запуск",
+            "RUNNING": "выполняется",
+            "STOPPING": "остановка",
+            "STOPPED": "остановлено",
+            "ERROR": "ошибка",
+        }
+        return mapping.get(str(status), str(status))
+
+    @staticmethod
+    def _runtime_component_state_ru(state: str) -> str:
+        mapping = {
+            "running": "работает",
+            "not_running": "не запущено",
+            "exited": "завершено",
+            "error": "ошибка",
+            "starting": "запуск",
+            "stopping": "остановка",
+        }
+        return mapping.get(str(state), str(state))
 
     def _refresh_monitor_flow_controls(self, state: dict[str, Any]) -> None:
         status = str(state.get("status") or "STOPPED")
@@ -1842,8 +1869,21 @@ class MainWindow(QMainWindow):
         self._stop_session_task = None
         data = payload if isinstance(payload, dict) else {}
         session_id = str(data.get("session_id", "unknown")) if isinstance(data, dict) else "unknown"
+        out_dir = str(data.get("out_dir", "")).strip() if isinstance(data, dict) else ""
         self._log_info("UI_MONITOR_STOP_TEST", f"status=ok session_id={session_id}")
-        self.statusBar().showMessage(f"Испытание остановлено ({session_id})", 3000)
+        if out_dir:
+            self.statusBar().showMessage(f"Испытание завершено ({session_id}). Результаты сохранены.", 5000)
+            QMessageBox.information(
+                self,
+                "Мониторинг",
+                (
+                    f"Испытание успешно завершено ({session_id}).\n"
+                    "Результаты сохранены.\n\n"
+                    f"Папка: {out_dir}"
+                ),
+            )
+        else:
+            self.statusBar().showMessage(f"Испытание завершено ({session_id}). Результаты сохранены.", 5000)
         self._on_runtime_ui_tick()
 
     def _on_monitor_stop_flow_fail(self, error: str) -> None:
