@@ -278,6 +278,7 @@ class MainWindow(QMainWindow):
         self._init_rtsp_previews()
         self._gps_nav_path_edit: Optional[QLineEdit] = None
         self._btn_gps_nav_browse: Optional[QPushButton] = None
+        self._btn_gps_nav_default: Optional[QPushButton] = None
         self._gps_static_sec_spin: Optional[QDoubleSpinBox] = None
         self._gps_origin_lat_spin: Optional[QDoubleSpinBox] = None
         self._gps_origin_lon_spin: Optional[QDoubleSpinBox] = None
@@ -664,10 +665,13 @@ class MainWindow(QMainWindow):
         self._btn_gps_nav_browse = QPushButton("...", gps_box)
         self._btn_gps_nav_browse.setFixedWidth(34)
         self._btn_gps_nav_browse.clicked.connect(self._on_gps_nav_browse_clicked)
+        self._btn_gps_nav_default = QPushButton("Путь по умолчанию", gps_box)
+        self._btn_gps_nav_default.clicked.connect(self._on_gps_nav_use_default_clicked)
         nav_row = QHBoxLayout()
         nav_row.setContentsMargins(0, 0, 0, 0)
         nav_row.addWidget(self._gps_nav_path_edit)
         nav_row.addWidget(self._btn_gps_nav_browse)
+        nav_row.addWidget(self._btn_gps_nav_default)
 
         self._gps_static_sec_spin = QDoubleSpinBox(gps_box)
         self._gps_static_sec_spin.setRange(0.0, 36000.0)
@@ -1208,6 +1212,20 @@ class MainWindow(QMainWindow):
             self._readiness_progress_m.setVisible(False)
         self._refresh_monitor_flow_controls(self._session_runtime_last)
 
+    def _set_start_test_flow_running(self, running: bool) -> None:
+        if self._readiness_progress_m is None:
+            self._refresh_monitor_flow_controls(self._session_runtime_last)
+            return
+        if running:
+            self._readiness_progress_m.setVisible(True)
+            self._readiness_progress_m.setRange(0, 0)
+            self._readiness_progress_m.setFormat("Предстартовые проверки...")
+        else:
+            self._readiness_progress_m.setRange(0, 100)
+            self._readiness_progress_m.setValue(100)
+            self._readiness_progress_m.setVisible(False)
+        self._refresh_monitor_flow_controls(self._session_runtime_last)
+
     def _on_readiness_progress(self, value: int, message: str) -> None:
         if self._readiness_progress_m is not None:
             self._readiness_progress_m.setRange(0, 100)
@@ -1344,6 +1362,11 @@ class MainWindow(QMainWindow):
         active = bool(self._session_runtime_last.get("active", False))
         if active and (not self._runtime_prev_active):
             self._start_monitor_trajectory_animation(force=True)
+        if (not active) and self._runtime_prev_active:
+            if bool(self._anim_without_test_enabled):
+                # Operator requested to stop animation after test end.
+                self._monitor_timer.stop()
+                self._log_info("UI_MONITOR_ANIM_STOP", "reason=test_finished")
         self._runtime_prev_active = active
         self._render_runtime_state(self._session_runtime_last)
         self._refresh_monitor_flow_controls(self._session_runtime_last)
@@ -1696,7 +1719,7 @@ class MainWindow(QMainWindow):
             return
         task = _StartSessionFlowTask(orchestrator=self._orch)
         self._start_session_task = task
-        self._refresh_monitor_flow_controls(self._session_runtime_last)
+        self._set_start_test_flow_running(True)
         task.signals.done.connect(self._on_monitor_start_flow_done)
         task.signals.fail.connect(self._on_monitor_start_flow_fail)
         QThreadPool.globalInstance().start(task)
@@ -1713,6 +1736,7 @@ class MainWindow(QMainWindow):
 
     def _on_monitor_start_flow_done(self, payload: object) -> None:
         self._start_session_task = None
+        self._set_start_test_flow_running(False)
         flow = payload if isinstance(payload, dict) else {}
         ready = bool(flow.get("started")) if isinstance(flow, dict) else False
         if ready:
@@ -1729,6 +1753,7 @@ class MainWindow(QMainWindow):
 
     def _on_monitor_start_flow_fail(self, error: str) -> None:
         self._start_session_task = None
+        self._set_start_test_flow_running(False)
         self._log_error("UI_MONITOR_START_TEST_FAILED", f"err={error}")
         QMessageBox.critical(self, "Мониторинг", f"Не удалось начать испытание: {error}")
         self._on_runtime_ui_tick()
@@ -2092,6 +2117,13 @@ class MainWindow(QMainWindow):
         )
         if file_path and self._gps_nav_path_edit is not None:
             self._gps_nav_path_edit.setText(file_path)
+
+    def _on_gps_nav_use_default_clicked(self) -> None:
+        nav_default = str(self._settings.get("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH)).strip()
+        if not nav_default:
+            nav_default = _DEFAULT_GPS_NAV_PATH
+        if self._gps_nav_path_edit is not None:
+            self._gps_nav_path_edit.setText(nav_default)
 
     def get_sdr_options(self) -> dict[str, Any]:
         nav_default = str(self._settings.get("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH))
