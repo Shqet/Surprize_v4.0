@@ -119,9 +119,9 @@ class Ui_MainWindow(object):
         self.l_graphs = QtWidgets.QGridLayout()
         self.l_graphs.setObjectName("l_graphs")
         self.gridLayout_4.addLayout(self.l_graphs, 0, 2, 2, 1)
-        self.gridLayout_5 = QtWidgets.QGridLayout()
-        self.gridLayout_5.setObjectName("gridLayout_5")
-        self.gridLayout_4.addLayout(self.gridLayout_5, 0, 1, 1, 1)
+        self.l_3DGraph = QtWidgets.QGridLayout()
+        self.l_3DGraph.setObjectName("l_3DGraph")
+        self.gridLayout_4.addLayout(self.l_3DGraph, 0, 1, 1, 1)
         self.tW_main.addTab(self.replayTab, "")
         self.gridLayout.addWidget(self.tW_main, 0, 0, 2, 1)
         MainWindow.setCentralWidget(self.centralwidget)
@@ -134,7 +134,7 @@ class Ui_MainWindow(object):
         MainWindow.setStatusBar(self.statusbar)
 
         self.retranslateUi(MainWindow)
-        self.tW_main.setCurrentIndex(1)
+        self.tW_main.setCurrentIndex(0)
         self.tw_research.setCurrentIndex(0)
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
 

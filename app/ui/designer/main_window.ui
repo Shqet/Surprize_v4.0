@@ -24,7 +24,7 @@
        <enum>QTabWidget::Triangular</enum>
       </property>
       <property name="currentIndex">
-       <number>1</number>
+       <number>0</number>
       </property>
       <widget class="QWidget" name="trialTab">
        <attribute name="title">
@@ -264,7 +264,7 @@
          <layout class="QGridLayout" name="l_graphs"/>
         </item>
         <item row="0" column="1">
-         <layout class="QGridLayout" name="gridLayout_5"/>
+         <layout class="QGridLayout" name="l_3DGraph"/>
         </item>
        </layout>
       </widget>
