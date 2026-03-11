@@ -155,7 +155,11 @@ class GraphSyncAdapter:
 def _theme_stylesheet(theme: str) -> str:
     if str(theme).strip().lower() != "dark":
         return ""
-    return """
+    icons_dir = (Path(__file__).resolve().parent / "assets" / "icons").as_posix()
+    branch_closed = f"{icons_dir}/tree_branch_closed_light.svg"
+    branch_open = f"{icons_dir}/tree_branch_open_light.svg"
+    return (
+        """
 QWidget {
     background-color: #1f2228;
     color: #e8eaed;
@@ -200,7 +204,20 @@ QHeaderView::section {
     background-color: #2a2f36;
     color: #e8eaed;
 }
+QTreeView::branch:closed:has-children,
+QTreeView::branch:closed:has-children:has-siblings {
+    border-image: none;
+    image: url("__BRANCH_CLOSED__");
+}
+QTreeView::branch:open:has-children,
+QTreeView::branch:open:has-children:has-siblings {
+    border-image: none;
+    image: url("__BRANCH_OPEN__");
+}
 """
+        .replace("__BRANCH_CLOSED__", branch_closed)
+        .replace("__BRANCH_OPEN__", branch_open)
+    )
 
 
 class _PrepareTestSignals(QObject):
