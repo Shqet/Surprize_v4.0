@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import multiprocessing
 
 from pathlib import Path
 
@@ -173,4 +174,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Required for frozen builds that spawn worker processes.
+    multiprocessing.freeze_support()
+    if "--video-reader-worker" in sys.argv:
+        idx = sys.argv.index("--video-reader-worker")
+        worker_argv = [sys.argv[0], *sys.argv[idx + 1 :]]
+        sys.argv = worker_argv
+        from app.vendor.video_channel.client.reader_process import main as _reader_process_main
+
+        raise SystemExit(_reader_process_main())
     raise SystemExit(main())

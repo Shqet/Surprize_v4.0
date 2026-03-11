@@ -64,12 +64,7 @@ class ProcessStreamWorker:
         self._reader_thread = None
 
     def _spawn(self, reason: str) -> None:
-        # ВАЖНО: sys.executable гарантирует venv python (если parent в venv)
-        cmd = [
-            sys.executable,
-            "-u",
-            "-m",
-            "app.vendor.video_channel.client.reader_process",
+        worker_args = [
             "--stream",
             self.stream,
             "--url",
@@ -81,7 +76,18 @@ class ProcessStreamWorker:
             "--preview-height",
             str(self._preview_height),
         ]
-
+        # In PyInstaller frozen mode sys.executable points to app EXE.
+        # Use dedicated worker flag to avoid recursive GUI startup.
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, "--video-reader-worker", *worker_args]
+        else:
+            cmd = [
+                sys.executable,
+                "-u",
+                "-m",
+                "app.vendor.video_channel.client.reader_process",
+                *worker_args,
+            ]
         cwd = os.getcwd()
         env = os.environ.copy()
         env["PYTHONPATH"] = cwd + os.pathsep + env.get("PYTHONPATH", "")
