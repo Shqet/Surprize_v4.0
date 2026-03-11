@@ -24,7 +24,7 @@
        <enum>QTabWidget::Triangular</enum>
       </property>
       <property name="currentIndex">
-       <number>0</number>
+       <number>1</number>
       </property>
       <widget class="QWidget" name="trialTab">
        <attribute name="title">
@@ -255,7 +255,13 @@
        </attribute>
        <layout class="QGridLayout" name="gridLayout_4">
         <item row="0" column="0">
-         <layout class="QGridLayout" name="l_replay"/>
+         <layout class="QGridLayout" name="l_video"/>
+        </item>
+        <item row="0" column="1">
+         <layout class="QGridLayout" name="l_graphs"/>
+        </item>
+        <item row="0" column="2">
+         <layout class="QGridLayout" name="l_value_manage"/>
         </item>
        </layout>
       </widget>
