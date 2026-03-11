@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import multiprocessing
+import runpy
 
 from pathlib import Path
 
@@ -198,6 +199,18 @@ def main() -> int:
 if __name__ == "__main__":
     # Required for frozen builds that spawn worker processes.
     multiprocessing.freeze_support()
+    if "--ballistics-worker" in sys.argv:
+        idx = sys.argv.index("--ballistics-worker")
+        if idx + 1 >= len(sys.argv):
+            raise SystemExit(2)
+        script = str(Path(sys.argv[idx + 1]).resolve())
+        script_dir = str(Path(script).parent)
+        if script_dir and script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+        script_argv = [script, *sys.argv[idx + 2 :]]
+        sys.argv = script_argv
+        runpy.run_path(script, run_name="__main__")
+        raise SystemExit(0)
     if "--video-reader-worker" in sys.argv:
         idx = sys.argv.index("--video-reader-worker")
         worker_argv = [sys.argv[0], *sys.argv[idx + 1 :]]

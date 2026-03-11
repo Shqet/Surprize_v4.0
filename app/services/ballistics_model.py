@@ -17,6 +17,16 @@ from app.services.base import ServiceStatus
 from app.services.stop_utils import terminate_process
 
 
+def _frozen_runtime_root() -> Optional[Path]:
+    base = getattr(sys, "_MEIPASS", None)
+    if not base:
+        return None
+    try:
+        return Path(str(base)).resolve()
+    except Exception:
+        return None
+
+
 @dataclass(frozen=True)
 class _RunConfig:
     model_root: Path
@@ -185,6 +195,13 @@ class BallisticsModelSubprocessService:
         if not isinstance(cfg, dict):
             raise ValueError("missing=config_json")
 
+        runtime_root = _frozen_runtime_root()
+        if runtime_root is not None:
+            if not model_root.is_absolute():
+                bundled_model_root = runtime_root / model_root
+                if bundled_model_root.exists():
+                    model_root = bundled_model_root
+
         return _RunConfig(
             model_root=model_root,
             python_exe=python_exe,
@@ -347,7 +364,14 @@ class BallisticsModelSubprocessService:
         cfg_arg = str(config_path.resolve())
         out_arg = str(out_dir.resolve())
 
-        cmd = [python_exe, entry, "--config", cfg_arg, "--out", out_arg]
+        run_with_embedded_worker = (
+            getattr(sys, "frozen", False)
+            and Path(python_exe).resolve() == Path(sys.executable).resolve()
+        )
+        if run_with_embedded_worker:
+            cmd = [python_exe, "--ballistics-worker", entry, "--config", cfg_arg, "--out", out_arg]
+        else:
+            cmd = [python_exe, entry, "--config", cfg_arg, "--out", out_arg]
 
         emit_log(
             self._bus,
@@ -521,16 +545,33 @@ class BallisticsModelSubprocessService:
 
         # visualization.py ожидает пути относительно --out, но умеет и явные имена файлов;
         # у нас удобнее дать базовые имена, т.к. --out уже run_dir.
-        cmd = [
-            python_exe,
-            entry,
-            "--out",
-            out_arg,
-            "--trajectory",
-            "trajectory.csv",
-            "--diagnostics",
-            "diagnostics.csv",
-        ]
+        run_with_embedded_worker = (
+            getattr(sys, "frozen", False)
+            and Path(python_exe).resolve() == Path(sys.executable).resolve()
+        )
+        if run_with_embedded_worker:
+            cmd = [
+                python_exe,
+                "--ballistics-worker",
+                entry,
+                "--out",
+                out_arg,
+                "--trajectory",
+                "trajectory.csv",
+                "--diagnostics",
+                "diagnostics.csv",
+            ]
+        else:
+            cmd = [
+                python_exe,
+                entry,
+                "--out",
+                out_arg,
+                "--trajectory",
+                "trajectory.csv",
+                "--diagnostics",
+                "diagnostics.csv",
+            ]
 
         emit_log(
             self._bus,
