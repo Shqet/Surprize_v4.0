@@ -3,8 +3,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PyQt6.QtGui import QIcon
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+from PyQt6.QtWidgets import QApplication, QSplashScreen
 
 from app.core.event_bus import EventBus
 from app.core.logging_setup import emit_log, setup_logging
@@ -31,6 +32,42 @@ def _set_windows_appusermodel_id() -> None:
         return
 
 
+def _create_startup_splash(app_icon: QIcon) -> QSplashScreen:
+    pix = QPixmap(560, 300)
+    pix.fill(QColor("#111827"))
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#1f2937"))
+    painter.drawRoundedRect(18, 18, 524, 264, 18, 18)
+
+    logo = app_icon.pixmap(96, 96) if not app_icon.isNull() else QPixmap()
+    if not logo.isNull():
+        painter.drawPixmap((pix.width() - 96) // 2, 66, logo)
+
+    painter.setPen(QColor("#e5e7eb"))
+    title_font = QFont()
+    title_font.setPointSize(15)
+    title_font.setBold(True)
+    painter.setFont(title_font)
+    painter.drawText(pix.rect().adjusted(0, 172, 0, 0), Qt.AlignmentFlag.AlignHCenter, "Surprize")
+
+    sub_font = QFont()
+    sub_font.setPointSize(10)
+    painter.setFont(sub_font)
+    painter.setPen(QColor("#9ca3af"))
+    painter.drawText(
+        pix.rect().adjusted(0, 202, 0, 0),
+        Qt.AlignmentFlag.AlignHCenter,
+        "Подготовка интерфейса...",
+    )
+    painter.end()
+
+    splash = QSplashScreen(pix)
+    splash.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    return splash
+
+
 def main() -> int:
     setup_logging("./data/app.log")
     _set_windows_appusermodel_id()
@@ -54,22 +91,30 @@ def main() -> int:
     # UI
     app = QApplication(sys.argv)
     icon_path = Path(__file__).resolve().parent / "ui" / "assets" / "icons" / "main_icon.svg"
-    if icon_path.exists():
-        app.setWindowIcon(QIcon(str(icon_path)))
+    app_icon = QIcon(str(icon_path)) if icon_path.exists() else QIcon()
+    if not app_icon.isNull():
+        app.setWindowIcon(app_icon)
+    splash = _create_startup_splash(app_icon)
+    splash.show()
+    app.processEvents()
     bridge = UIBridge(bus)
     win = MainWindow(orch, bridge)
-    if icon_path.exists():
-        win.setWindowIcon(QIcon(str(icon_path)))
-    win.show()
+    if not app_icon.isNull():
+        win.setWindowIcon(app_icon)
 
-    emit_log(bus, "INFO", "system", "SYSTEM_START", "v=0")
+    def _show_main_window() -> None:
+        win.show()
+        splash.finish(win)
+        emit_log(bus, "INFO", "system", "SYSTEM_START", "v=0")
 
-    # ---- v4: auto-start daemon services ----
-    try:
-        orch.start_daemons("default")
-        emit_log(bus, "INFO", "system", "SYSTEM_DAEMONS_STARTED", "ok=1")
-    except Exception as ex:
-        emit_log(bus, "ERROR", "system", "SYSTEM_DAEMONS_START_FAIL", f"error={type(ex).__name__}")
+        # ---- v4: auto-start daemon services ----
+        try:
+            orch.start_daemons("default")
+            emit_log(bus, "INFO", "system", "SYSTEM_DAEMONS_STARTED", "ok=1")
+        except Exception as ex:
+            emit_log(bus, "ERROR", "system", "SYSTEM_DAEMONS_START_FAIL", f"error={type(ex).__name__}")
+
+    QTimer.singleShot(3000, _show_main_window)
 
     def _on_quit() -> None:
         """
