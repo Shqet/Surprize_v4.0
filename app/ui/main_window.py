@@ -8,6 +8,7 @@ import os
 import subprocess
 import time
 from bisect import bisect_left
+from enum import Enum
 from pathlib import Path
 from typing import Any, Optional, cast
 
@@ -76,6 +77,15 @@ _DEFAULT_GPS_ORIGIN_H_M = 156.0
 _DEFAULT_AUTO_STOP_AFTER_GPS_SEC = 10.0
 _DEFAULT_ANIM_WITHOUT_TEST = True
 _DEFAULT_SESSION_OUTPUT_ROOT = "outputs/sessions"
+
+
+class ReplayState(str, Enum):
+    IDLE = "IDLE"
+    LOADED = "LOADED"
+    PLAYING = "PLAYING"
+    PAUSED = "PAUSED"
+    EOF = "EOF"
+    ERROR = "ERROR"
 
 
 class _PrepareTestSignals(QObject):
@@ -270,10 +280,11 @@ class MainWindow(QMainWindow):
         self._replay_visible_frames: list[tuple[float, int]] = []
         self._replay_thermal_frames: list[tuple[float, int]] = []
         self._replay_duration_sec: float = 0.0
-        self._replay_t_rel_sec: float = 0.0
-        self._replay_playing: bool = False
+        self._replay_t_sec: float = 0.0
+        self._replay_state: ReplayState = ReplayState.IDLE
+        self._replay_rate: float = 1.0
         self._replay_play_started_mono: float = 0.0
-        self._replay_play_started_t_rel: float = 0.0
+        self._replay_play_started_t_sec: float = 0.0
         self._replay_cap_visible: Any = None
         self._replay_cap_thermal: Any = None
         self._m_speed_lbl: Optional[QLabel] = None
@@ -1674,11 +1685,71 @@ class MainWindow(QMainWindow):
         if not selected:
             return
         try:
-            self._load_replay_session(Path(selected))
+            self.load_session(Path(selected))
             self.statusBar().showMessage(f"Просмотр: загружена сессия {Path(selected).name}", 3000)
         except Exception as ex:
             self._log_error("UI_REPLAY_LOAD_FAILED", f"err={type(ex).__name__} detail={ex}")
             QMessageBox.critical(self, "Просмотр", f"Не удалось загрузить сессию: {type(ex).__name__}\n{ex}")
+
+    def load_session(self, session_dir: Path | str) -> None:
+        try:
+            self._load_replay_session(Path(session_dir))
+        except Exception:
+            self._set_replay_state(ReplayState.ERROR)
+            raise
+
+    def play(self) -> None:
+        if not self._replay_timeline:
+            self._set_replay_state(ReplayState.ERROR)
+            return
+        t_max = float(self._replay_timeline[-1][0])
+        if self._replay_t_sec >= t_max:
+            self.seek(float(self._replay_timeline[0][0]))
+        self._replay_play_started_mono = time.monotonic()
+        self._replay_play_started_t_sec = float(self._replay_t_sec)
+        self._set_replay_state(ReplayState.PLAYING)
+
+    def pause(self) -> None:
+        if self._replay_state != ReplayState.PLAYING:
+            return
+        self._set_replay_state(ReplayState.PAUSED)
+
+    def seek(self, t: float) -> None:
+        self._apply_replay_t_sec(float(t), from_slider=False)
+        if self._replay_state == ReplayState.PLAYING:
+            self._replay_play_started_mono = time.monotonic()
+            self._replay_play_started_t_sec = float(self._replay_t_sec)
+
+    def step(self, dt: float) -> None:
+        self.pause()
+        self.seek(float(self._replay_t_sec) + float(dt))
+
+    def set_rate(self, x: float) -> None:
+        r = max(0.1, min(8.0, float(x)))
+        if abs(r - self._replay_rate) < 1e-9:
+            return
+        self._replay_rate = r
+        if self._replay_state == ReplayState.PLAYING:
+            self._replay_play_started_mono = time.monotonic()
+            self._replay_play_started_t_sec = float(self._replay_t_sec)
+
+    def _set_replay_state(self, new_state: ReplayState) -> None:
+        allowed: dict[ReplayState, set[ReplayState]] = {
+            ReplayState.IDLE: {ReplayState.LOADED, ReplayState.ERROR},
+            ReplayState.LOADED: {ReplayState.PLAYING, ReplayState.PAUSED, ReplayState.ERROR, ReplayState.IDLE},
+            ReplayState.PLAYING: {ReplayState.PAUSED, ReplayState.EOF, ReplayState.ERROR, ReplayState.LOADED},
+            ReplayState.PAUSED: {ReplayState.PLAYING, ReplayState.EOF, ReplayState.ERROR, ReplayState.LOADED},
+            ReplayState.EOF: {ReplayState.PLAYING, ReplayState.PAUSED, ReplayState.LOADED, ReplayState.ERROR},
+            ReplayState.ERROR: {ReplayState.IDLE, ReplayState.LOADED},
+        }
+        cur = self._replay_state
+        if new_state == cur:
+            return
+        if new_state not in allowed.get(cur, set()):
+            self._log_error("UI_REPLAY_STATE_INVALID", f"from={cur.value} to={new_state.value}")
+            self._replay_state = ReplayState.ERROR
+        else:
+            self._replay_state = new_state
 
     def _load_replay_session(self, session_dir: Path) -> None:
         manifest_path = session_dir / "session_manifest.json"
@@ -1702,10 +1773,10 @@ class MainWindow(QMainWindow):
         self._replay_visible_frames = self._read_replay_frames(session_dir / "video" / "visible_frames.csv")
         self._replay_thermal_frames = self._read_replay_frames(session_dir / "video" / "thermal_frames.csv")
         self._replay_duration_sec = max(0.0, float(timeline[-1][0] - timeline[0][0]))
-        self._replay_t_rel_sec = float(timeline[0][0])
-        self._replay_playing = False
+        self._replay_t_sec = float(timeline[0][0])
         self._replay_play_started_mono = 0.0
-        self._replay_play_started_t_rel = self._replay_t_rel_sec
+        self._replay_play_started_t_sec = self._replay_t_sec
+        self._replay_rate = 1.0
 
         if cv2 is not None:
             v_mp4 = session_dir / "video" / "visible.mp4"
@@ -1725,7 +1796,8 @@ class MainWindow(QMainWindow):
 
         pts = [(x, y, z) for (_t, x, y, z, _s) in timeline]
         self._traj_view_r.set_points(pts)
-        self._set_replay_t_rel(self._replay_t_rel_sec, from_slider=False)
+        self._set_replay_state(ReplayState.LOADED)
+        self._apply_replay_t_sec(self._replay_t_sec, from_slider=False)
 
     def _release_replay_caps(self) -> None:
         for cap in (self._replay_cap_visible, self._replay_cap_thermal):
@@ -1774,50 +1846,56 @@ class MainWindow(QMainWindow):
             if self._btn_replay_play_m is not None:
                 self._btn_replay_play_m.setChecked(False)
             return
-        self._replay_playing = bool(checked)
-        if self._btn_replay_play_m is not None:
-            self._btn_replay_play_m.setText("Пауза" if checked else "Воспроизвести")
         if checked:
-            self._replay_play_started_mono = time.monotonic()
-            self._replay_play_started_t_rel = float(self._replay_t_rel_sec)
+            self.play()
+        else:
+            self.pause()
+        if self._btn_replay_play_m is not None:
+            is_playing = self._replay_state == ReplayState.PLAYING
+            self._btn_replay_play_m.blockSignals(True)
+            self._btn_replay_play_m.setChecked(is_playing)
+            self._btn_replay_play_m.setText("Пауза" if is_playing else "Воспроизвести")
+            self._btn_replay_play_m.blockSignals(False)
 
     def _on_replay_slider_changed(self, value: int) -> None:
         if not self._replay_timeline:
             return
         t0 = float(self._replay_timeline[0][0])
         t = t0 + max(0.0, float(value) / 1000.0)
-        self._set_replay_t_rel(t, from_slider=True)
+        self._apply_replay_t_sec(t, from_slider=True)
 
     def _on_replay_timer_tick(self) -> None:
-        if not self._replay_playing or not self._replay_timeline:
+        if self._replay_state != ReplayState.PLAYING or not self._replay_timeline:
             return
         elapsed = max(0.0, time.monotonic() - self._replay_play_started_mono)
-        t = self._replay_play_started_t_rel + elapsed
+        t = self._replay_play_started_t_sec + elapsed * float(self._replay_rate)
         t_max = float(self._replay_timeline[-1][0])
         if t >= t_max:
             t = t_max
-            self._replay_playing = False
+            self._set_replay_state(ReplayState.EOF)
             if self._btn_replay_play_m is not None:
+                self._btn_replay_play_m.blockSignals(True)
                 self._btn_replay_play_m.setChecked(False)
                 self._btn_replay_play_m.setText("Воспроизвести")
-        self._set_replay_t_rel(t, from_slider=False)
+                self._btn_replay_play_m.blockSignals(False)
+        self._apply_replay_t_sec(t, from_slider=False)
 
-    def _set_replay_t_rel(self, t_rel: float, *, from_slider: bool) -> None:
+    def _apply_replay_t_sec(self, t_sec: float, *, from_slider: bool) -> None:
         if not self._replay_timeline:
             return
         t_min = float(self._replay_timeline[0][0])
         t_max = float(self._replay_timeline[-1][0])
-        self._replay_t_rel_sec = min(max(float(t_rel), t_min), t_max)
+        self._replay_t_sec = min(max(float(t_sec), t_min), t_max)
         if self._replay_slider_m is not None and not from_slider:
             self._replay_slider_m.blockSignals(True)
-            self._replay_slider_m.setValue(max(0, int((self._replay_t_rel_sec - t_min) * 1000.0)))
+            self._replay_slider_m.setValue(max(0, int((self._replay_t_sec - t_min) * 1000.0)))
             self._replay_slider_m.blockSignals(False)
         self._render_replay_state()
 
     def _render_replay_state(self) -> None:
         if not self._replay_timeline:
             return
-        t = float(self._replay_t_rel_sec)
+        t = float(self._replay_t_sec)
         if self._lbl_replay_trel_m is not None:
             self._lbl_replay_trel_m.setText(f"t: {t:.3f} c")
 
