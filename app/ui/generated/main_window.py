@@ -98,14 +98,6 @@ class Ui_MainWindow(object):
         self.l_functionalButtons_m.setObjectName("l_functionalButtons_m")
         self.gridLayout_33.addLayout(self.l_functionalButtons_m, 2, 0, 1, 2)
         self.tw_research.addTab(self.monitoringTab, "")
-        self.optionsTab = QtWidgets.QWidget()
-        self.optionsTab.setObjectName("optionsTab")
-        self.gridLayout_6 = QtWidgets.QGridLayout(self.optionsTab)
-        self.gridLayout_6.setObjectName("gridLayout_6")
-        self.l_options = QtWidgets.QGridLayout()
-        self.l_options.setObjectName("l_options")
-        self.gridLayout_6.addLayout(self.l_options, 0, 0, 1, 1)
-        self.tw_research.addTab(self.optionsTab, "")
         self.gridLayout_2.addWidget(self.tw_research, 0, 2, 2, 1)
         self.tW_main.addTab(self.trialTab, "")
         self.replayTab = QtWidgets.QWidget()
@@ -132,14 +124,17 @@ class Ui_MainWindow(object):
         self.menubar = QtWidgets.QMenuBar(parent=MainWindow)
         self.menubar.setGeometry(QtCore.QRect(0, 0, 1188, 21))
         self.menubar.setObjectName("menubar")
+        self.menu = QtWidgets.QMenu(parent=self.menubar)
+        self.menu.setObjectName("menu")
         MainWindow.setMenuBar(self.menubar)
         self.statusbar = QtWidgets.QStatusBar(parent=MainWindow)
         self.statusbar.setObjectName("statusbar")
         MainWindow.setStatusBar(self.statusbar)
+        self.menubar.addAction(self.menu.menuAction())
 
         self.retranslateUi(MainWindow)
         self.tW_main.setCurrentIndex(0)
-        self.tw_research.setCurrentIndex(0)
+        self.tw_research.setCurrentIndex(1)
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
 
     def retranslateUi(self, MainWindow):
@@ -147,9 +142,9 @@ class Ui_MainWindow(object):
         MainWindow.setWindowTitle(_translate("MainWindow", "Сюрприз"))
         self.tw_research.setTabText(self.tw_research.indexOf(self.scenarioTab), _translate("MainWindow", "Сценарий"))
         self.tw_research.setTabText(self.tw_research.indexOf(self.monitoringTab), _translate("MainWindow", "Мониторинг"))
-        self.tw_research.setTabText(self.tw_research.indexOf(self.optionsTab), _translate("MainWindow", "Настройки"))
         self.tW_main.setTabText(self.tW_main.indexOf(self.trialTab), _translate("MainWindow", "Испытание"))
         self.tW_main.setTabText(self.tW_main.indexOf(self.replayTab), _translate("MainWindow", "Просмотр"))
+        self.menu.setTitle(_translate("MainWindow", "Настройки"))
 
 
 if __name__ == "__main__":
