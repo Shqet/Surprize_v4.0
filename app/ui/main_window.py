@@ -6,6 +6,7 @@ import json
 import math
 import os
 import subprocess
+import sys
 import time
 from bisect import bisect_left
 from enum import Enum
@@ -79,6 +80,7 @@ _DEFAULT_ANIM_WITHOUT_TEST = True
 _DEFAULT_SESSION_OUTPUT_ROOT = "outputs/sessions"
 _REPLAY_CHANNEL_GAP_SEC = 0.5
 _DEFAULT_UI_THEME = "light"
+_DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 
 
 class ReplayState(str, Enum):
@@ -659,6 +661,30 @@ class MainWindow(QMainWindow):
             normalized = _DEFAULT_UI_THEME
         self._settings["ui_theme"] = normalized
         self.setStyleSheet(_theme_stylesheet(normalized))
+        self._apply_native_titlebar_theme(normalized == "dark")
+
+    def _apply_native_titlebar_theme(self, dark: bool) -> None:
+        # On Windows, request immersive dark title bar from DWM.
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            hwnd = int(self.winId())
+            if hwnd <= 0:
+                return
+            value = ctypes.c_int(1 if dark else 0)
+            dwmapi = ctypes.WinDLL("dwmapi")
+            dwmapi.DwmSetWindowAttribute(
+                wintypes.HWND(hwnd),
+                ctypes.c_uint(_DWMWA_USE_IMMERSIVE_DARK_MODE),
+                ctypes.byref(value),
+                ctypes.sizeof(value),
+            )
+        except Exception:
+            # Keep app theme working even if native titlebar API is unavailable.
+            return
 
     @staticmethod
     def _normalize_session_output_root(value: str) -> str:
