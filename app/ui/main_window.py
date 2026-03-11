@@ -608,11 +608,11 @@ class MainWindow(QMainWindow):
         elif gl_legacy is not None:
             self._clear_layout(gl_legacy)
 
-        value_box = QGroupBox("Replay sync (offline)", self)
+        value_box = QGroupBox("Синхронный просмотр (офлайн)", self)
         value_form = QFormLayout(value_box)
 
         self._btn_replay_open_m = QPushButton("Открыть сессию", value_box)
-        self._btn_replay_play_m = QPushButton("Play", value_box)
+        self._btn_replay_play_m = QPushButton("Воспроизвести", value_box)
         self._btn_replay_play_m.setCheckable(True)
         self._btn_replay_play_m.setEnabled(False)
         hdr_row = QHBoxLayout()
@@ -621,16 +621,16 @@ class MainWindow(QMainWindow):
         hdr_row.addWidget(self._btn_replay_play_m)
 
         self._lbl_replay_session_m = QLabel("Сессия: -", value_box)
-        self._lbl_replay_trel_m = QLabel("t_rel: 0.000 c", value_box)
+        self._lbl_replay_trel_m = QLabel("t: 0.000 c", value_box)
         self._replay_slider_m = QSlider(Qt.Orientation.Horizontal, value_box)
         self._replay_slider_m.setRange(0, 0)
         self._replay_slider_m.setEnabled(False)
 
-        self._lbl_replay_visible_info_m = QLabel("Visible: -", value_box)
-        self._lbl_replay_thermal_info_m = QLabel("Thermal: -", value_box)
-        self._lbl_replay_traj_info_m = QLabel("Trajectory: -", value_box)
-        self._lbl_replay_visible_img_m = QLabel("no frame", self)
-        self._lbl_replay_thermal_img_m = QLabel("no frame", self)
+        self._lbl_replay_visible_info_m = QLabel("Видимый канал: -", value_box)
+        self._lbl_replay_thermal_info_m = QLabel("Тепловой канал: -", value_box)
+        self._lbl_replay_traj_info_m = QLabel("Траектория: -", value_box)
+        self._lbl_replay_visible_img_m = QLabel("нет кадра", self)
+        self._lbl_replay_thermal_img_m = QLabel("нет кадра", self)
         for img_lbl in (self._lbl_replay_visible_img_m, self._lbl_replay_thermal_img_m):
             img_lbl.setMinimumSize(240, 135)
             img_lbl.setStyleSheet("border:1px solid #666; background:#111; color:#ddd;")
@@ -654,7 +654,7 @@ class MainWindow(QMainWindow):
         value_form.addRow(self._lbl_replay_thermal_info_m)
         value_form.addRow(self._lbl_replay_traj_info_m)
 
-        self._traj_view_r.set_status("Replay trajectory (3D)\nОткройте завершенную сессию")
+        self._traj_view_r.set_status("Траектория просмотра (3D)\nОткройте завершенную сессию")
         if has_new_layout:
             cast(QGridLayout, gl_video).addWidget(video_box, 0, 0)
             cast(QGridLayout, gl_3d).addWidget(self._traj_view_r, 0, 0)
@@ -1668,15 +1668,15 @@ class MainWindow(QMainWindow):
 
     def _on_replay_open_session_clicked(self) -> None:
         base_dir = str(Path(self._orch.get_test_session_output_root()).resolve())
-        selected = QFileDialog.getExistingDirectory(self, "Открыть offline-сессию", base_dir)
+        selected = QFileDialog.getExistingDirectory(self, "Открыть сессию просмотра", base_dir)
         if not selected:
             return
         try:
             self._load_replay_session(Path(selected))
-            self.statusBar().showMessage(f"Replay: загружена сессия {Path(selected).name}", 3000)
+            self.statusBar().showMessage(f"Просмотр: загружена сессия {Path(selected).name}", 3000)
         except Exception as ex:
             self._log_error("UI_REPLAY_LOAD_FAILED", f"err={type(ex).__name__} detail={ex}")
-            QMessageBox.critical(self, "Replay", f"Не удалось загрузить сессию: {type(ex).__name__}\n{ex}")
+            QMessageBox.critical(self, "Просмотр", f"Не удалось загрузить сессию: {type(ex).__name__}\n{ex}")
 
     def _load_replay_session(self, session_dir: Path) -> None:
         manifest_path = session_dir / "session_manifest.json"
@@ -1688,7 +1688,7 @@ class MainWindow(QMainWindow):
             manifest = {}
         status = str(manifest.get("status", "")) if isinstance(manifest, dict) else ""
         if status and status != "STOPPED":
-            raise RuntimeError(f"session_not_finished status={status}")
+            raise RuntimeError(f"сессия не завершена, статус={status}")
 
         timeline = self._read_replay_timeline(session_dir / "trajectory_timeline.csv")
         if not timeline:
@@ -1717,7 +1717,7 @@ class MainWindow(QMainWindow):
         if self._btn_replay_play_m is not None:
             self._btn_replay_play_m.setEnabled(True)
             self._btn_replay_play_m.setChecked(False)
-            self._btn_replay_play_m.setText("Play")
+            self._btn_replay_play_m.setText("Воспроизвести")
         if self._lbl_replay_session_m is not None:
             self._lbl_replay_session_m.setText(f"Сессия: {session_dir.name}")
 
@@ -1774,7 +1774,7 @@ class MainWindow(QMainWindow):
             return
         self._replay_playing = bool(checked)
         if self._btn_replay_play_m is not None:
-            self._btn_replay_play_m.setText("Pause" if checked else "Play")
+            self._btn_replay_play_m.setText("Пауза" if checked else "Воспроизвести")
         if checked:
             self._replay_play_started_mono = time.monotonic()
             self._replay_play_started_t_rel = float(self._replay_t_rel_sec)
@@ -1797,7 +1797,7 @@ class MainWindow(QMainWindow):
             self._replay_playing = False
             if self._btn_replay_play_m is not None:
                 self._btn_replay_play_m.setChecked(False)
-                self._btn_replay_play_m.setText("Play")
+                self._btn_replay_play_m.setText("Воспроизвести")
         self._set_replay_t_rel(t, from_slider=False)
 
     def _set_replay_t_rel(self, t_rel: float, *, from_slider: bool) -> None:
@@ -1817,27 +1817,27 @@ class MainWindow(QMainWindow):
             return
         t = float(self._replay_t_rel_sec)
         if self._lbl_replay_trel_m is not None:
-            self._lbl_replay_trel_m.setText(f"t_rel: {t:.3f} c")
+            self._lbl_replay_trel_m.setText(f"t: {t:.3f} c")
 
         idx = self._nearest_timeline_index(t)
         pt = self._replay_timeline[idx]
         self._traj_view_r.set_marker_point((pt[1], pt[2], pt[3]))
         if self._lbl_replay_traj_info_m is not None:
             self._lbl_replay_traj_info_m.setText(
-                f"Trajectory: idx={idx} t={pt[0]:.3f} x={pt[1]:.1f} y={pt[2]:.1f} z={pt[3]:.1f} v={pt[4]:.2f}"
+                f"Траектория: idx={idx} t={pt[0]:.3f} x={pt[1]:.1f} y={pt[2]:.1f} z={pt[3]:.1f} v={pt[4]:.2f}"
             )
 
         vis = self._nearest_frame(self._replay_visible_frames, t)
         thr = self._nearest_frame(self._replay_thermal_frames, t)
         self._render_replay_channel(
-            name="Visible",
+            name="Видимый канал",
             frame_info=vis,
             label_info=self._lbl_replay_visible_info_m,
             label_img=self._lbl_replay_visible_img_m,
             cap=self._replay_cap_visible,
         )
         self._render_replay_channel(
-            name="Thermal",
+            name="Тепловой канал",
             frame_info=thr,
             label_info=self._lbl_replay_thermal_info_m,
             label_img=self._lbl_replay_thermal_img_m,
@@ -1855,9 +1855,9 @@ class MainWindow(QMainWindow):
     ) -> None:
         if frame_info is None:
             if label_info is not None:
-                label_info.setText(f"{name}: gap/no-frame")
+                label_info.setText(f"{name}: разрыв/нет кадра")
             if label_img is not None:
-                label_img.setText("no frame")
+                label_img.setText("нет кадра")
                 label_img.setPixmap(QPixmap())
             return
 
@@ -1868,7 +1868,7 @@ class MainWindow(QMainWindow):
             return
         pix = self._read_video_frame_pixmap(cap, idx)
         if pix is None:
-            label_img.setText("frame n/a")
+            label_img.setText("кадр недоступен")
             label_img.setPixmap(QPixmap())
             return
         label_img.setText("")
