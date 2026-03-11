@@ -77,10 +77,9 @@ class ProcessStreamWorker:
             str(self._preview_height),
         ]
         # In PyInstaller frozen mode sys.executable points to app EXE.
-        # Worker mode is selected via SURPRIZE_MODE env var to avoid any
-        # potential bootloader argument parsing edge-cases.
+        # Use dedicated worker flag to avoid recursive GUI startup.
         if getattr(sys, "frozen", False):
-            cmd = [sys.executable, *worker_args]
+            cmd = [sys.executable, "--video-reader-worker", *worker_args]
         else:
             cmd = [
                 sys.executable,
@@ -91,8 +90,6 @@ class ProcessStreamWorker:
             ]
         cwd = os.getcwd()
         env = os.environ.copy()
-        if getattr(sys, "frozen", False):
-            env["SURPRIZE_MODE"] = "video_reader"
         env["PYTHONPATH"] = cwd + os.pathsep + env.get("PYTHONPATH", "")
 
         self._log(f"PROC_SPAWN stream={self.stream} reason={reason} cmd={' '.join(cmd)}")
