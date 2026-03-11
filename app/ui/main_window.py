@@ -700,6 +700,11 @@ class MainWindow(QMainWindow):
                     _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOZORDER | _SWP_NOACTIVATE | _SWP_FRAMECHANGED
                 ),
             )
+            # Fallback nudge for systems where non-client repaint is delayed.
+            w = max(1, int(self.width()))
+            h = max(1, int(self.height()))
+            self.resize(w + 1, h)
+            self.resize(w, h)
         except Exception:
             # Keep app theme working even if native titlebar API is unavailable.
             return
