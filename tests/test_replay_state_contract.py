@@ -41,6 +41,9 @@ class _ReplayHarness:
     def pause(self) -> None:
         MainWindow.pause(self)
 
+    def _current_playback_t_sec(self) -> float:
+        return MainWindow._current_playback_t_sec(self)
+
 
 def test_replay_state_invalid_transition_sets_error() -> None:
     h = _ReplayHarness()
@@ -84,3 +87,53 @@ def test_replay_build_indices_normalizes_time_bounds() -> None:
     assert abs(h._replay_t_min_sec - 2.0) < 1e-9
     assert abs(h._replay_t_max_sec - 5.5) < 1e-9
     assert abs(h._replay_duration_sec - 3.5) < 1e-9
+
+
+def test_replay_rate_clamped_to_supported_range() -> None:
+    h = _ReplayHarness()
+    MainWindow.set_rate(h, 0.01)
+    assert abs(h._replay_rate - 0.25) < 1e-9
+    MainWindow.set_rate(h, 99.0)
+    assert abs(h._replay_rate - 4.0) < 1e-9
+
+
+def test_replay_pause_resume_does_not_accelerate_clock(monkeypatch) -> None:
+    now = {"t": 100.0}
+    monkeypatch.setattr("app.ui.main_window.time.monotonic", lambda: float(now["t"]))
+
+    h = _ReplayHarness()
+    h._replay_timeline = [(0.0, 0.0, 0.0, 0.0, 0.0), (10.0, 0.0, 0.0, 0.0, 0.0)]
+    MainWindow._replay_build_indices(h)
+    MainWindow._set_replay_state(h, ReplayState.LOADED)
+
+    MainWindow.play(h)  # anchor at t=0, mono=100
+    now["t"] = 102.0
+    MainWindow._on_replay_timer_tick(h)
+    assert abs(h._replay_t_sec - 2.0) < 1e-9
+
+    now["t"] = 103.0
+    MainWindow.pause(h)
+    assert h._replay_state == ReplayState.PAUSED
+    assert abs(h._replay_t_sec - 3.0) < 1e-9
+
+    now["t"] = 110.0
+    MainWindow.play(h)
+    now["t"] = 111.0
+    MainWindow._on_replay_timer_tick(h)
+    assert abs(h._replay_t_sec - 4.0) < 1e-9
+    assert h._replay_state == ReplayState.PLAYING
+
+
+def test_replay_seek_from_eof_allows_replay_again() -> None:
+    h = _ReplayHarness()
+    h._replay_timeline = [(0.0, 0.0, 0.0, 0.0, 0.0), (5.0, 0.0, 0.0, 0.0, 0.0)]
+    MainWindow._replay_build_indices(h)
+    h._replay_t_sec = 5.0
+    MainWindow._set_replay_state(h, ReplayState.LOADED)
+    MainWindow._set_replay_state(h, ReplayState.PLAYING)
+    MainWindow._set_replay_state(h, ReplayState.EOF)
+
+    MainWindow.seek(h, 2.0)
+    assert h._replay_state == ReplayState.PAUSED
+    MainWindow.play(h)
+    assert h._replay_state == ReplayState.PLAYING

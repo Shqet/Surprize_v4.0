@@ -1716,10 +1716,13 @@ class MainWindow(QMainWindow):
     def pause(self) -> None:
         if self._replay_state != ReplayState.PLAYING:
             return
+        self._apply_replay_t_sec(self._current_playback_t_sec(), from_slider=False)
         self._set_replay_state(ReplayState.PAUSED)
 
     def seek(self, t: float) -> None:
         self._apply_replay_t_sec(float(t), from_slider=False)
+        if self._replay_state == ReplayState.EOF and self._replay_t_sec < float(self._replay_t_max_sec):
+            self._set_replay_state(ReplayState.PAUSED)
         if self._replay_state == ReplayState.PLAYING:
             self._replay_play_started_mono = time.monotonic()
             self._replay_play_started_t_sec = float(self._replay_t_sec)
@@ -1729,13 +1732,21 @@ class MainWindow(QMainWindow):
         self.seek(float(self._replay_t_sec) + float(dt))
 
     def set_rate(self, x: float) -> None:
-        r = max(0.1, min(8.0, float(x)))
+        r = max(0.25, min(4.0, float(x)))
         if abs(r - self._replay_rate) < 1e-9:
             return
         self._replay_rate = r
         if self._replay_state == ReplayState.PLAYING:
+            self._apply_replay_t_sec(self._current_playback_t_sec(), from_slider=False)
             self._replay_play_started_mono = time.monotonic()
             self._replay_play_started_t_sec = float(self._replay_t_sec)
+
+    def _current_playback_t_sec(self) -> float:
+        if self._replay_state != ReplayState.PLAYING:
+            return float(self._replay_t_sec)
+        elapsed = max(0.0, time.monotonic() - float(self._replay_play_started_mono))
+        raw_t = float(self._replay_play_started_t_sec) + elapsed * float(self._replay_rate)
+        return min(max(raw_t, float(self._replay_t_min_sec)), float(self._replay_t_max_sec))
 
     def _set_replay_state(self, new_state: ReplayState) -> None:
         allowed: dict[ReplayState, set[ReplayState]] = {
@@ -1884,8 +1895,7 @@ class MainWindow(QMainWindow):
     def _on_replay_timer_tick(self) -> None:
         if self._replay_state != ReplayState.PLAYING or not self._replay_timeline:
             return
-        elapsed = max(0.0, time.monotonic() - self._replay_play_started_mono)
-        t = self._replay_play_started_t_sec + elapsed * float(self._replay_rate)
+        t = self._current_playback_t_sec()
         t_max = float(self._replay_t_max_sec)
         if t >= t_max:
             t = t_max
