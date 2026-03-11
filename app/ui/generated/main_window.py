@@ -144,7 +144,7 @@ class Ui_MainWindow(object):
 
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
-        MainWindow.setWindowTitle(_translate("MainWindow", "MainWindow"))
+        MainWindow.setWindowTitle(_translate("MainWindow", "Сюрприз"))
         self.tw_research.setTabText(self.tw_research.indexOf(self.scenarioTab), _translate("MainWindow", "Сценарий"))
         self.tw_research.setTabText(self.tw_research.indexOf(self.monitoringTab), _translate("MainWindow", "Мониторинг"))
         self.tw_research.setTabText(self.tw_research.indexOf(self.optionsTab), _translate("MainWindow", "Настройки"))
