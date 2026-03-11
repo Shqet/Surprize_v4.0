@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 
 spec_path = Path(globals().get("SPEC", "Surprize.spec"))
@@ -29,11 +29,15 @@ def _data_if_exists(src: Path, dst: str) -> list[tuple[str, str]]:
 
 
 hiddenimports = []
-hiddenimports += collect_submodules("pyqtgraph")
-hiddenimports += collect_submodules("OpenGL")
 hiddenimports += [
     "cv2",
     "numpy",
+    "pyqtgraph",
+    "pyqtgraph.opengl",
+    "pyqtgraph.Vector",
+    "OpenGL",
+    "OpenGL.GL",
+    "OpenGL.GLU",
     "PyQt6",
     "PyQt6.QtCore",
     "PyQt6.QtGui",
@@ -57,7 +61,7 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[],
+    hookspath=[str(project_root / "hooks")],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
