@@ -244,6 +244,9 @@ class MainWindow(QMainWindow):
         self._gl_replay: Optional[QGridLayout] = cast(Optional[QGridLayout], replay_obj)
         self._gl_replay_video: Optional[QGridLayout] = self._safe_find_layout_any(QGridLayout, "l_video")
         self._gl_replay_graph: Optional[QGridLayout] = self._safe_find_layout_any(QGridLayout, "l_graph", "l_graphs")
+        self._gl_replay_3d: Optional[QGridLayout] = self._safe_find_layout_any(
+            QGridLayout, "l_3DGraph", "l_3dGraph", "l_3d_graph", "gridLayout_5"
+        )
         self._gl_replay_value_manage: Optional[QGridLayout] = self._safe_find_layout_any(QGridLayout, "l_value_manage")
         self._gl_options: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_options")
 
@@ -589,14 +592,17 @@ class MainWindow(QMainWindow):
     def _init_replay_panel(self) -> None:
         gl_video = self._gl_replay_video
         gl_graph = self._gl_replay_graph
+        gl_3d = self._gl_replay_3d
         gl_value = self._gl_replay_value_manage
         gl_legacy = self._gl_replay
-        has_new_layout = gl_video is not None and gl_graph is not None and gl_value is not None
+        has_new_layout = gl_video is not None and gl_3d is not None and gl_value is not None
         if not has_new_layout and gl_legacy is None:
             return
         if has_new_layout:
             self._clear_layout(cast(QLayout, gl_video))
-            self._clear_layout(cast(QLayout, gl_graph))
+            self._clear_layout(cast(QLayout, gl_3d))
+            if gl_graph is not None:
+                self._clear_layout(cast(QLayout, gl_graph))
             self._clear_layout(cast(QLayout, gl_value))
         elif gl_legacy is not None:
             self._clear_layout(gl_legacy)
@@ -647,10 +653,16 @@ class MainWindow(QMainWindow):
         self._traj_view_r.set_status("Replay trajectory (3D)\nОткройте завершенную сессию")
         if has_new_layout:
             cast(QGridLayout, gl_video).addWidget(video_box, 0, 0)
-            cast(QGridLayout, gl_graph).addWidget(self._traj_view_r, 0, 0)
+            cast(QGridLayout, gl_3d).addWidget(self._traj_view_r, 0, 0)
             cast(QGridLayout, gl_value).addWidget(value_box, 0, 0)
+            if gl_graph is not None:
+                graph_hint = QLabel("Графики (2D) размещаются в этом блоке", self)
+                graph_hint.setStyleSheet("color:#666;")
+                cast(QGridLayout, gl_graph).addWidget(graph_hint, 0, 0)
             cast(QGridLayout, gl_video).setColumnStretch(0, 1)
-            cast(QGridLayout, gl_graph).setColumnStretch(0, 1)
+            cast(QGridLayout, gl_3d).setColumnStretch(0, 1)
+            if gl_graph is not None:
+                cast(QGridLayout, gl_graph).setColumnStretch(0, 1)
             cast(QGridLayout, gl_value).setColumnStretch(0, 1)
         elif gl_legacy is not None:
             gl_legacy.addWidget(self._traj_view_r, 0, 0)
