@@ -20,13 +20,23 @@ class _ReplayHarness:
         self._replay_play_started_t_sec = 0.0
         self._replay_rate = 1.0
         self._btn_replay_play_m = None
+        self._btn_replay_stop_m = None
+        self._btn_replay_back_m = None
+        self._btn_replay_fwd_m = None
+        self._btn_replay_step_back_m = None
+        self._btn_replay_step_fwd_m = None
         self._replay_slider_m = None
+        self._replay_t_spin_m = None
+        self._replay_rate_combo_m = None
         self._errors: list[str] = []
 
     def _log_error(self, code: str, message: str) -> None:
         self._errors.append(f"{code}:{message}")
 
     def _render_replay_state(self) -> None:
+        return None
+
+    def _sync_replay_controls(self) -> None:
         return None
 
     def _set_replay_state(self, new_state: ReplayState) -> None:

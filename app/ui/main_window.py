@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Optional, cast
 
 from PyQt6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -374,7 +374,15 @@ class MainWindow(QMainWindow):
         self._btn_session_output_root_m_default: Optional[QPushButton] = None
         self._btn_replay_open_m: Optional[QPushButton] = None
         self._btn_replay_play_m: Optional[QPushButton] = None
+        self._btn_replay_stop_m: Optional[QPushButton] = None
+        self._btn_replay_back_m: Optional[QPushButton] = None
+        self._btn_replay_fwd_m: Optional[QPushButton] = None
+        self._btn_replay_step_back_m: Optional[QPushButton] = None
+        self._btn_replay_step_fwd_m: Optional[QPushButton] = None
         self._replay_slider_m: Optional[QSlider] = None
+        self._replay_t_spin_m: Optional[QDoubleSpinBox] = None
+        self._replay_rate_combo_m: Optional[QComboBox] = None
+        self._replay_shortcuts_m: list[QShortcut] = []
         self._lbl_replay_session_m: Optional[QLabel] = None
         self._lbl_replay_trel_m: Optional[QLabel] = None
         self._lbl_replay_visible_info_m: Optional[QLabel] = None
@@ -631,16 +639,48 @@ class MainWindow(QMainWindow):
         self._btn_replay_play_m = QPushButton("Воспроизвести", value_box)
         self._btn_replay_play_m.setCheckable(True)
         self._btn_replay_play_m.setEnabled(False)
+        self._btn_replay_stop_m = QPushButton("Стоп", value_box)
+        self._btn_replay_stop_m.setEnabled(False)
+        self._btn_replay_back_m = QPushButton("<<", value_box)
+        self._btn_replay_back_m.setEnabled(False)
+        self._btn_replay_fwd_m = QPushButton(">>", value_box)
+        self._btn_replay_fwd_m.setEnabled(False)
+        self._btn_replay_step_back_m = QPushButton("-1 c", value_box)
+        self._btn_replay_step_back_m.setEnabled(False)
+        self._btn_replay_step_fwd_m = QPushButton("+1 c", value_box)
+        self._btn_replay_step_fwd_m.setEnabled(False)
         hdr_row = QHBoxLayout()
         hdr_row.setContentsMargins(0, 0, 0, 0)
         hdr_row.addWidget(self._btn_replay_open_m)
         hdr_row.addWidget(self._btn_replay_play_m)
+        hdr_row.addWidget(self._btn_replay_stop_m)
+        hdr_row.addWidget(self._btn_replay_back_m)
+        hdr_row.addWidget(self._btn_replay_step_back_m)
+        hdr_row.addWidget(self._btn_replay_step_fwd_m)
+        hdr_row.addWidget(self._btn_replay_fwd_m)
 
         self._lbl_replay_session_m = QLabel("Сессия: -", value_box)
         self._lbl_replay_trel_m = QLabel("t: 0.000 c", value_box)
         self._replay_slider_m = QSlider(Qt.Orientation.Horizontal, value_box)
         self._replay_slider_m.setRange(0, 0)
         self._replay_slider_m.setEnabled(False)
+        self._replay_t_spin_m = QDoubleSpinBox(value_box)
+        self._replay_t_spin_m.setDecimals(3)
+        self._replay_t_spin_m.setSuffix(" c")
+        self._replay_t_spin_m.setRange(0.0, 0.0)
+        self._replay_t_spin_m.setSingleStep(0.1)
+        self._replay_t_spin_m.setEnabled(False)
+        self._replay_rate_combo_m = QComboBox(value_box)
+        self._replay_rate_combo_m.addItems(["0.5x", "1x", "2x"])
+        self._replay_rate_combo_m.setCurrentText("1x")
+        self._replay_rate_combo_m.setEnabled(False)
+        control_row = QHBoxLayout()
+        control_row.setContentsMargins(0, 0, 0, 0)
+        control_row.addWidget(QLabel("t, c:", value_box))
+        control_row.addWidget(self._replay_t_spin_m, 1)
+        control_row.addSpacing(8)
+        control_row.addWidget(QLabel("Скорость:", value_box))
+        control_row.addWidget(self._replay_rate_combo_m)
 
         self._lbl_replay_visible_info_m = QLabel("Видимый канал: -", value_box)
         self._lbl_replay_thermal_info_m = QLabel("Тепловой канал: -", value_box)
@@ -666,9 +706,20 @@ class MainWindow(QMainWindow):
         value_form.addRow(self._lbl_replay_session_m)
         value_form.addRow(self._lbl_replay_trel_m)
         value_form.addRow(self._replay_slider_m)
+        value_form.addRow(control_row)
         value_form.addRow(self._lbl_replay_visible_info_m)
         value_form.addRow(self._lbl_replay_thermal_info_m)
         value_form.addRow(self._lbl_replay_traj_info_m)
+        self._replay_shortcuts_m = [
+            QShortcut(QKeySequence(Qt.Key.Key_Space), value_box),
+            QShortcut(QKeySequence(Qt.Key.Key_Left), value_box),
+            QShortcut(QKeySequence(Qt.Key.Key_Right), value_box),
+        ]
+        self._replay_shortcuts_m[0].activated.connect(self._on_replay_shortcut_toggle_play)
+        self._replay_shortcuts_m[1].activated.connect(self._on_replay_shortcut_step_back)
+        self._replay_shortcuts_m[2].activated.connect(self._on_replay_shortcut_step_fwd)
+        for sc in self._replay_shortcuts_m:
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
 
         self._traj_view_r.set_status("Траектория просмотра (3D)\nОткройте завершенную сессию")
         if has_new_layout:
@@ -1105,8 +1156,22 @@ class MainWindow(QMainWindow):
             self._btn_replay_open_m.clicked.connect(self._on_replay_open_session_clicked)
         if self._btn_replay_play_m is not None:
             self._btn_replay_play_m.clicked.connect(self._on_replay_play_toggled)
+        if self._btn_replay_stop_m is not None:
+            self._btn_replay_stop_m.clicked.connect(self._on_replay_stop_clicked)
+        if self._btn_replay_back_m is not None:
+            self._btn_replay_back_m.clicked.connect(self._on_replay_back_clicked)
+        if self._btn_replay_fwd_m is not None:
+            self._btn_replay_fwd_m.clicked.connect(self._on_replay_fwd_clicked)
+        if self._btn_replay_step_back_m is not None:
+            self._btn_replay_step_back_m.clicked.connect(self._on_replay_step_back_clicked)
+        if self._btn_replay_step_fwd_m is not None:
+            self._btn_replay_step_fwd_m.clicked.connect(self._on_replay_step_fwd_clicked)
         if self._replay_slider_m is not None:
             self._replay_slider_m.valueChanged.connect(self._on_replay_slider_changed)
+        if self._replay_t_spin_m is not None:
+            self._replay_t_spin_m.valueChanged.connect(self._on_replay_t_spin_changed)
+        if self._replay_rate_combo_m is not None:
+            self._replay_rate_combo_m.currentTextChanged.connect(self._on_replay_rate_combo_changed)
 
     def _connect_bridge(self) -> None:
         try:
@@ -1706,18 +1771,30 @@ class MainWindow(QMainWindow):
     def play(self) -> None:
         if not self._replay_timeline:
             self._set_replay_state(ReplayState.ERROR)
+            self._sync_replay_controls()
             return
         if self._replay_t_sec >= float(self._replay_t_max_sec):
             self.seek(float(self._replay_t_min_sec))
         self._replay_play_started_mono = time.monotonic()
         self._replay_play_started_t_sec = float(self._replay_t_sec)
         self._set_replay_state(ReplayState.PLAYING)
+        self._sync_replay_controls()
 
     def pause(self) -> None:
         if self._replay_state != ReplayState.PLAYING:
             return
         self._apply_replay_t_sec(self._current_playback_t_sec(), from_slider=False)
         self._set_replay_state(ReplayState.PAUSED)
+        self._sync_replay_controls()
+
+    def stop(self) -> None:
+        if not self._replay_timeline:
+            return
+        self.pause()
+        self.seek(float(self._replay_t_min_sec))
+        if self._replay_state in {ReplayState.PAUSED, ReplayState.EOF}:
+            self._set_replay_state(ReplayState.LOADED)
+        self._sync_replay_controls()
 
     def seek(self, t: float) -> None:
         self._apply_replay_t_sec(float(t), from_slider=False)
@@ -1726,6 +1803,7 @@ class MainWindow(QMainWindow):
         if self._replay_state == ReplayState.PLAYING:
             self._replay_play_started_mono = time.monotonic()
             self._replay_play_started_t_sec = float(self._replay_t_sec)
+        self._sync_replay_controls()
 
     def step(self, dt: float) -> None:
         self.pause()
@@ -1740,6 +1818,7 @@ class MainWindow(QMainWindow):
             self._apply_replay_t_sec(self._current_playback_t_sec(), from_slider=False)
             self._replay_play_started_mono = time.monotonic()
             self._replay_play_started_t_sec = float(self._replay_t_sec)
+        self._sync_replay_controls()
 
     def _current_playback_t_sec(self) -> float:
         if self._replay_state != ReplayState.PLAYING:
@@ -1802,16 +1881,24 @@ class MainWindow(QMainWindow):
         if self._replay_slider_m is not None:
             self._replay_slider_m.setEnabled(True)
             self._replay_slider_m.setRange(0, max(0, int(self._replay_duration_sec * 1000.0)))
-        if self._btn_replay_play_m is not None:
-            self._btn_replay_play_m.setEnabled(True)
-            self._btn_replay_play_m.setChecked(False)
-            self._btn_replay_play_m.setText("Воспроизвести")
+        if self._replay_t_spin_m is not None:
+            self._replay_t_spin_m.setEnabled(True)
+            self._replay_t_spin_m.setRange(float(self._replay_t_min_sec), float(self._replay_t_max_sec))
+            self._replay_t_spin_m.blockSignals(True)
+            self._replay_t_spin_m.setValue(float(self._replay_t_min_sec))
+            self._replay_t_spin_m.blockSignals(False)
+        if self._replay_rate_combo_m is not None:
+            self._replay_rate_combo_m.setEnabled(True)
+            self._replay_rate_combo_m.blockSignals(True)
+            self._replay_rate_combo_m.setCurrentText("1x")
+            self._replay_rate_combo_m.blockSignals(False)
         if self._lbl_replay_session_m is not None:
             self._lbl_replay_session_m.setText(f"Сессия: {session_dir.name}")
 
         pts = [(x, y, z) for (_t, x, y, z, _s) in timeline]
         self._traj_view_r.set_points(pts)
         self._set_replay_state(ReplayState.LOADED)
+        self._sync_replay_controls()
         self._apply_replay_t_sec(self._replay_t_sec, from_slider=False)
 
     def _replay_build_indices(self) -> None:
@@ -1879,18 +1966,59 @@ class MainWindow(QMainWindow):
             self.play()
         else:
             self.pause()
-        if self._btn_replay_play_m is not None:
-            is_playing = self._replay_state == ReplayState.PLAYING
-            self._btn_replay_play_m.blockSignals(True)
-            self._btn_replay_play_m.setChecked(is_playing)
-            self._btn_replay_play_m.setText("Пауза" if is_playing else "Воспроизвести")
-            self._btn_replay_play_m.blockSignals(False)
+        self._sync_replay_controls()
+
+    def _on_replay_stop_clicked(self) -> None:
+        self.stop()
+
+    def _on_replay_back_clicked(self) -> None:
+        self.step(-10.0)
+
+    def _on_replay_fwd_clicked(self) -> None:
+        self.step(10.0)
+
+    def _on_replay_step_back_clicked(self) -> None:
+        self.step(-1.0)
+
+    def _on_replay_step_fwd_clicked(self) -> None:
+        self.step(1.0)
 
     def _on_replay_slider_changed(self, value: int) -> None:
         if not self._replay_timeline:
             return
         t = float(self._replay_t_min_sec) + max(0.0, float(value) / 1000.0)
         self._apply_replay_t_sec(t, from_slider=True)
+
+    def _on_replay_t_spin_changed(self, value: float) -> None:
+        if not self._replay_timeline:
+            return
+        self.seek(float(value))
+
+    def _on_replay_rate_combo_changed(self, text: str) -> None:
+        raw = str(text).strip().lower().replace("x", "")
+        try:
+            value = float(raw)
+        except Exception:
+            value = 1.0
+        self.set_rate(value)
+
+    def _on_replay_shortcut_toggle_play(self) -> None:
+        if not self._is_replay_control_active():
+            return
+        if self._replay_state == ReplayState.PLAYING:
+            self.pause()
+        else:
+            self.play()
+
+    def _on_replay_shortcut_step_back(self) -> None:
+        if not self._is_replay_control_active():
+            return
+        self.step(-1.0)
+
+    def _on_replay_shortcut_step_fwd(self) -> None:
+        if not self._is_replay_control_active():
+            return
+        self.step(1.0)
 
     def _on_replay_timer_tick(self) -> None:
         if self._replay_state != ReplayState.PLAYING or not self._replay_timeline:
@@ -1900,11 +2028,7 @@ class MainWindow(QMainWindow):
         if t >= t_max:
             t = t_max
             self._set_replay_state(ReplayState.EOF)
-            if self._btn_replay_play_m is not None:
-                self._btn_replay_play_m.blockSignals(True)
-                self._btn_replay_play_m.setChecked(False)
-                self._btn_replay_play_m.setText("Воспроизвести")
-                self._btn_replay_play_m.blockSignals(False)
+            self._sync_replay_controls()
         self._apply_replay_t_sec(t, from_slider=False)
 
     def _apply_replay_t_sec(self, t_sec: float, *, from_slider: bool) -> None:
@@ -1917,7 +2041,45 @@ class MainWindow(QMainWindow):
             self._replay_slider_m.blockSignals(True)
             self._replay_slider_m.setValue(max(0, int((self._replay_t_sec - t_min) * 1000.0)))
             self._replay_slider_m.blockSignals(False)
+        if self._replay_t_spin_m is not None:
+            self._replay_t_spin_m.blockSignals(True)
+            self._replay_t_spin_m.setValue(float(self._replay_t_sec))
+            self._replay_t_spin_m.blockSignals(False)
         self._render_replay_state()
+
+    def _sync_replay_controls(self) -> None:
+        has_data = bool(self._replay_timeline)
+        is_playing = self._replay_state == ReplayState.PLAYING
+        can_control = has_data and self._replay_state not in {ReplayState.IDLE, ReplayState.ERROR}
+        if self._btn_replay_play_m is not None:
+            self._btn_replay_play_m.setEnabled(has_data)
+            self._btn_replay_play_m.blockSignals(True)
+            self._btn_replay_play_m.setChecked(is_playing)
+            self._btn_replay_play_m.setText("Пауза" if is_playing else "Воспроизвести")
+            self._btn_replay_play_m.blockSignals(False)
+        for btn in (
+            self._btn_replay_stop_m,
+            self._btn_replay_back_m,
+            self._btn_replay_fwd_m,
+            self._btn_replay_step_back_m,
+            self._btn_replay_step_fwd_m,
+        ):
+            if btn is not None:
+                btn.setEnabled(can_control)
+        if self._replay_slider_m is not None:
+            self._replay_slider_m.setEnabled(has_data)
+        if self._replay_t_spin_m is not None:
+            self._replay_t_spin_m.setEnabled(can_control)
+        if self._replay_rate_combo_m is not None:
+            self._replay_rate_combo_m.setEnabled(can_control)
+
+    def _is_replay_control_active(self) -> bool:
+        btn = self._btn_replay_play_m
+        if btn is None:
+            return False
+        if not btn.isVisible():
+            return False
+        return bool(self._replay_timeline)
 
     def _render_replay_state(self) -> None:
         if not self._replay_timeline:
