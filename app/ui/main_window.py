@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSlider,
     QSpinBox,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -635,12 +636,15 @@ class MainWindow(QMainWindow):
             img_lbl.setStyleSheet("border:1px solid #666; background:#111; color:#ddd;")
             img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         video_box = QGroupBox("Видео (синхронные кадры)", self)
-        video_form = QFormLayout(video_box)
+        video_layout = QVBoxLayout(video_box)
         img_col = QVBoxLayout()
         img_col.setContentsMargins(0, 0, 0, 0)
+        img_col.setSpacing(8)
+        for img_lbl in (self._lbl_replay_visible_img_m, self._lbl_replay_thermal_img_m):
+            img_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         img_col.addWidget(self._lbl_replay_visible_img_m)
         img_col.addWidget(self._lbl_replay_thermal_img_m)
-        video_form.addRow(img_col)
+        video_layout.addLayout(img_col, 1)
 
         value_form.addRow(hdr_row)
         value_form.addRow(self._lbl_replay_session_m)
@@ -660,10 +664,14 @@ class MainWindow(QMainWindow):
                 graph_hint.setStyleSheet("color:#666;")
                 cast(QGridLayout, gl_graph).addWidget(graph_hint, 0, 0)
             cast(QGridLayout, gl_video).setColumnStretch(0, 1)
+            cast(QGridLayout, gl_video).setRowStretch(0, 1)
             cast(QGridLayout, gl_3d).setColumnStretch(0, 1)
+            cast(QGridLayout, gl_3d).setRowStretch(0, 1)
             if gl_graph is not None:
                 cast(QGridLayout, gl_graph).setColumnStretch(0, 1)
+                cast(QGridLayout, gl_graph).setRowStretch(0, 1)
             cast(QGridLayout, gl_value).setColumnStretch(0, 1)
+            cast(QGridLayout, gl_value).setRowStretch(0, 1)
         elif gl_legacy is not None:
             gl_legacy.addWidget(self._traj_view_r, 0, 0)
             gl_legacy.addWidget(value_box, 0, 1)
