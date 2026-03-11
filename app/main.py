@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 
 from app.core.event_bus import EventBus
@@ -38,8 +40,13 @@ def main() -> int:
 
     # UI
     app = QApplication(sys.argv)
+    icon_path = Path(__file__).resolve().parent / "ui" / "assets" / "icons" / "main_icon.svg"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     bridge = UIBridge(bus)
     win = MainWindow(orch, bridge)
+    if icon_path.exists():
+        win.setWindowIcon(QIcon(str(icon_path)))
     win.show()
 
     emit_log(bus, "INFO", "system", "SYSTEM_START", "v=0")
