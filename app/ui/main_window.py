@@ -78,6 +78,7 @@ _DEFAULT_AUTO_STOP_AFTER_GPS_SEC = 10.0
 _DEFAULT_ANIM_WITHOUT_TEST = True
 _DEFAULT_SESSION_OUTPUT_ROOT = "outputs/sessions"
 _REPLAY_CHANNEL_GAP_SEC = 0.5
+_DEFAULT_UI_THEME = "light"
 
 
 class ReplayState(str, Enum):
@@ -141,6 +142,57 @@ class GraphSyncAdapter:
                 cb(str(event), float(t_sec), state, float(rate), data)
             except Exception:
                 continue
+
+
+def _theme_stylesheet(theme: str) -> str:
+    if str(theme).strip().lower() != "dark":
+        return ""
+    return """
+QWidget {
+    background-color: #1f2228;
+    color: #e8eaed;
+}
+QGroupBox {
+    border: 1px solid #3a3f4b;
+    border-radius: 6px;
+    margin-top: 8px;
+    padding-top: 8px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 8px;
+    padding: 0 2px;
+    color: #c8d1da;
+}
+QPushButton {
+    background-color: #2d333b;
+    border: 1px solid #4c5562;
+    border-radius: 4px;
+    padding: 4px 8px;
+}
+QPushButton:hover {
+    background-color: #39414b;
+}
+QPushButton:disabled {
+    color: #8a9098;
+    background-color: #2a2f36;
+    border-color: #3a3f4b;
+}
+QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox {
+    background-color: #2a2f36;
+    border: 1px solid #4c5562;
+    border-radius: 4px;
+    padding: 2px 4px;
+    selection-background-color: #3b82f6;
+}
+QTabWidget::pane {
+    border: 1px solid #3a3f4b;
+}
+QHeaderView::section {
+    background-color: #2a2f36;
+    color: #e8eaed;
+}
+"""
 
 
 class _PrepareTestSignals(QObject):
@@ -378,6 +430,7 @@ class MainWindow(QMainWindow):
         self._pluto_rf_bw_spin: Optional[QDoubleSpinBox] = None
         self._pluto_tx_atten_spin: Optional[QDoubleSpinBox] = None
         self._opt_auto_stop_spin: Optional[QDoubleSpinBox] = None
+        self._opt_theme_combo: Optional[QComboBox] = None
         self._opt_anim_without_test_chk: Optional[QCheckBox] = None
         self._opt_nav_default_edit: Optional[QLineEdit] = None
         self._opt_nav_default_browse: Optional[QPushButton] = None
@@ -543,6 +596,9 @@ class MainWindow(QMainWindow):
         session_output_root = self._normalize_session_output_root(session_output_root_raw)
         auto_stop = self._settings_store.value("auto_stop_after_gps_sec", _DEFAULT_AUTO_STOP_AFTER_GPS_SEC)
         anim = self._settings_store.value("monitor_anim_without_test", _DEFAULT_ANIM_WITHOUT_TEST)
+        theme = str(self._settings_store.value("ui_theme", _DEFAULT_UI_THEME) or "").strip().lower()
+        if theme not in ("light", "dark"):
+            theme = _DEFAULT_UI_THEME
         try:
             auto_stop_val = float(auto_stop)
         except Exception:
@@ -554,6 +610,7 @@ class MainWindow(QMainWindow):
             "session_output_root": session_output_root,
             "auto_stop_after_gps_sec": auto_stop_val,
             "monitor_anim_without_test": anim_val,
+            "ui_theme": theme,
         }
 
     def _save_ui_settings(self) -> None:
@@ -570,6 +627,7 @@ class MainWindow(QMainWindow):
             "monitor_anim_without_test",
             bool(self._settings.get("monitor_anim_without_test", _DEFAULT_ANIM_WITHOUT_TEST)),
         )
+        self._settings_store.setValue("ui_theme", str(self._settings.get("ui_theme", _DEFAULT_UI_THEME)))
         self._settings_store.sync()
 
     def _apply_ui_settings_to_runtime(self) -> None:
@@ -593,6 +651,14 @@ class MainWindow(QMainWindow):
         self._anim_without_test_enabled = bool(
             self._settings.get("monitor_anim_without_test", _DEFAULT_ANIM_WITHOUT_TEST)
         )
+        self._apply_ui_theme(str(self._settings.get("ui_theme", _DEFAULT_UI_THEME)))
+
+    def _apply_ui_theme(self, theme: str) -> None:
+        normalized = str(theme or "").strip().lower()
+        if normalized not in ("light", "dark"):
+            normalized = _DEFAULT_UI_THEME
+        self._settings["ui_theme"] = normalized
+        self.setStyleSheet(_theme_stylesheet(normalized))
 
     @staticmethod
     def _normalize_session_output_root(value: str) -> str:
@@ -838,6 +904,14 @@ class MainWindow(QMainWindow):
         self._opt_auto_stop_spin.setValue(float(self._settings.get("auto_stop_after_gps_sec", _DEFAULT_AUTO_STOP_AFTER_GPS_SEC)))
         self._opt_auto_stop_spin.valueChanged.connect(self._on_setting_auto_stop_changed)
 
+        self._opt_theme_combo = QComboBox(box)
+        self._opt_theme_combo.addItem("Светлая", "light")
+        self._opt_theme_combo.addItem("Темная", "dark")
+        theme = str(self._settings.get("ui_theme", _DEFAULT_UI_THEME)).strip().lower()
+        idx = self._opt_theme_combo.findData(theme)
+        self._opt_theme_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._opt_theme_combo.currentIndexChanged.connect(self._on_setting_theme_changed)
+
         self._opt_anim_without_test_chk = QCheckBox("Анимировать полет без испытания", box)
         self._opt_anim_without_test_chk.setChecked(
             bool(self._settings.get("monitor_anim_without_test", _DEFAULT_ANIM_WITHOUT_TEST))
@@ -873,6 +947,7 @@ class MainWindow(QMainWindow):
         self._opt_reset_defaults_btn = QPushButton("Вернуть к дефолтным", box)
         self._opt_reset_defaults_btn.clicked.connect(self._on_settings_reset_defaults_clicked)
 
+        form.addRow("Тема интерфейса", self._opt_theme_combo)
         form.addRow("Авто-стоп после завершения GPS трансляции, сек", self._opt_auto_stop_spin)
         form.addRow("", self._opt_anim_without_test_chk)
         form.addRow("Дефолтный путь к эфемеридам", nav_row)
@@ -2755,6 +2830,16 @@ class MainWindow(QMainWindow):
         self._save_ui_settings()
         self._orch.set_auto_stop_after_gps_sec(v)
 
+    def _on_setting_theme_changed(self, index: int) -> None:
+        if self._opt_theme_combo is None:
+            return
+        theme = str(self._opt_theme_combo.itemData(int(index)) or _DEFAULT_UI_THEME).strip().lower()
+        if theme not in ("light", "dark"):
+            theme = _DEFAULT_UI_THEME
+        self._settings["ui_theme"] = theme
+        self._save_ui_settings()
+        self._apply_ui_theme(theme)
+
     def _on_setting_anim_without_test_toggled(self, checked: bool) -> None:
         self._on_monitor_anim_toggled(bool(checked))
 
@@ -2814,9 +2899,13 @@ class MainWindow(QMainWindow):
             "session_output_root": self._normalize_session_output_root(_DEFAULT_SESSION_OUTPUT_ROOT),
             "auto_stop_after_gps_sec": _DEFAULT_AUTO_STOP_AFTER_GPS_SEC,
             "monitor_anim_without_test": _DEFAULT_ANIM_WITHOUT_TEST,
+            "ui_theme": _DEFAULT_UI_THEME,
         }
         if self._opt_auto_stop_spin is not None:
             self._opt_auto_stop_spin.setValue(_DEFAULT_AUTO_STOP_AFTER_GPS_SEC)
+        if self._opt_theme_combo is not None:
+            idx = self._opt_theme_combo.findData(_DEFAULT_UI_THEME)
+            self._opt_theme_combo.setCurrentIndex(idx if idx >= 0 else 0)
         if self._opt_anim_without_test_chk is not None:
             self._opt_anim_without_test_chk.setChecked(_DEFAULT_ANIM_WITHOUT_TEST)
         if self._opt_nav_default_edit is not None:
