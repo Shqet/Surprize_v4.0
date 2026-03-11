@@ -14,7 +14,10 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 
-project_root = Path(__file__).resolve().parent
+spec_path = Path(globals().get("SPEC", "Surprize.spec"))
+if not spec_path.is_absolute():
+    spec_path = Path(globals().get("SPECPATH", os.getcwd())) / spec_path
+project_root = spec_path.resolve().parent
 
 block_cipher = None
 
@@ -94,4 +97,3 @@ coll = COLLECT(
     upx_exclude=[],
     name="Surprize",
 )
-
