@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import sys
+
 from pathlib import Path
 
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtCore import QSettings, QTimer, Qt
 from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import QApplication, QSplashScreen
 
@@ -19,6 +20,8 @@ from app.services.service_manager import ServiceManager
 from app.services.video_channel import VideoChannelDaemonService
 from app.ui.main_window import MainWindow
 
+_DEFAULT_UI_THEME = "light"
+
 
 def _set_windows_appusermodel_id() -> None:
     if sys.platform != "win32":
@@ -32,20 +35,48 @@ def _set_windows_appusermodel_id() -> None:
         return
 
 
-def _create_startup_splash(app_icon: QIcon) -> QSplashScreen:
+def _read_saved_ui_theme() -> str:
+    store = QSettings("Surprize", "SurprizeShell")
+    theme = str(store.value("ui_theme", _DEFAULT_UI_THEME) or "").strip().lower()
+    if theme not in ("light", "dark"):
+        return _DEFAULT_UI_THEME
+    return theme
+
+
+def _resolve_themed_icon(theme: str) -> QIcon:
+    root = Path(__file__).resolve().parent / "ui" / "assets" / "icons"
+    dark_path = root / "main_dark_icon.png"
+    light_path = root / "main_light_icon.svg"
+    preferred = dark_path if str(theme).strip().lower() == "dark" else light_path
+    fallback = light_path if preferred == dark_path else dark_path
+    if preferred.exists():
+        return QIcon(str(preferred))
+    if fallback.exists():
+        return QIcon(str(fallback))
+    return QIcon()
+
+
+def _create_startup_splash(app_icon: QIcon, theme: str) -> QSplashScreen:
+    is_dark = str(theme).strip().lower() == "dark"
+    bg = QColor("#111827") if is_dark else QColor("#f3f4f6")
+    card = QColor("#1f2937") if is_dark else QColor("#ffffff")
+    title = QColor("#e5e7eb") if is_dark else QColor("#111827")
+    subtitle = QColor("#9ca3af") if is_dark else QColor("#4b5563")
+
     pix = QPixmap(560, 300)
-    pix.fill(QColor("#111827"))
+    pix.fill(bg)
+
     painter = QPainter(pix)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor("#1f2937"))
+    painter.setBrush(card)
     painter.drawRoundedRect(18, 18, 524, 264, 18, 18)
 
     logo = app_icon.pixmap(96, 96) if not app_icon.isNull() else QPixmap()
     if not logo.isNull():
         painter.drawPixmap((pix.width() - 96) // 2, 66, logo)
 
-    painter.setPen(QColor("#e5e7eb"))
+    painter.setPen(title)
     title_font = QFont()
     title_font.setPointSize(15)
     title_font.setBold(True)
@@ -55,7 +86,7 @@ def _create_startup_splash(app_icon: QIcon) -> QSplashScreen:
     sub_font = QFont()
     sub_font.setPointSize(10)
     painter.setFont(sub_font)
-    painter.setPen(QColor("#9ca3af"))
+    painter.setPen(subtitle)
     painter.drawText(
         pix.rect().adjusted(0, 202, 0, 0),
         Qt.AlignmentFlag.AlignHCenter,
@@ -90,13 +121,15 @@ def main() -> int:
 
     # UI
     app = QApplication(sys.argv)
-    icon_path = Path(__file__).resolve().parent / "ui" / "assets" / "icons" / "main_icon.svg"
-    app_icon = QIcon(str(icon_path)) if icon_path.exists() else QIcon()
+    theme = _read_saved_ui_theme()
+    app_icon = _resolve_themed_icon(theme)
     if not app_icon.isNull():
         app.setWindowIcon(app_icon)
-    splash = _create_startup_splash(app_icon)
+
+    splash = _create_startup_splash(app_icon, theme)
     splash.show()
     app.processEvents()
+
     bridge = UIBridge(bus)
     win = MainWindow(orch, bridge)
     if not app_icon.isNull():

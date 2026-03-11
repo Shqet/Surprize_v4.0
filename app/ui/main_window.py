@@ -14,8 +14,9 @@ from pathlib import Path
 from typing import Any, Callable, Optional, cast
 
 from PyQt6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
+from PyQt6.QtGui import QIcon, QImage, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -668,11 +669,30 @@ class MainWindow(QMainWindow):
             normalized = _DEFAULT_UI_THEME
         self._settings["ui_theme"] = normalized
         self.setStyleSheet(_theme_stylesheet(normalized))
+        icon = self._resolve_theme_icon(normalized)
+        if not icon.isNull():
+            self.setWindowIcon(icon)
+            app = QApplication.instance()
+            if app is not None:
+                app.setWindowIcon(icon)
         if self._rtsp_visible_preview is not None:
             self._rtsp_visible_preview.set_theme(normalized)
         if self._rtsp_thermal_preview is not None:
             self._rtsp_thermal_preview.set_theme(normalized)
         self._apply_native_titlebar_theme(normalized == "dark")
+
+    @staticmethod
+    def _resolve_theme_icon(theme: str) -> QIcon:
+        root = Path(__file__).resolve().parent / "assets" / "icons"
+        dark_path = root / "main_dark_icon.png"
+        light_path = root / "main_light_icon.svg"
+        preferred = dark_path if str(theme).strip().lower() == "dark" else light_path
+        fallback = light_path if preferred == dark_path else dark_path
+        if preferred.exists():
+            return QIcon(str(preferred))
+        if fallback.exists():
+            return QIcon(str(fallback))
+        return QIcon()
 
     def _apply_native_titlebar_theme(self, dark: bool) -> None:
         # On Windows, request immersive dark title bar from DWM.
