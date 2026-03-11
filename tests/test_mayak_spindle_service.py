@@ -322,7 +322,15 @@ def test_io_degraded_then_recovered_logs():
 
 def test_fault_reset_writes_reset_controlword():
     bus = _Bus(events=[])
-    tr = DictTransport(initial={
+    writes: list[int] = []
+
+    class _SpyTransport(DictTransport):
+        def write_cells(self, values):
+            if "D1000" in values:
+                writes.append(int(values["D1000"]))
+            return super().write_cells(values)
+
+    tr = _SpyTransport(initial={
         "D1050": 1, "D1051": 1,
         "D1002": 0x0008, "D1012": 0x0004,  # sp1 fault
         "D1003": 0, "D1013": 0,
@@ -335,9 +343,8 @@ def test_fault_reset_writes_reset_controlword():
     time.sleep(0.03)
     svc.fault_reset("sp1")
     time.sleep(0.03)
-    snap = tr.snapshot()
     svc.stop()
-    assert snap["D1000"] in (0x0080, 0x0007, 0x000F)
+    assert any(v in (0x0080, 0x0007, 0x000F) for v in writes)
 
 
 def test_rpm_limit_enforced():

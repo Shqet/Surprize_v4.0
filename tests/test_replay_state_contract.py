@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.ui.main_window import GraphSyncAdapter, MainWindow, ReplayState
 
 
@@ -29,6 +31,7 @@ class _ReplayHarness:
         self._replay_t_spin_m = None
         self._replay_rate_combo_m = None
         self._errors: list[str] = []
+        self._published_events: list[str] = []
 
     def _log_error(self, code: str, message: str) -> None:
         self._errors.append(f"{code}:{message}")
@@ -40,7 +43,7 @@ class _ReplayHarness:
         return None
 
     def _publish_graph_sync_event(self, *, event: str, payload=None) -> None:
-        return None
+        self._published_events.append(str(event))
 
     def _publish_graph_sync_time(self, *, source: str) -> None:
         return None
@@ -228,3 +231,87 @@ def test_graph_sync_adapter_publishes_time_and_events() -> None:
     assert len(seen_event) == 1
     assert seen_event[0][0] == "seek"
     assert seen_event[0][4]["source"] == "slider"
+
+
+def test_replay_seek_and_step_clamp_to_time_bounds() -> None:
+    h = _ReplayHarness()
+    h._replay_timeline = [(2.0, 0.0, 0.0, 0.0, 0.0), (5.0, 0.0, 0.0, 0.0, 0.0)]
+    MainWindow._replay_build_indices(h)
+    MainWindow._set_replay_state(h, ReplayState.LOADED)
+
+    MainWindow.seek(h, -100.0)
+    assert abs(h._replay_t_sec - 2.0) < 1e-9
+
+    MainWindow.step(h, 100.0)
+    assert abs(h._replay_t_sec - 5.0) < 1e-9
+
+
+def test_replay_timer_moves_to_eof(monkeypatch) -> None:
+    now = {"t": 50.0}
+    monkeypatch.setattr("app.ui.main_window.time.monotonic", lambda: float(now["t"]))
+
+    h = _ReplayHarness()
+    h._replay_timeline = [(0.0, 0.0, 0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0, 0.0)]
+    MainWindow._replay_build_indices(h)
+    MainWindow._set_replay_state(h, ReplayState.LOADED)
+    h._replay_t_sec = 0.0
+    MainWindow.play(h)
+
+    now["t"] = 50.5
+    MainWindow._on_replay_timer_tick(h)
+    assert h._replay_state in {ReplayState.PLAYING, ReplayState.EOF}
+
+    now["t"] = 51.2
+    MainWindow._on_replay_timer_tick(h)
+    assert h._replay_state == ReplayState.EOF
+    assert abs(h._replay_t_sec - 1.0) < 1e-9
+
+
+@pytest.mark.smoke
+def test_replay_smoke_sequence_load_play_seek_pause_step_stop() -> None:
+    h = _ReplayHarness()
+    h._replay_timeline = [
+        (0.0, 0.0, 0.0, 0.0, 0.0),
+        (1.0, 1.0, 0.0, 0.0, 1.0),
+        (2.0, 2.0, 0.0, 0.0, 1.0),
+    ]
+    MainWindow._replay_build_indices(h)
+    MainWindow._set_replay_state(h, ReplayState.LOADED)
+
+    MainWindow.play(h)
+    assert h._replay_state == ReplayState.PLAYING
+
+    MainWindow.seek(h, 1.4)
+    assert 0.0 <= h._replay_t_sec <= 2.0
+
+    MainWindow.pause(h)
+    assert h._replay_state == ReplayState.PAUSED
+
+    MainWindow.step(h, -1.0)
+    assert 0.0 <= h._replay_t_sec <= 2.0
+
+    MainWindow.stop(h)
+    assert abs(h._replay_t_sec - 0.0) < 1e-9
+    assert h._replay_state == ReplayState.LOADED
+    assert {"play", "seek", "pause", "stop"}.issubset(set(h._published_events))
+
+
+@pytest.mark.smoke
+def test_replay_smoke_missing_channel_does_not_break_other_channel() -> None:
+    # Visible channel missing entirely.
+    vis_state = MainWindow._replay_channel_status(
+        t_master=1.0,
+        frame_info=None,
+        has_stream=False,
+        has_video=False,
+    )
+    # Thermal channel still valid.
+    thr_state = MainWindow._replay_channel_status(
+        t_master=1.0,
+        frame_info=(1.1, 42),
+        has_stream=True,
+        has_video=True,
+    )
+
+    assert vis_state[0] == "N/A"
+    assert thr_state[0] == "OK"

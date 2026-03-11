@@ -785,6 +785,13 @@ class Orchestrator:
         if not isinstance(traj_path, str) or not traj_path.strip() or not Path(traj_path).exists():
             blocking_errors.append("trajectory_missing")
 
+        # required GPS nav path for gps-sdr-sim readiness contract
+        sdr_options = prepared.get("sdr_options") if isinstance(prepared, dict) else None
+        gps_options = sdr_options.get("gps_sdr_sim") if isinstance(sdr_options, dict) else None
+        nav = str(gps_options.get("nav", "") or "").strip() if isinstance(gps_options, dict) else ""
+        if not nav or not Path(nav).exists():
+            blocking_errors.append("gps_nav_missing")
+
         # cameras are warning-only
         services_map = self._sm.get_services()
         for cam_name in ("video_visible", "video_thermal"):
