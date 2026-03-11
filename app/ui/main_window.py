@@ -658,7 +658,8 @@ class MainWindow(QMainWindow):
         if has_new_layout:
             cast(QGridLayout, gl_video).addWidget(video_box, 0, 0)
             cast(QGridLayout, gl_3d).addWidget(self._traj_view_r, 0, 0)
-            cast(QGridLayout, gl_value).addWidget(value_box, 0, 0)
+            value_layout = cast(QGridLayout, gl_value)
+            value_layout.addWidget(value_box, 1, 0, alignment=Qt.AlignmentFlag.AlignBottom)
             if gl_graph is not None:
                 graph_hint = QLabel("Графики (2D) размещаются в этом блоке", self)
                 graph_hint.setStyleSheet("color:#666;")
@@ -670,8 +671,9 @@ class MainWindow(QMainWindow):
             if gl_graph is not None:
                 cast(QGridLayout, gl_graph).setColumnStretch(0, 1)
                 cast(QGridLayout, gl_graph).setRowStretch(0, 1)
-            cast(QGridLayout, gl_value).setColumnStretch(0, 1)
-            cast(QGridLayout, gl_value).setRowStretch(0, 1)
+            value_layout.setColumnStretch(0, 1)
+            value_layout.setRowStretch(0, 1)
+            value_layout.setRowStretch(1, 0)
         elif gl_legacy is not None:
             gl_legacy.addWidget(self._traj_view_r, 0, 0)
             gl_legacy.addWidget(value_box, 0, 1)
