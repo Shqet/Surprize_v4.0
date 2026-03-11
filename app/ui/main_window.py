@@ -238,7 +238,13 @@ class MainWindow(QMainWindow):
         self._gl_gps_sdr_options_m: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_gpsSDRSim_options_m")
         self._gl_functional_buttons: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_functionalButtons")
         self._gl_functional_buttons_m: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_functionalButtons_m")
-        self._gl_replay: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_replay")
+        replay_obj = self.findChild(QGridLayout, "l_replay")
+        if replay_obj is None and hasattr(self.ui, "l_replay"):
+            replay_obj = getattr(self.ui, "l_replay")
+        self._gl_replay: Optional[QGridLayout] = cast(Optional[QGridLayout], replay_obj)
+        self._gl_replay_video: Optional[QGridLayout] = self._safe_find_layout_any(QGridLayout, "l_video")
+        self._gl_replay_graph: Optional[QGridLayout] = self._safe_find_layout_any(QGridLayout, "l_graph", "l_graphs")
+        self._gl_replay_value_manage: Optional[QGridLayout] = self._safe_find_layout_any(QGridLayout, "l_value_manage")
         self._gl_options: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_options")
 
         self._editor: Optional[ConfigJsonEditor] = None
@@ -581,16 +587,25 @@ class MainWindow(QMainWindow):
         gl.setColumnStretch(0, 1)
 
     def _init_replay_panel(self) -> None:
-        gl = self._gl_replay
-        if gl is None:
+        gl_video = self._gl_replay_video
+        gl_graph = self._gl_replay_graph
+        gl_value = self._gl_replay_value_manage
+        gl_legacy = self._gl_replay
+        has_new_layout = gl_video is not None and gl_graph is not None and gl_value is not None
+        if not has_new_layout and gl_legacy is None:
             return
-        self._clear_layout(gl)
+        if has_new_layout:
+            self._clear_layout(cast(QLayout, gl_video))
+            self._clear_layout(cast(QLayout, gl_graph))
+            self._clear_layout(cast(QLayout, gl_value))
+        elif gl_legacy is not None:
+            self._clear_layout(gl_legacy)
 
-        replay_box = QGroupBox("Replay sync (offline)", self)
-        replay_form = QFormLayout(replay_box)
+        value_box = QGroupBox("Replay sync (offline)", self)
+        value_form = QFormLayout(value_box)
 
-        self._btn_replay_open_m = QPushButton("Открыть сессию", replay_box)
-        self._btn_replay_play_m = QPushButton("Play", replay_box)
+        self._btn_replay_open_m = QPushButton("Открыть сессию", value_box)
+        self._btn_replay_play_m = QPushButton("Play", value_box)
         self._btn_replay_play_m.setCheckable(True)
         self._btn_replay_play_m.setEnabled(False)
         hdr_row = QHBoxLayout()
@@ -598,40 +613,50 @@ class MainWindow(QMainWindow):
         hdr_row.addWidget(self._btn_replay_open_m)
         hdr_row.addWidget(self._btn_replay_play_m)
 
-        self._lbl_replay_session_m = QLabel("Сессия: -", replay_box)
-        self._lbl_replay_trel_m = QLabel("t_rel: 0.000 c", replay_box)
-        self._replay_slider_m = QSlider(Qt.Orientation.Horizontal, replay_box)
+        self._lbl_replay_session_m = QLabel("Сессия: -", value_box)
+        self._lbl_replay_trel_m = QLabel("t_rel: 0.000 c", value_box)
+        self._replay_slider_m = QSlider(Qt.Orientation.Horizontal, value_box)
         self._replay_slider_m.setRange(0, 0)
         self._replay_slider_m.setEnabled(False)
 
-        self._lbl_replay_visible_info_m = QLabel("Visible: -", replay_box)
-        self._lbl_replay_thermal_info_m = QLabel("Thermal: -", replay_box)
-        self._lbl_replay_traj_info_m = QLabel("Trajectory: -", replay_box)
-        self._lbl_replay_visible_img_m = QLabel("no frame", replay_box)
-        self._lbl_replay_thermal_img_m = QLabel("no frame", replay_box)
+        self._lbl_replay_visible_info_m = QLabel("Visible: -", value_box)
+        self._lbl_replay_thermal_info_m = QLabel("Thermal: -", value_box)
+        self._lbl_replay_traj_info_m = QLabel("Trajectory: -", value_box)
+        self._lbl_replay_visible_img_m = QLabel("no frame", self)
+        self._lbl_replay_thermal_img_m = QLabel("no frame", self)
         for img_lbl in (self._lbl_replay_visible_img_m, self._lbl_replay_thermal_img_m):
             img_lbl.setMinimumSize(240, 135)
             img_lbl.setStyleSheet("border:1px solid #666; background:#111; color:#ddd;")
             img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        video_box = QGroupBox("Видео (синхронные кадры)", self)
+        video_form = QFormLayout(video_box)
         img_row = QHBoxLayout()
         img_row.setContentsMargins(0, 0, 0, 0)
         img_row.addWidget(self._lbl_replay_visible_img_m)
         img_row.addWidget(self._lbl_replay_thermal_img_m)
+        video_form.addRow(img_row)
 
-        replay_form.addRow(hdr_row)
-        replay_form.addRow(self._lbl_replay_session_m)
-        replay_form.addRow(self._lbl_replay_trel_m)
-        replay_form.addRow(self._replay_slider_m)
-        replay_form.addRow(self._lbl_replay_visible_info_m)
-        replay_form.addRow(self._lbl_replay_thermal_info_m)
-        replay_form.addRow(self._lbl_replay_traj_info_m)
-        replay_form.addRow(img_row)
+        value_form.addRow(hdr_row)
+        value_form.addRow(self._lbl_replay_session_m)
+        value_form.addRow(self._lbl_replay_trel_m)
+        value_form.addRow(self._replay_slider_m)
+        value_form.addRow(self._lbl_replay_visible_info_m)
+        value_form.addRow(self._lbl_replay_thermal_info_m)
+        value_form.addRow(self._lbl_replay_traj_info_m)
 
         self._traj_view_r.set_status("Replay trajectory (3D)\nОткройте завершенную сессию")
-        gl.addWidget(self._traj_view_r, 0, 0)
-        gl.addWidget(replay_box, 0, 1)
-        gl.setColumnStretch(0, 2)
-        gl.setColumnStretch(1, 1)
+        if has_new_layout:
+            cast(QGridLayout, gl_video).addWidget(video_box, 0, 0)
+            cast(QGridLayout, gl_graph).addWidget(self._traj_view_r, 0, 0)
+            cast(QGridLayout, gl_value).addWidget(value_box, 0, 0)
+            cast(QGridLayout, gl_video).setColumnStretch(0, 1)
+            cast(QGridLayout, gl_graph).setColumnStretch(0, 1)
+            cast(QGridLayout, gl_value).setColumnStretch(0, 1)
+        elif gl_legacy is not None:
+            gl_legacy.addWidget(self._traj_view_r, 0, 0)
+            gl_legacy.addWidget(value_box, 0, 1)
+            gl_legacy.setColumnStretch(0, 2)
+            gl_legacy.setColumnStretch(1, 1)
 
     def _init_options_panel(self) -> None:
         gl = self._gl_options
@@ -2530,3 +2555,14 @@ class MainWindow(QMainWindow):
             self._log_error("UI_LAYOUT_NOT_FOUND", f"layout={name}")
             return None
         return cast(typ, obj)
+
+    def _safe_find_layout_any(self, typ: type, *names: str):
+        for name in names:
+            obj = self.findChild(typ, name)
+            if obj is None and hasattr(self.ui, name):
+                obj = getattr(self.ui, name)
+            if obj is not None:
+                return cast(typ, obj)
+        if names:
+            self._log_error("UI_LAYOUT_NOT_FOUND", f"layout_any={','.join(names)}")
+        return None
