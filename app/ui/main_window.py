@@ -77,6 +77,7 @@ _DEFAULT_GPS_ORIGIN_H_M = 156.0
 _DEFAULT_AUTO_STOP_AFTER_GPS_SEC = 10.0
 _DEFAULT_ANIM_WITHOUT_TEST = True
 _DEFAULT_SESSION_OUTPUT_ROOT = "outputs/sessions"
+_REPLAY_CHANNEL_GAP_SEC = 0.5
 
 
 class ReplayState(str, Enum):
@@ -2100,14 +2101,18 @@ class MainWindow(QMainWindow):
         thr = self._nearest_frame(self._replay_thermal_frames, self._replay_thermal_times, t)
         self._render_replay_channel(
             name="Видимый канал",
+            t_master=t,
             frame_info=vis,
+            has_stream=bool(self._replay_visible_frames),
             label_info=self._lbl_replay_visible_info_m,
             label_img=self._lbl_replay_visible_img_m,
             cap=self._replay_cap_visible,
         )
         self._render_replay_channel(
             name="Тепловой канал",
+            t_master=t,
             frame_info=thr,
+            has_stream=bool(self._replay_thermal_frames),
             label_info=self._lbl_replay_thermal_info_m,
             label_img=self._lbl_replay_thermal_img_m,
             cap=self._replay_cap_thermal,
@@ -2117,38 +2122,75 @@ class MainWindow(QMainWindow):
         self,
         *,
         name: str,
+        t_master: float,
         frame_info: Optional[tuple[float, int]],
+        has_stream: bool,
         label_info: Optional[QLabel],
         label_img: Optional[QLabel],
         cap: Any,
     ) -> None:
+        has_video = cv2 is not None and cap is not None
+        status, reason = self._replay_channel_status(
+            t_master=t_master,
+            frame_info=frame_info,
+            has_stream=has_stream,
+            has_video=has_video,
+        )
+        detail = ""
         if frame_info is None:
+            detail = "frame=- t=- dt=-"
             if label_info is not None:
-                label_info.setText(f"{name}: разрыв/нет кадра")
+                label_info.setText(f"{name}: {status} | {detail} | {reason}")
             if label_img is not None:
-                label_img.setText("нет кадра")
+                label_img.setText(status)
                 label_img.setPixmap(QPixmap())
             return
 
         t_frame, idx = frame_info
-        if label_info is not None:
-            label_info.setText(f"{name}: frame={idx} t={t_frame:.3f}")
-        if label_img is None:
-            return
-        pix = self._read_video_frame_pixmap(cap, idx)
-        if pix is None:
-            label_img.setText("кадр недоступен")
+        dt = abs(float(t_frame) - float(t_master))
+        detail = f"frame={idx} t={t_frame:.3f} dt={dt:.3f}"
+        if has_video and label_img is not None:
+            pix = self._read_video_frame_pixmap(cap, idx)
+            if pix is None:
+                status = "GAP"
+                reason = "кадр недоступен"
+                label_img.setText(status)
+                label_img.setPixmap(QPixmap())
+            else:
+                label_img.setText("")
+                label_img.setPixmap(
+                    pix.scaled(
+                        label_img.width(),
+                        label_img.height(),
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+        elif label_img is not None:
+            label_img.setText(status)
             label_img.setPixmap(QPixmap())
-            return
-        label_img.setText("")
-        label_img.setPixmap(
-            pix.scaled(
-                label_img.width(),
-                label_img.height(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        )
+
+        if label_info is not None:
+            label_info.setText(f"{name}: {status} | {detail} | {reason}")
+
+    @staticmethod
+    def _replay_channel_status(
+        *,
+        t_master: float,
+        frame_info: Optional[tuple[float, int]],
+        has_stream: bool,
+        has_video: bool,
+    ) -> tuple[str, str]:
+        if not has_stream:
+            return ("N/A", "канал не записан")
+        if frame_info is None:
+            return ("GAP", "нет ближайшего кадра")
+        t_frame = float(frame_info[0])
+        if abs(t_frame - float(t_master)) > float(_REPLAY_CHANNEL_GAP_SEC):
+            return ("GAP", "разрыв по времени")
+        if not has_video:
+            return ("N/A", "видео недоступно")
+        return ("OK", "синхронизация в норме")
 
     def _read_video_frame_pixmap(self, cap: Any, frame_idx: int) -> Optional[QPixmap]:
         if cv2 is None or cap is None:

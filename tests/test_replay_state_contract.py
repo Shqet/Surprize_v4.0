@@ -147,3 +147,40 @@ def test_replay_seek_from_eof_allows_replay_again() -> None:
     assert h._replay_state == ReplayState.PAUSED
     MainWindow.play(h)
     assert h._replay_state == ReplayState.PLAYING
+
+
+def test_replay_channel_status_ok() -> None:
+    st, reason = MainWindow._replay_channel_status(
+        t_master=10.0,
+        frame_info=(10.2, 100),
+        has_stream=True,
+        has_video=True,
+    )
+    assert st == "OK"
+    assert "норме" in reason
+
+
+def test_replay_channel_status_gap_and_na() -> None:
+    st1, _ = MainWindow._replay_channel_status(
+        t_master=10.0,
+        frame_info=(12.0, 100),
+        has_stream=True,
+        has_video=True,
+    )
+    assert st1 == "GAP"
+
+    st2, _ = MainWindow._replay_channel_status(
+        t_master=10.0,
+        frame_info=(10.0, 100),
+        has_stream=True,
+        has_video=False,
+    )
+    assert st2 == "N/A"
+
+    st3, _ = MainWindow._replay_channel_status(
+        t_master=10.0,
+        frame_info=None,
+        has_stream=False,
+        has_video=False,
+    )
+    assert st3 == "N/A"
