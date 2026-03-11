@@ -124,17 +124,20 @@ class Ui_MainWindow(object):
         self.menubar = QtWidgets.QMenuBar(parent=MainWindow)
         self.menubar.setGeometry(QtCore.QRect(0, 0, 1188, 21))
         self.menubar.setObjectName("menubar")
-        self.menu = QtWidgets.QMenu(parent=self.menubar)
-        self.menu.setObjectName("menu")
+        self.m_menu = QtWidgets.QMenu(parent=self.menubar)
+        self.m_menu.setObjectName("m_menu")
         MainWindow.setMenuBar(self.menubar)
         self.statusbar = QtWidgets.QStatusBar(parent=MainWindow)
         self.statusbar.setObjectName("statusbar")
         MainWindow.setStatusBar(self.statusbar)
-        self.menubar.addAction(self.menu.menuAction())
+        self.a_options = QtGui.QAction(parent=MainWindow)
+        self.a_options.setObjectName("a_options")
+        self.m_menu.addAction(self.a_options)
+        self.menubar.addAction(self.m_menu.menuAction())
 
         self.retranslateUi(MainWindow)
         self.tW_main.setCurrentIndex(0)
-        self.tw_research.setCurrentIndex(1)
+        self.tw_research.setCurrentIndex(0)
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
 
     def retranslateUi(self, MainWindow):
@@ -144,7 +147,8 @@ class Ui_MainWindow(object):
         self.tw_research.setTabText(self.tw_research.indexOf(self.monitoringTab), _translate("MainWindow", "Мониторинг"))
         self.tW_main.setTabText(self.tW_main.indexOf(self.trialTab), _translate("MainWindow", "Испытание"))
         self.tW_main.setTabText(self.tW_main.indexOf(self.replayTab), _translate("MainWindow", "Просмотр"))
-        self.menu.setTitle(_translate("MainWindow", "Настройки"))
+        self.m_menu.setTitle(_translate("MainWindow", "Меню"))
+        self.a_options.setText(_translate("MainWindow", "Настройки"))
 
 
 if __name__ == "__main__":
