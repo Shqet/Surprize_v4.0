@@ -347,6 +347,7 @@ class MainWindow(QMainWindow):
         self._replay_play_started_t_sec: float = 0.0
         self._replay_cap_visible: Any = None
         self._replay_cap_thermal: Any = None
+        self._replay_pix_cache: dict[str, tuple[int, int, int, QPixmap]] = {}
         self._replay_graph_sync = GraphSyncAdapter()
         self._replay_graph_time_unsub: Optional[Callable[[], None]] = None
         self._replay_graph_event_unsub: Optional[Callable[[], None]] = None
@@ -751,13 +752,14 @@ class MainWindow(QMainWindow):
             img_lbl.setMinimumSize(240, 135)
             img_lbl.setStyleSheet("border:1px solid #666; background:#111; color:#ddd;")
             img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            img_lbl.setScaledContents(False)
         video_box = QGroupBox("Видео (синхронные кадры)", self)
         video_layout = QVBoxLayout(video_box)
         img_col = QVBoxLayout()
         img_col.setContentsMargins(0, 0, 0, 0)
         img_col.setSpacing(8)
         for img_lbl in (self._lbl_replay_visible_img_m, self._lbl_replay_thermal_img_m):
-            img_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            img_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         img_col.addWidget(self._lbl_replay_visible_img_m)
         img_col.addWidget(self._lbl_replay_thermal_img_m)
         video_layout.addLayout(img_col, 1)
@@ -1997,6 +1999,7 @@ class MainWindow(QMainWindow):
                 pass
         self._replay_cap_visible = None
         self._replay_cap_thermal = None
+        self._replay_pix_cache.clear()
 
     def _read_replay_timeline(self, path: Path) -> list[tuple[float, float, float, float, float]]:
         if not path.exists():
@@ -2299,22 +2302,34 @@ class MainWindow(QMainWindow):
         dt = abs(float(t_frame) - float(t_master))
         detail = f"frame={idx} t={t_frame:.3f} dt={dt:.3f}"
         if has_video and label_img is not None:
-            pix = self._read_video_frame_pixmap(cap, idx)
-            if pix is None:
+            target_w = max(1, int(label_img.contentsRect().width()))
+            target_h = max(1, int(label_img.contentsRect().height()))
+            cache_key = "visible" if "Видимый" in name else "thermal"
+            pix_cache = getattr(self, "_replay_pix_cache", {})
+            cached = pix_cache.get(cache_key) if isinstance(pix_cache, dict) else None
+            if cached is not None and cached[0] == int(idx) and cached[1] == target_w and cached[2] == target_h:
+                pix_scaled = cached[3]
+            else:
+                pix = self._read_video_frame_pixmap(cap, idx)
+                if pix is not None:
+                    pix_scaled = pix.scaled(
+                        target_w,
+                        target_h,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                    if isinstance(pix_cache, dict):
+                        pix_cache[cache_key] = (int(idx), target_w, target_h, pix_scaled)
+                else:
+                    pix_scaled = None
+            if pix_scaled is None:
                 status = "GAP"
                 reason = "кадр недоступен"
                 label_img.setText(status)
                 label_img.setPixmap(QPixmap())
             else:
                 label_img.setText("")
-                label_img.setPixmap(
-                    pix.scaled(
-                        label_img.width(),
-                        label_img.height(),
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
-                )
+                label_img.setPixmap(pix_scaled)
         elif label_img is not None:
             label_img.setText(status)
             label_img.setPixmap(QPixmap())
