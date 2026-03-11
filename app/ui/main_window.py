@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -467,6 +468,7 @@ class MainWindow(QMainWindow):
         self._btn_session_output_root_m_browse: Optional[QPushButton] = None
         self._btn_session_output_root_m_default: Optional[QPushButton] = None
         self._opt_reset_defaults_btn: Optional[QPushButton] = None
+        self._options_dialog: Optional[QDialog] = None
         self._last_trajectory_end_local: Optional[tuple[float, float, float]] = None
         self._init_sdr_options_panel()
         self._init_options_panel()
@@ -982,8 +984,13 @@ class MainWindow(QMainWindow):
         if gl is None:
             return
         self._clear_layout(gl)
+        box = self._create_options_box(self)
+        gl.addWidget(box, 0, 0)
+        gl.setRowStretch(1, 1)
+        gl.setColumnStretch(0, 1)
 
-        box = QGroupBox("Пользовательские настройки", self)
+    def _create_options_box(self, parent: QWidget) -> QGroupBox:
+        box = QGroupBox("Пользовательские настройки", parent)
         form = QFormLayout(box)
 
         self._opt_auto_stop_spin = QDoubleSpinBox(box)
@@ -1042,10 +1049,50 @@ class MainWindow(QMainWindow):
         form.addRow("Дефолтный путь к эфемеридам", nav_row)
         form.addRow("Папка сессий по умолчанию", session_root_row)
         form.addRow(self._opt_reset_defaults_btn)
+        return box
 
-        gl.addWidget(box, 0, 0)
-        gl.setRowStretch(1, 1)
-        gl.setColumnStretch(0, 1)
+    def _open_options_dialog(self) -> None:
+        dlg = self._options_dialog
+        if dlg is not None and dlg.isVisible():
+            dlg.raise_()
+            dlg.activateWindow()
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Настройки")
+        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setModal(True)
+        dlg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        dlg.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
+        dlg_layout = QVBoxLayout(dlg)
+        dlg_layout.setContentsMargins(10, 10, 10, 10)
+        dlg_layout.setSpacing(8)
+        dlg_layout.addWidget(self._create_options_box(dlg))
+        close_btn = QPushButton("Закрыть", dlg)
+        close_btn.clicked.connect(dlg.accept)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        btn_row.addWidget(close_btn)
+        dlg_layout.addLayout(btn_row)
+        dlg.setMinimumWidth(560)
+        dlg.finished.connect(self._on_options_dialog_closed)
+        self._options_dialog = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def _on_options_dialog_closed(self, _result: int) -> None:
+        self._options_dialog = None
+        self._opt_auto_stop_spin = None
+        self._opt_theme_combo = None
+        self._opt_anim_without_test_chk = None
+        self._opt_nav_default_edit = None
+        self._opt_nav_default_browse = None
+        self._opt_session_output_root_edit = None
+        self._opt_session_output_root_browse = None
+        self._opt_reset_defaults_btn = None
+        if self._gl_options is not None:
+            self._init_options_panel()
 
     def _init_rtsp_previews(self) -> None:
         if self._vl_rtsp_visible is not None:
@@ -1365,6 +1412,10 @@ class MainWindow(QMainWindow):
     # ---------------- wiring ----------------
 
     def _connect_actions(self) -> None:
+        opt_action = getattr(self.ui, "a_options", None)
+        if opt_action is not None and hasattr(opt_action, "triggered"):
+            opt_action.triggered.connect(self._open_options_dialog)
+
         btn = self._get_generate_button()
         if btn is not None and self._gen_ctl is not None:
             btn.clicked.connect(self._gen_ctl.on_generate_clicked)
