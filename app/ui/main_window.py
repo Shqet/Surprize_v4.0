@@ -284,11 +284,16 @@ QPushButton:disabled {
 }
 QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox {
     background-color: #ffffff;
-    border: 1px solid #c3ccd5;
+    border: 1px solid #98a6b8;
     border-radius: 4px;
-    padding: 2px 4px;
+    padding: 3px 6px;
     color: #1f2937;
     selection-background-color: #cfe5ff;
+}
+QLineEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus {
+    border: 2px solid #4f83cc;
+    padding: 2px 5px;
+    background-color: #fdfefe;
 }
 QTabWidget::pane {
     border: 1px solid #d0d7de;
