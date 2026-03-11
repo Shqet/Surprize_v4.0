@@ -184,3 +184,15 @@ def test_replay_channel_status_gap_and_na() -> None:
         has_video=False,
     )
     assert st3 == "N/A"
+
+
+def test_format_replay_3d_overlay_contains_time_and_index() -> None:
+    text = MainWindow._format_replay_3d_overlay(
+        t_sec=12.3456,
+        idx=4,
+        pt=(12.3, 100.0, 200.0, 50.0, 88.5),
+        total=120,
+    )
+    assert "t=12.346" in text
+    assert "idx=5/120" in text
+    assert "x=100.0" in text

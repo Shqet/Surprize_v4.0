@@ -2082,6 +2082,20 @@ class MainWindow(QMainWindow):
             return False
         return bool(self._replay_timeline)
 
+    @staticmethod
+    def _format_replay_3d_overlay(
+        *,
+        t_sec: float,
+        idx: int,
+        pt: tuple[float, float, float, float, float],
+        total: int,
+    ) -> str:
+        return (
+            f"3D replay\n"
+            f"t={float(t_sec):.3f} c  idx={int(idx) + 1}/{max(1, int(total))}\n"
+            f"x={float(pt[1]):.1f} y={float(pt[2]):.1f} z={float(pt[3]):.1f} v={float(pt[4]):.2f}"
+        )
+
     def _render_replay_state(self) -> None:
         if not self._replay_timeline:
             return
@@ -2092,6 +2106,7 @@ class MainWindow(QMainWindow):
         idx = self._nearest_timeline_index(t)
         pt = self._replay_timeline[idx]
         self._traj_view_r.set_marker_point((pt[1], pt[2], pt[3]))
+        self._traj_view_r.set_status(self._format_replay_3d_overlay(t_sec=t, idx=idx, pt=pt, total=len(self._replay_timeline)))
         if self._lbl_replay_traj_info_m is not None:
             self._lbl_replay_traj_info_m.setText(
                 f"Траектория: idx={idx} t={pt[0]:.3f} x={pt[1]:.1f} y={pt[2]:.1f} z={pt[3]:.1f} v={pt[4]:.2f}"
