@@ -917,6 +917,8 @@ class MainWindow(QMainWindow):
                 graph_hint.setWordWrap(True)
                 self._lbl_replay_graph_sync_time_m = QLabel("Синхронизация времени: -", graph_box)
                 self._lbl_replay_graph_sync_event_m = QLabel("Событие синхронизации: -", graph_box)
+                self._lbl_replay_graph_sync_time_m.setWordWrap(True)
+                self._lbl_replay_graph_sync_event_m.setWordWrap(True)
                 graph_layout.addRow(graph_hint)
                 graph_layout.addRow(self._lbl_replay_graph_sync_time_m)
                 graph_layout.addRow(self._lbl_replay_graph_sync_event_m)
@@ -2346,7 +2348,11 @@ class MainWindow(QMainWindow):
             src = self._localize_sync_source(source)
             st = self._localize_replay_state_label(state.value)
             self._lbl_replay_graph_sync_time_m.setText(
-                f"Синхронизация времени: t={float(t_sec):.3f} c источник={src} состояние={st} скорость={float(rate):.2f}x"
+                "Синхронизация времени:\n"
+                f"t={float(t_sec):.3f} c\n"
+                f"источник={src}\n"
+                f"состояние={st}\n"
+                f"скорость={float(rate):.2f}x"
             )
 
     def _on_graph_sync_event(
@@ -2368,13 +2374,17 @@ class MainWindow(QMainWindow):
             if sess is not None:
                 loc_payload["сессия"] = sess
                 loc_payload.pop("session", None)
-            compact = ", ".join(f"{k}={loc_payload[k]}" for k in sorted(loc_payload.keys()))
-            tail = f" | {compact}"
+            compact = "\n".join(f"{k}={loc_payload[k]}" for k in sorted(loc_payload.keys()))
+            tail = f"\n{compact}"
         if self._lbl_replay_graph_sync_event_m is not None:
             ev = self._localize_sync_event(event)
             st = self._localize_replay_state_label(state.value)
             self._lbl_replay_graph_sync_event_m.setText(
-                f"Событие синхронизации: {ev} @t={float(t_sec):.3f} c состояние={st} скорость={float(rate):.2f}x{tail}"
+                "Событие синхронизации:\n"
+                f"тип={ev}\n"
+                f"t={float(t_sec):.3f} c\n"
+                f"состояние={st}\n"
+                f"скорость={float(rate):.2f}x{tail}"
             )
 
     @staticmethod
