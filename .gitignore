@@ -30,3 +30,5 @@ latest.jpg
 
 /.pytest_tmp/
 /_pytest_basetemp/
+/build/
+/dist/
