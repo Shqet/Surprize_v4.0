@@ -340,6 +340,7 @@ class MainWindow(QMainWindow):
         self._lbl_session_video_m: Optional[QLabel] = None
         self._lbl_session_gps_m: Optional[QLabel] = None
         self._lbl_session_degraded_m: Optional[QLabel] = None
+        self._lbl_runtime_gate_m: Optional[QLabel] = None
         self._lbl_last_test_result_m: Optional[QLabel] = None
         self._btn_open_last_results_m: Optional[QPushButton] = None
         self._session_output_root_m_edit: Optional[QLineEdit] = None
@@ -953,6 +954,8 @@ class MainWindow(QMainWindow):
             self._readiness_progress_m.setValue(0)
             self._readiness_progress_m.setVisible(False)
             self._readiness_progress_m.setTextVisible(True)
+            self._lbl_runtime_gate_m = QLabel("Критический статус: готов к запуску", self)
+            self._lbl_runtime_gate_m.setStyleSheet("font-weight:700; color:#2e7d32;")
             self._lbl_session_id_m = QLabel("Сессия: -", self)
             self._lbl_session_status_m = QLabel("Статус: -", self)
             self._lbl_session_elapsed_m = QLabel("Время: 00:00.0", self)
@@ -965,6 +968,8 @@ class MainWindow(QMainWindow):
             self._session_output_root_m_edit = QLineEdit(self)
             self._session_output_root_m_edit.setText(str(self._settings.get("session_output_root", _DEFAULT_SESSION_OUTPUT_ROOT)))
             self._session_output_root_m_edit.setPlaceholderText(_DEFAULT_SESSION_OUTPUT_ROOT)
+            self._session_output_root_m_edit.setFixedHeight(26)
+            self._session_output_root_m_edit.setStyleSheet("color:#444;")
             self._btn_session_output_root_m_browse = QPushButton("...", self)
             self._btn_session_output_root_m_browse.setFixedWidth(34)
             self._btn_session_output_root_m_default = QPushButton("Путь по умолчанию", self)
@@ -975,20 +980,26 @@ class MainWindow(QMainWindow):
             session_row.addWidget(self._btn_session_output_root_m_default)
             session_row_widget = QWidget(self)
             session_row_widget.setLayout(session_row)
+            last_row = QHBoxLayout()
+            last_row.setContentsMargins(0, 0, 0, 0)
+            last_row.addWidget(self._lbl_last_test_result_m, 1)
+            last_row.addWidget(self._btn_open_last_results_m, 0)
+            last_row_widget = QWidget(self)
+            last_row_widget.setLayout(last_row)
             glm.addWidget(self._btn_check_readiness_m, 0, 0)
             glm.addWidget(self._btn_start_test_m, 0, 1)
             glm.addWidget(self._btn_stop_test_m, 0, 2)
             glm.addWidget(self._readiness_progress_m, 1, 0, 1, 3)
-            glm.addWidget(QLabel("Папка результатов:", self), 2, 0, 1, 3)
-            glm.addWidget(session_row_widget, 3, 0, 1, 3)
-            glm.addWidget(self._lbl_session_id_m, 4, 0, 1, 3)
-            glm.addWidget(self._lbl_session_status_m, 5, 0, 1, 3)
-            glm.addWidget(self._lbl_session_elapsed_m, 6, 0, 1, 3)
-            glm.addWidget(self._lbl_session_video_m, 7, 0, 1, 3)
-            glm.addWidget(self._lbl_session_gps_m, 8, 0, 1, 3)
-            glm.addWidget(self._lbl_session_degraded_m, 9, 0, 1, 3)
-            glm.addWidget(self._lbl_last_test_result_m, 10, 0, 1, 3)
-            glm.addWidget(self._btn_open_last_results_m, 11, 0, 1, 3)
+            glm.addWidget(self._lbl_runtime_gate_m, 2, 0, 1, 3)
+            glm.addWidget(QLabel("Папка результатов:", self), 3, 0, 1, 3)
+            glm.addWidget(session_row_widget, 4, 0, 1, 3)
+            glm.addWidget(self._lbl_session_id_m, 5, 0, 1, 3)
+            glm.addWidget(self._lbl_session_status_m, 6, 0, 1, 3)
+            glm.addWidget(self._lbl_session_elapsed_m, 7, 0, 1, 3)
+            glm.addWidget(self._lbl_session_video_m, 8, 0, 1, 3)
+            glm.addWidget(self._lbl_session_gps_m, 9, 0, 1, 3)
+            glm.addWidget(self._lbl_session_degraded_m, 10, 0, 1, 3)
+            glm.addWidget(last_row_widget, 11, 0, 1, 3)
             glm.setColumnStretch(0, 1)
             glm.setColumnStretch(1, 1)
             glm.setColumnStretch(2, 1)
@@ -1482,6 +1493,22 @@ class MainWindow(QMainWindow):
         gps = state.get("gps_tx") if isinstance(state.get("gps_tx"), dict) else {}
         degraded = bool(state.get("degraded", False))
         error = bool(state.get("error", False))
+        busy = (self._readiness_task is not None) or (self._start_session_task is not None) or (self._stop_session_task is not None)
+        is_active = bool(state.get("active", False))
+
+        if self._lbl_runtime_gate_m is not None:
+            if error:
+                self._lbl_runtime_gate_m.setText("Критический статус: ошибка сессии")
+                self._lbl_runtime_gate_m.setStyleSheet("font-weight:700; color:#c62828;")
+            elif is_active:
+                self._lbl_runtime_gate_m.setText("Критический статус: идет испытание")
+                self._lbl_runtime_gate_m.setStyleSheet("font-weight:700; color:#1565c0;")
+            elif busy:
+                self._lbl_runtime_gate_m.setText("Критический статус: идет предстартовая операция")
+                self._lbl_runtime_gate_m.setStyleSheet("font-weight:700; color:#f9a825;")
+            else:
+                self._lbl_runtime_gate_m.setText("Критический статус: готов к запуску")
+                self._lbl_runtime_gate_m.setStyleSheet("font-weight:700; color:#2e7d32;")
 
         if self._lbl_session_id_m is not None:
             self._lbl_session_id_m.setText(f"Сессия: {session_id}")
@@ -1517,6 +1544,17 @@ class MainWindow(QMainWindow):
             mode_txt = "деградация" if degraded else "нормальный"
             err_txt = "ошибка" if error else "ок"
             self._lbl_session_degraded_m.setText(f"Режим: {mode_txt}, состояние: {err_txt}")
+            degrade_details: list[str] = []
+            channels = video.get("channels") if isinstance(video.get("channels"), list) else []
+            bad_channels = [str(x.get("channel", "?")) for x in channels if isinstance(x, dict) and bool(x.get("degraded", False))]
+            if bad_channels:
+                degrade_details.append("деградировали каналы видео: " + ", ".join(bad_channels))
+            gps_state = str(gps.get("state", ""))
+            if gps_state in ("exited", "error"):
+                degrade_details.append(f"GPS трансляция: {self._runtime_component_state_ru(gps_state)}")
+            if error:
+                degrade_details.append("сессия завершилась с ошибкой")
+            self._lbl_session_degraded_m.setToolTip("; ".join(degrade_details) if degrade_details else "Деградация не зафиксирована")
             if error:
                 self._lbl_session_degraded_m.setStyleSheet("color:#c62828;")
             elif degraded:
