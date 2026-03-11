@@ -410,6 +410,8 @@ class MainWindow(QMainWindow):
         self._replay_graph_sync = GraphSyncAdapter()
         self._replay_graph_time_unsub: Optional[Callable[[], None]] = None
         self._replay_graph_event_unsub: Optional[Callable[[], None]] = None
+        self._rtsp_visible_preview: Optional[RtspPreviewWidget] = None
+        self._rtsp_thermal_preview: Optional[RtspPreviewWidget] = None
         self._m_speed_lbl: Optional[QLabel] = None
         self._m_coords_lbl: Optional[QLabel] = None
         self._m_geo_lbl: Optional[QLabel] = None
@@ -666,6 +668,10 @@ class MainWindow(QMainWindow):
             normalized = _DEFAULT_UI_THEME
         self._settings["ui_theme"] = normalized
         self.setStyleSheet(_theme_stylesheet(normalized))
+        if self._rtsp_visible_preview is not None:
+            self._rtsp_visible_preview.set_theme(normalized)
+        if self._rtsp_thermal_preview is not None:
+            self._rtsp_thermal_preview.set_theme(normalized)
         self._apply_native_titlebar_theme(normalized == "dark")
 
     def _apply_native_titlebar_theme(self, dark: bool) -> None:
@@ -906,11 +912,11 @@ class MainWindow(QMainWindow):
             if gl_graph is not None:
                 graph_box = QGroupBox("Синхронизация графиков (2D, заготовка)", self)
                 graph_layout = QFormLayout(graph_box)
-                graph_hint = QLabel("Данные Маяка пока не подключены. Плеер уже публикует sync-события.", graph_box)
+                graph_hint = QLabel("Данные Маяка пока не подключены. Плеер уже публикует события синхронизации.", graph_box)
                 graph_hint.setStyleSheet("color:#666;")
                 graph_hint.setWordWrap(True)
-                self._lbl_replay_graph_sync_time_m = QLabel("sync_time: -", graph_box)
-                self._lbl_replay_graph_sync_event_m = QLabel("sync_event: -", graph_box)
+                self._lbl_replay_graph_sync_time_m = QLabel("Синхронизация времени: -", graph_box)
+                self._lbl_replay_graph_sync_event_m = QLabel("Событие синхронизации: -", graph_box)
                 graph_layout.addRow(graph_hint)
                 graph_layout.addRow(self._lbl_replay_graph_sync_time_m)
                 graph_layout.addRow(self._lbl_replay_graph_sync_event_m)
@@ -1004,13 +1010,15 @@ class MainWindow(QMainWindow):
 
     def _init_rtsp_previews(self) -> None:
         if self._vl_rtsp_visible is not None:
-            w = RtspPreviewWidget(_DEFAULT_PREVIEW_VISIBLE, title="Visible", poll_ms=200, parent=self)
+            w = RtspPreviewWidget(_DEFAULT_PREVIEW_VISIBLE, title="Видимый канал", poll_ms=200, parent=self)
             w.setMaximumWidth(500)
             self._vl_rtsp_visible.addWidget(w, 0, 0)
+            self._rtsp_visible_preview = w
         if self._vl_rtsp_thermal is not None:
-            w = RtspPreviewWidget(_DEFAULT_PREVIEW_THERMAL, title="Thermal", poll_ms=200, parent=self)
+            w = RtspPreviewWidget(_DEFAULT_PREVIEW_THERMAL, title="Тепловизионный канал", poll_ms=200, parent=self)
             w.setMaximumWidth(500)
             self._vl_rtsp_thermal.addWidget(w, 0, 0)
+            self._rtsp_thermal_preview = w
 
     def _init_sdr_options_panel(self) -> None:
         gl_scenario = self._gl_sdr_options
@@ -1746,14 +1754,14 @@ class MainWindow(QMainWindow):
             rows.append(("Pluto input", "ok", "готово"))
 
         if "video_visible_not_ready" in warnings:
-            rows.append(("Камера Visible", "warn", "не готово (допустимо)"))
+            rows.append(("Камера видимого диапазона", "warn", "не готово (допустимо)"))
         else:
-            rows.append(("Камера Visible", "ok", "готово"))
+            rows.append(("Камера видимого диапазона", "ok", "готово"))
 
         if "video_thermal_not_ready" in warnings:
-            rows.append(("Камера Thermal", "warn", "не готово (допустимо)"))
+            rows.append(("Тепловизионная камера", "warn", "не готово (допустимо)"))
         else:
-            rows.append(("Камера Thermal", "ok", "готово"))
+            rows.append(("Тепловизионная камера", "ok", "готово"))
 
         lines = ["<div>"]
         for title, kind, state_txt in rows:
@@ -1953,7 +1961,21 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Просмотр: загружена сессия {Path(selected).name}", 3000)
         except Exception as ex:
             self._log_error("UI_REPLAY_LOAD_FAILED", f"err={type(ex).__name__} detail={ex}")
-            QMessageBox.critical(self, "Просмотр", f"Не удалось загрузить сессию: {type(ex).__name__}\n{ex}")
+            friendly = self._format_replay_load_error(ex)
+            QMessageBox.critical(self, "Просмотр", f"Не удалось загрузить сессию: {friendly}")
+
+    @staticmethod
+    def _format_replay_load_error(ex: Exception) -> str:
+        txt = str(ex)
+        if "manifest_missing=" in txt:
+            return "Не найден файл session_manifest.json."
+        if "trajectory_timeline_empty" in txt:
+            return "Файл trajectory_timeline.csv пустой."
+        if "timeline_missing=" in txt:
+            return "Не найден файл trajectory_timeline.csv."
+        if "сессия не завершена" in txt:
+            return txt
+        return f"{type(ex).__name__}: {txt}"
 
     def load_session(self, session_dir: Path | str) -> None:
         try:
@@ -2321,8 +2343,10 @@ class MainWindow(QMainWindow):
 
     def _on_graph_sync_time(self, t_sec: float, state: ReplayState, rate: float, source: str) -> None:
         if self._lbl_replay_graph_sync_time_m is not None:
+            src = self._localize_sync_source(source)
+            st = self._localize_replay_state_label(state.value)
             self._lbl_replay_graph_sync_time_m.setText(
-                f"sync_time: t={float(t_sec):.3f} c source={source} state={state.value} rate={float(rate):.2f}x"
+                f"Синхронизация времени: t={float(t_sec):.3f} c источник={src} состояние={st} скорость={float(rate):.2f}x"
             )
 
     def _on_graph_sync_event(
@@ -2335,11 +2359,22 @@ class MainWindow(QMainWindow):
     ) -> None:
         tail = ""
         if payload:
-            compact = ", ".join(f"{k}={payload[k]}" for k in sorted(payload.keys()))
+            loc_payload = dict(payload)
+            src = loc_payload.get("source")
+            if src is not None:
+                loc_payload["источник"] = self._localize_sync_source(str(src))
+                loc_payload.pop("source", None)
+            sess = loc_payload.get("session")
+            if sess is not None:
+                loc_payload["сессия"] = sess
+                loc_payload.pop("session", None)
+            compact = ", ".join(f"{k}={loc_payload[k]}" for k in sorted(loc_payload.keys()))
             tail = f" | {compact}"
         if self._lbl_replay_graph_sync_event_m is not None:
+            ev = self._localize_sync_event(event)
+            st = self._localize_replay_state_label(state.value)
             self._lbl_replay_graph_sync_event_m.setText(
-                f"sync_event: {event} @t={float(t_sec):.3f} c state={state.value} rate={float(rate):.2f}x{tail}"
+                f"Событие синхронизации: {ev} @t={float(t_sec):.3f} c состояние={st} скорость={float(rate):.2f}x{tail}"
             )
 
     @staticmethod
@@ -2351,10 +2386,52 @@ class MainWindow(QMainWindow):
         total: int,
     ) -> str:
         return (
-            f"3D replay\n"
-            f"t={float(t_sec):.3f} c  idx={int(idx) + 1}/{max(1, int(total))}\n"
+            f"3D просмотр\n"
+            f"t={float(t_sec):.3f} c  точка={int(idx) + 1}/{max(1, int(total))}\n"
             f"x={float(pt[1]):.1f} y={float(pt[2]):.1f} z={float(pt[3]):.1f} v={float(pt[4]):.2f}"
         )
+
+    @staticmethod
+    def _localize_sync_event(event: str) -> str:
+        m = {
+            "play": "воспроизведение",
+            "pause": "пауза",
+            "stop": "стоп",
+            "seek": "перемотка",
+            "rate": "скорость",
+            "eof": "конец записи",
+            "session_loaded": "сессия загружена",
+        }
+        return m.get(str(event), str(event))
+
+    @staticmethod
+    def _localize_sync_source(source: str) -> str:
+        m = {
+            "runtime": "таймер",
+            "slider": "ползунок",
+        }
+        return m.get(str(source), str(source))
+
+    @staticmethod
+    def _localize_replay_state_label(state: str) -> str:
+        m = {
+            "IDLE": "ОЖИДАНИЕ",
+            "LOADED": "ЗАГРУЖЕНО",
+            "PLAYING": "ВОСПРОИЗВЕДЕНИЕ",
+            "PAUSED": "ПАУЗА",
+            "EOF": "КОНЕЦ",
+            "ERROR": "ОШИБКА",
+        }
+        return m.get(str(state), str(state))
+
+    @staticmethod
+    def _localize_replay_status(status: str) -> str:
+        m = {
+            "OK": "ГОТОВО",
+            "GAP": "РАЗРЫВ",
+            "N/A": "Н/Д",
+        }
+        return m.get(str(status), str(status))
 
     def _render_replay_state(self) -> None:
         if not self._replay_timeline:
@@ -2413,17 +2490,17 @@ class MainWindow(QMainWindow):
         )
         detail = ""
         if frame_info is None:
-            detail = "frame=- t=- dt=-"
+            detail = "кадр=- t=- dt=-"
             if label_info is not None:
-                label_info.setText(f"{name}: {status} | {detail} | {reason}")
+                label_info.setText(f"{name}: {self._localize_replay_status(status)} | {detail} | {reason}")
             if label_img is not None:
-                label_img.setText(status)
+                label_img.setText(self._localize_replay_status(status))
                 label_img.setPixmap(QPixmap())
             return
 
         t_frame, idx = frame_info
         dt = abs(float(t_frame) - float(t_master))
-        detail = f"frame={idx} t={t_frame:.3f} dt={dt:.3f}"
+        detail = f"кадр={idx} t={t_frame:.3f} dt={dt:.3f}"
         if has_video and label_img is not None:
             target_w = max(1, int(label_img.contentsRect().width()))
             target_h = max(1, int(label_img.contentsRect().height()))
@@ -2448,17 +2525,17 @@ class MainWindow(QMainWindow):
             if pix_scaled is None:
                 status = "GAP"
                 reason = "кадр недоступен"
-                label_img.setText(status)
+                label_img.setText(self._localize_replay_status(status))
                 label_img.setPixmap(QPixmap())
             else:
                 label_img.setText("")
                 label_img.setPixmap(pix_scaled)
         elif label_img is not None:
-            label_img.setText(status)
+            label_img.setText(self._localize_replay_status(status))
             label_img.setPixmap(QPixmap())
 
         if label_info is not None:
-            label_info.setText(f"{name}: {status} | {detail} | {reason}")
+            label_info.setText(f"{name}: {self._localize_replay_status(status)} | {detail} | {reason}")
 
     @staticmethod
     def _replay_channel_status(

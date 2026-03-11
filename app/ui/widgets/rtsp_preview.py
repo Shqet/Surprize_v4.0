@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 import time
@@ -31,9 +31,10 @@ class RtspPreviewWidget(QWidget):
         self._startup_wall_ts: float = time.time()
         self._status_dead_sec = 2.0
         self._pixmap: Optional[QPixmap] = None
+        self._theme: str = "light"
 
         self._title = QLabel(title, self)
-        self._title.setStyleSheet("QLabel { color: #ddd; font-weight: 600; }")
+        self._title.setStyleSheet("QLabel { color: #202733; font-weight: 600; }")
         self._status = QLabel("не подключено", self)
         self._status.setStyleSheet("QLabel { color: #f5a623; }")
 
@@ -55,6 +56,14 @@ class RtspPreviewWidget(QWidget):
         self._timer.setInterval(max(100, self._poll_ms))
         self._timer.timeout.connect(self._tick)
         self._timer.start()
+
+    def set_theme(self, theme: str) -> None:
+        normalized = str(theme or "").strip().lower()
+        self._theme = "dark" if normalized == "dark" else "light"
+        if self._theme == "dark":
+            self._title.setStyleSheet("QLabel { color: #d7dde5; font-weight: 600; }")
+        else:
+            self._title.setStyleSheet("QLabel { color: #202733; font-weight: 600; }")
 
     def set_path(self, image_path: str) -> None:
         self._path = Path(image_path)
@@ -148,3 +157,5 @@ class _PreviewCanvas(QWidget):
         y = (h - scaled.height()) // 2
         painter.drawPixmap(x, y, scaled)
         painter.end()
+
+

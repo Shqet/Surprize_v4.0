@@ -203,7 +203,7 @@ def test_format_replay_3d_overlay_contains_time_and_index() -> None:
         total=120,
     )
     assert "t=12.346" in text
-    assert "idx=5/120" in text
+    assert "точка=5/120" in text
     assert "x=100.0" in text
 
 
