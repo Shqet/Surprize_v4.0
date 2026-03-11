@@ -396,6 +396,7 @@ class MainWindow(QMainWindow):
 
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        self._apply_research_tab_disclaimer()
 
         self._gl_trajectory_params: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "gl_trajectory_params")
         self._gl_trajectory_params_m: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "gl_trajectory_params_m")
@@ -830,6 +831,20 @@ class MainWindow(QMainWindow):
         vl.addWidget(self._traj_view_m)
         vl.setStretch(0, 1)
         self._traj_view_m.set_status("Мониторинг траектории (3D)\nОжидание подготовленного сценария")
+
+    def _apply_research_tab_disclaimer(self) -> None:
+        tw = getattr(self.ui, "tw_research", None)
+        scenario_tab = getattr(self.ui, "scenarioTab", None)
+        monitoring_tab = getattr(self.ui, "monitoringTab", None)
+        if tw is None or scenario_tab is None or monitoring_tab is None:
+            return
+        suffix = " (Маяк пока не задействован)"
+        i_scn = tw.indexOf(scenario_tab)
+        if i_scn >= 0:
+            tw.setTabText(i_scn, "Сценарий" + suffix)
+        i_mon = tw.indexOf(monitoring_tab)
+        if i_mon >= 0:
+            tw.setTabText(i_mon, "Мониторинг" + suffix)
 
     def _init_monitor_params_panel(self) -> None:
         gl = self._gl_trajectory_params_m
