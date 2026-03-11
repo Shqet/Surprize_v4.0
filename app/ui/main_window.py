@@ -362,7 +362,6 @@ class MainWindow(QMainWindow):
         self._init_trajectory_view()
         self._init_monitor_trajectory_view()
         self._init_monitor_params_panel()
-        self._init_replay_panel()
 
         self._init_rtsp_previews()
         self._gps_nav_path_edit: Optional[QLineEdit] = None
@@ -451,6 +450,7 @@ class MainWindow(QMainWindow):
         self._lbl_replay_visible_img_m: Optional[QLabel] = None
         self._lbl_replay_thermal_img_m: Optional[QLabel] = None
         self._init_functional_buttons()
+        self._init_replay_panel()
 
         self._traj_loader = TrajectoryCsvLoader()
         self._traj_ctl = TrajectoryVisController(
