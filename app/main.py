@@ -24,6 +24,14 @@ from app.ui.main_window import MainWindow
 _DEFAULT_UI_THEME = "light"
 
 
+def _assets_root() -> Path:
+    # PyInstaller onedir/onefile places bundled data under _MEIPASS.
+    frozen_base = getattr(sys, "_MEIPASS", None)
+    if frozen_base:
+        return Path(frozen_base) / "app" / "ui" / "assets"
+    return Path(__file__).resolve().parent / "ui" / "assets"
+
+
 def _set_windows_appusermodel_id() -> None:
     if sys.platform != "win32":
         return
@@ -45,15 +53,29 @@ def _read_saved_ui_theme() -> str:
 
 
 def _resolve_themed_icon(theme: str) -> QIcon:
-    root = Path(__file__).resolve().parent / "ui" / "assets" / "icons"
+    root = _assets_root() / "icons"
     dark_path = root / "main_dark_icon.png"
     light_path = root / "main_light_icon.svg"
+
+    def _load_icon(path: Path) -> QIcon:
+        if not path.exists():
+            return QIcon()
+        icon = QIcon(str(path))
+        if icon.isNull():
+            return QIcon()
+        # Some bundled formats can yield empty pixmap in frozen builds.
+        if icon.pixmap(32, 32).isNull():
+            return QIcon()
+        return icon
+
     preferred = dark_path if str(theme).strip().lower() == "dark" else light_path
     fallback = light_path if preferred == dark_path else dark_path
-    if preferred.exists():
-        return QIcon(str(preferred))
-    if fallback.exists():
-        return QIcon(str(fallback))
+    icon = _load_icon(preferred)
+    if not icon.isNull():
+        return icon
+    icon = _load_icon(fallback)
+    if not icon.isNull():
+        return icon
     return QIcon()
 
 

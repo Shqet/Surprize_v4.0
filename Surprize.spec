@@ -18,6 +18,7 @@ spec_path = Path(globals().get("SPEC", "Surprize.spec"))
 if not spec_path.is_absolute():
     spec_path = Path(globals().get("SPECPATH", os.getcwd())) / spec_path
 project_root = spec_path.resolve().parent
+app_icon_path = project_root / "app" / "ui" / "assets" / "icons" / "main_app.ico"
 
 block_cipher = None
 
@@ -79,6 +80,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="Surprize",
+    icon=str(app_icon_path) if app_icon_path.exists() else None,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
