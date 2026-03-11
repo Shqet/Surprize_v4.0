@@ -201,6 +201,32 @@ QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox {
 QTabWidget::pane {
     border: 1px solid #3a3f4b;
 }
+QMenuBar {
+    background-color: #1f2228;
+    color: #e8eaed;
+}
+QMenuBar::item {
+    background: transparent;
+    color: #e8eaed;
+    padding: 4px 10px;
+}
+QMenuBar::item:selected {
+    background-color: #374151;
+    color: #ffffff;
+}
+QMenu {
+    background-color: #2a2f36;
+    color: #e8eaed;
+    border: 1px solid #3a3f4b;
+}
+QMenu::item {
+    padding: 6px 16px;
+    color: #e8eaed;
+}
+QMenu::item:selected {
+    background-color: #374151;
+    color: #ffffff;
+}
 QHeaderView::section {
     background-color: #2a2f36;
     color: #e8eaed;
