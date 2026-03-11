@@ -81,6 +81,11 @@ _DEFAULT_SESSION_OUTPUT_ROOT = "outputs/sessions"
 _REPLAY_CHANNEL_GAP_SEC = 0.5
 _DEFAULT_UI_THEME = "light"
 _DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+_SWP_NOSIZE = 0x0001
+_SWP_NOMOVE = 0x0002
+_SWP_NOZORDER = 0x0004
+_SWP_NOACTIVATE = 0x0010
+_SWP_FRAMECHANGED = 0x0020
 
 
 class ReplayState(str, Enum):
@@ -681,6 +686,19 @@ class MainWindow(QMainWindow):
                 ctypes.c_uint(_DWMWA_USE_IMMERSIVE_DARK_MODE),
                 ctypes.byref(value),
                 ctypes.sizeof(value),
+            )
+            # Force immediate non-client refresh (titlebar) without resize.
+            user32 = ctypes.WinDLL("user32", use_last_error=False)
+            user32.SetWindowPos(
+                wintypes.HWND(hwnd),
+                wintypes.HWND(0),
+                0,
+                0,
+                0,
+                0,
+                ctypes.c_uint(
+                    _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOZORDER | _SWP_NOACTIVATE | _SWP_FRAMECHANGED
+                ),
             )
         except Exception:
             # Keep app theme working even if native titlebar API is unavailable.
