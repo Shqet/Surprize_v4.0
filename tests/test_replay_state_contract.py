@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.ui.main_window import MainWindow, ReplayState
+from app.ui.main_window import GraphSyncAdapter, MainWindow, ReplayState
 
 
 class _ReplayHarness:
@@ -37,6 +37,12 @@ class _ReplayHarness:
         return None
 
     def _sync_replay_controls(self) -> None:
+        return None
+
+    def _publish_graph_sync_event(self, *, event: str, payload=None) -> None:
+        return None
+
+    def _publish_graph_sync_time(self, *, source: str) -> None:
         return None
 
     def _set_replay_state(self, new_state: ReplayState) -> None:
@@ -196,3 +202,29 @@ def test_format_replay_3d_overlay_contains_time_and_index() -> None:
     assert "t=12.346" in text
     assert "idx=5/120" in text
     assert "x=100.0" in text
+
+
+def test_graph_sync_adapter_publishes_time_and_events() -> None:
+    adapter = GraphSyncAdapter()
+    seen_time = []
+    seen_event = []
+
+    adapter.subscribe_time(lambda t, state, rate, source: seen_time.append((t, state, rate, source)))
+    adapter.subscribe_event(lambda e, t, state, rate, payload: seen_event.append((e, t, state, rate, payload)))
+
+    adapter.publish_time(t_sec=1.25, state=ReplayState.PLAYING, rate=2.0, source="runtime")
+    adapter.publish_event(
+        event="seek",
+        t_sec=1.25,
+        state=ReplayState.PLAYING,
+        rate=2.0,
+        payload={"source": "slider"},
+    )
+
+    assert len(seen_time) == 1
+    assert seen_time[0][0] == 1.25
+    assert seen_time[0][1] == ReplayState.PLAYING
+    assert seen_time[0][3] == "runtime"
+    assert len(seen_event) == 1
+    assert seen_event[0][0] == "seek"
+    assert seen_event[0][4]["source"] == "slider"

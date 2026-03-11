@@ -10,7 +10,7 @@ import time
 from bisect import bisect_left
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, Callable, Optional, cast
 
 from PyQt6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
@@ -87,6 +87,60 @@ class ReplayState(str, Enum):
     PAUSED = "PAUSED"
     EOF = "EOF"
     ERROR = "ERROR"
+
+
+class GraphSyncAdapter:
+    def __init__(self) -> None:
+        self._time_subs: list[Callable[[float, ReplayState, float, str], None]] = []
+        self._event_subs: list[Callable[[str, float, ReplayState, float, dict[str, Any]], None]] = []
+
+    def subscribe_time(self, cb: Callable[[float, ReplayState, float, str], None]) -> Callable[[], None]:
+        self._time_subs.append(cb)
+
+        def _unsub() -> None:
+            try:
+                self._time_subs.remove(cb)
+            except ValueError:
+                pass
+
+        return _unsub
+
+    def subscribe_event(
+        self,
+        cb: Callable[[str, float, ReplayState, float, dict[str, Any]], None],
+    ) -> Callable[[], None]:
+        self._event_subs.append(cb)
+
+        def _unsub() -> None:
+            try:
+                self._event_subs.remove(cb)
+            except ValueError:
+                pass
+
+        return _unsub
+
+    def publish_time(self, *, t_sec: float, state: ReplayState, rate: float, source: str) -> None:
+        for cb in list(self._time_subs):
+            try:
+                cb(float(t_sec), state, float(rate), str(source))
+            except Exception:
+                continue
+
+    def publish_event(
+        self,
+        *,
+        event: str,
+        t_sec: float,
+        state: ReplayState,
+        rate: float,
+        payload: Optional[dict[str, Any]] = None,
+    ) -> None:
+        data = dict(payload or {})
+        for cb in list(self._event_subs):
+            try:
+                cb(str(event), float(t_sec), state, float(rate), data)
+            except Exception:
+                continue
 
 
 class _PrepareTestSignals(QObject):
@@ -293,6 +347,9 @@ class MainWindow(QMainWindow):
         self._replay_play_started_t_sec: float = 0.0
         self._replay_cap_visible: Any = None
         self._replay_cap_thermal: Any = None
+        self._replay_graph_sync = GraphSyncAdapter()
+        self._replay_graph_time_unsub: Optional[Callable[[], None]] = None
+        self._replay_graph_event_unsub: Optional[Callable[[], None]] = None
         self._m_speed_lbl: Optional[QLabel] = None
         self._m_coords_lbl: Optional[QLabel] = None
         self._m_geo_lbl: Optional[QLabel] = None
@@ -389,6 +446,8 @@ class MainWindow(QMainWindow):
         self._lbl_replay_visible_info_m: Optional[QLabel] = None
         self._lbl_replay_thermal_info_m: Optional[QLabel] = None
         self._lbl_replay_traj_info_m: Optional[QLabel] = None
+        self._lbl_replay_graph_sync_time_m: Optional[QLabel] = None
+        self._lbl_replay_graph_sync_event_m: Optional[QLabel] = None
         self._lbl_replay_visible_img_m: Optional[QLabel] = None
         self._lbl_replay_thermal_img_m: Optional[QLabel] = None
         self._init_functional_buttons()
@@ -729,9 +788,18 @@ class MainWindow(QMainWindow):
             value_layout = cast(QGridLayout, gl_value)
             value_layout.addWidget(value_box, 1, 0, alignment=Qt.AlignmentFlag.AlignBottom)
             if gl_graph is not None:
-                graph_hint = QLabel("Графики (2D) размещаются в этом блоке", self)
+                graph_box = QGroupBox("Синхронизация графиков (2D, заготовка)", self)
+                graph_layout = QFormLayout(graph_box)
+                graph_hint = QLabel("Данные Маяка пока не подключены. Плеер уже публикует sync-события.", graph_box)
                 graph_hint.setStyleSheet("color:#666;")
-                cast(QGridLayout, gl_graph).addWidget(graph_hint, 0, 0)
+                graph_hint.setWordWrap(True)
+                self._lbl_replay_graph_sync_time_m = QLabel("sync_time: -", graph_box)
+                self._lbl_replay_graph_sync_event_m = QLabel("sync_event: -", graph_box)
+                graph_layout.addRow(graph_hint)
+                graph_layout.addRow(self._lbl_replay_graph_sync_time_m)
+                graph_layout.addRow(self._lbl_replay_graph_sync_event_m)
+                cast(QGridLayout, gl_graph).addWidget(graph_box, 0, 0)
+                self._bind_graph_sync_adapter_ui()
             cast(QGridLayout, gl_video).setColumnStretch(0, 1)
             cast(QGridLayout, gl_video).setRowStretch(0, 1)
             cast(QGridLayout, gl_3d).setColumnStretch(0, 1)
@@ -1779,6 +1847,7 @@ class MainWindow(QMainWindow):
         self._replay_play_started_mono = time.monotonic()
         self._replay_play_started_t_sec = float(self._replay_t_sec)
         self._set_replay_state(ReplayState.PLAYING)
+        self._publish_graph_sync_event(event="play")
         self._sync_replay_controls()
 
     def pause(self) -> None:
@@ -1786,6 +1855,7 @@ class MainWindow(QMainWindow):
             return
         self._apply_replay_t_sec(self._current_playback_t_sec(), from_slider=False)
         self._set_replay_state(ReplayState.PAUSED)
+        self._publish_graph_sync_event(event="pause")
         self._sync_replay_controls()
 
     def stop(self) -> None:
@@ -1795,6 +1865,7 @@ class MainWindow(QMainWindow):
         self.seek(float(self._replay_t_min_sec))
         if self._replay_state in {ReplayState.PAUSED, ReplayState.EOF}:
             self._set_replay_state(ReplayState.LOADED)
+        self._publish_graph_sync_event(event="stop")
         self._sync_replay_controls()
 
     def seek(self, t: float) -> None:
@@ -1804,6 +1875,7 @@ class MainWindow(QMainWindow):
         if self._replay_state == ReplayState.PLAYING:
             self._replay_play_started_mono = time.monotonic()
             self._replay_play_started_t_sec = float(self._replay_t_sec)
+        self._publish_graph_sync_event(event="seek")
         self._sync_replay_controls()
 
     def step(self, dt: float) -> None:
@@ -1819,6 +1891,7 @@ class MainWindow(QMainWindow):
             self._apply_replay_t_sec(self._current_playback_t_sec(), from_slider=False)
             self._replay_play_started_mono = time.monotonic()
             self._replay_play_started_t_sec = float(self._replay_t_sec)
+        self._publish_graph_sync_event(event="rate")
         self._sync_replay_controls()
 
     def _current_playback_t_sec(self) -> float:
@@ -1899,6 +1972,7 @@ class MainWindow(QMainWindow):
         pts = [(x, y, z) for (_t, x, y, z, _s) in timeline]
         self._traj_view_r.set_points(pts)
         self._set_replay_state(ReplayState.LOADED)
+        self._publish_graph_sync_event(event="session_loaded", payload={"session": session_dir.name})
         self._sync_replay_controls()
         self._apply_replay_t_sec(self._replay_t_sec, from_slider=False)
 
@@ -1989,6 +2063,7 @@ class MainWindow(QMainWindow):
             return
         t = float(self._replay_t_min_sec) + max(0.0, float(value) / 1000.0)
         self._apply_replay_t_sec(t, from_slider=True)
+        self._publish_graph_sync_event(event="seek", payload={"source": "slider"})
 
     def _on_replay_t_spin_changed(self, value: float) -> None:
         if not self._replay_timeline:
@@ -2029,6 +2104,7 @@ class MainWindow(QMainWindow):
         if t >= t_max:
             t = t_max
             self._set_replay_state(ReplayState.EOF)
+            self._publish_graph_sync_event(event="eof")
             self._sync_replay_controls()
         self._apply_replay_t_sec(t, from_slider=False)
 
@@ -2046,6 +2122,7 @@ class MainWindow(QMainWindow):
             self._replay_t_spin_m.blockSignals(True)
             self._replay_t_spin_m.setValue(float(self._replay_t_sec))
             self._replay_t_spin_m.blockSignals(False)
+        self._publish_graph_sync_time(source="slider" if from_slider else "runtime")
         self._render_replay_state()
 
     def _sync_replay_controls(self) -> None:
@@ -2081,6 +2158,63 @@ class MainWindow(QMainWindow):
         if not btn.isVisible():
             return False
         return bool(self._replay_timeline)
+
+    def _bind_graph_sync_adapter_ui(self) -> None:
+        if self._replay_graph_time_unsub is not None:
+            self._replay_graph_time_unsub()
+            self._replay_graph_time_unsub = None
+        if self._replay_graph_event_unsub is not None:
+            self._replay_graph_event_unsub()
+            self._replay_graph_event_unsub = None
+
+        self._replay_graph_time_unsub = self._replay_graph_sync.subscribe_time(self._on_graph_sync_time)
+        self._replay_graph_event_unsub = self._replay_graph_sync.subscribe_event(self._on_graph_sync_event)
+
+    def _publish_graph_sync_time(self, *, source: str) -> None:
+        adapter = getattr(self, "_replay_graph_sync", None)
+        if adapter is None:
+            return
+        adapter.publish_time(
+            t_sec=float(self._replay_t_sec),
+            state=self._replay_state,
+            rate=float(self._replay_rate),
+            source=str(source),
+        )
+
+    def _publish_graph_sync_event(self, *, event: str, payload: Optional[dict[str, Any]] = None) -> None:
+        adapter = getattr(self, "_replay_graph_sync", None)
+        if adapter is None:
+            return
+        adapter.publish_event(
+            event=str(event),
+            t_sec=float(self._replay_t_sec),
+            state=self._replay_state,
+            rate=float(self._replay_rate),
+            payload=payload,
+        )
+
+    def _on_graph_sync_time(self, t_sec: float, state: ReplayState, rate: float, source: str) -> None:
+        if self._lbl_replay_graph_sync_time_m is not None:
+            self._lbl_replay_graph_sync_time_m.setText(
+                f"sync_time: t={float(t_sec):.3f} c source={source} state={state.value} rate={float(rate):.2f}x"
+            )
+
+    def _on_graph_sync_event(
+        self,
+        event: str,
+        t_sec: float,
+        state: ReplayState,
+        rate: float,
+        payload: dict[str, Any],
+    ) -> None:
+        tail = ""
+        if payload:
+            compact = ", ".join(f"{k}={payload[k]}" for k in sorted(payload.keys()))
+            tail = f" | {compact}"
+        if self._lbl_replay_graph_sync_event_m is not None:
+            self._lbl_replay_graph_sync_event_m.setText(
+                f"sync_event: {event} @t={float(t_sec):.3f} c state={state.value} rate={float(rate):.2f}x{tail}"
+            )
 
     @staticmethod
     def _format_replay_3d_overlay(
