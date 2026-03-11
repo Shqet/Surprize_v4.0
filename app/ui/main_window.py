@@ -277,8 +277,13 @@ class MainWindow(QMainWindow):
         self._monitor_load_seq: int = 0
         self._replay_session_dir: Optional[Path] = None
         self._replay_timeline: list[tuple[float, float, float, float, float]] = []
+        self._replay_timeline_times: list[float] = []
         self._replay_visible_frames: list[tuple[float, int]] = []
+        self._replay_visible_times: list[float] = []
         self._replay_thermal_frames: list[tuple[float, int]] = []
+        self._replay_thermal_times: list[float] = []
+        self._replay_t_min_sec: float = 0.0
+        self._replay_t_max_sec: float = 0.0
         self._replay_duration_sec: float = 0.0
         self._replay_t_sec: float = 0.0
         self._replay_state: ReplayState = ReplayState.IDLE
@@ -1702,9 +1707,8 @@ class MainWindow(QMainWindow):
         if not self._replay_timeline:
             self._set_replay_state(ReplayState.ERROR)
             return
-        t_max = float(self._replay_timeline[-1][0])
-        if self._replay_t_sec >= t_max:
-            self.seek(float(self._replay_timeline[0][0]))
+        if self._replay_t_sec >= float(self._replay_t_max_sec):
+            self.seek(float(self._replay_t_min_sec))
         self._replay_play_started_mono = time.monotonic()
         self._replay_play_started_t_sec = float(self._replay_t_sec)
         self._set_replay_state(ReplayState.PLAYING)
@@ -1772,8 +1776,8 @@ class MainWindow(QMainWindow):
         self._replay_timeline = timeline
         self._replay_visible_frames = self._read_replay_frames(session_dir / "video" / "visible_frames.csv")
         self._replay_thermal_frames = self._read_replay_frames(session_dir / "video" / "thermal_frames.csv")
-        self._replay_duration_sec = max(0.0, float(timeline[-1][0] - timeline[0][0]))
-        self._replay_t_sec = float(timeline[0][0])
+        self._replay_build_indices()
+        self._replay_t_sec = float(self._replay_t_min_sec)
         self._replay_play_started_mono = 0.0
         self._replay_play_started_t_sec = self._replay_t_sec
         self._replay_rate = 1.0
@@ -1799,6 +1803,18 @@ class MainWindow(QMainWindow):
         self._set_replay_state(ReplayState.LOADED)
         self._apply_replay_t_sec(self._replay_t_sec, from_slider=False)
 
+    def _replay_build_indices(self) -> None:
+        self._replay_timeline_times = [float(x[0]) for x in self._replay_timeline]
+        self._replay_visible_times = [float(x[0]) for x in self._replay_visible_frames]
+        self._replay_thermal_times = [float(x[0]) for x in self._replay_thermal_frames]
+        if self._replay_timeline_times:
+            self._replay_t_min_sec = float(self._replay_timeline_times[0])
+            self._replay_t_max_sec = float(self._replay_timeline_times[-1])
+        else:
+            self._replay_t_min_sec = 0.0
+            self._replay_t_max_sec = 0.0
+        self._replay_duration_sec = max(0.0, float(self._replay_t_max_sec - self._replay_t_min_sec))
+
     def _release_replay_caps(self) -> None:
         for cap in (self._replay_cap_visible, self._replay_cap_thermal):
             try:
@@ -1823,6 +1839,7 @@ class MainWindow(QMainWindow):
                     out.append((float(row[0]), float(row[1]), float(row[2]), float(row[3]), float(row[4])))
                 except Exception:
                     continue
+        out.sort(key=lambda x: x[0])
         return out
 
     def _read_replay_frames(self, path: Path) -> list[tuple[float, int]]:
@@ -1839,6 +1856,7 @@ class MainWindow(QMainWindow):
                     out.append((float(row[2]), int(row[0])))
                 except Exception:
                     continue
+        out.sort(key=lambda x: x[0])
         return out
 
     def _on_replay_play_toggled(self, checked: bool) -> None:
@@ -1860,8 +1878,7 @@ class MainWindow(QMainWindow):
     def _on_replay_slider_changed(self, value: int) -> None:
         if not self._replay_timeline:
             return
-        t0 = float(self._replay_timeline[0][0])
-        t = t0 + max(0.0, float(value) / 1000.0)
+        t = float(self._replay_t_min_sec) + max(0.0, float(value) / 1000.0)
         self._apply_replay_t_sec(t, from_slider=True)
 
     def _on_replay_timer_tick(self) -> None:
@@ -1869,7 +1886,7 @@ class MainWindow(QMainWindow):
             return
         elapsed = max(0.0, time.monotonic() - self._replay_play_started_mono)
         t = self._replay_play_started_t_sec + elapsed * float(self._replay_rate)
-        t_max = float(self._replay_timeline[-1][0])
+        t_max = float(self._replay_t_max_sec)
         if t >= t_max:
             t = t_max
             self._set_replay_state(ReplayState.EOF)
@@ -1883,8 +1900,8 @@ class MainWindow(QMainWindow):
     def _apply_replay_t_sec(self, t_sec: float, *, from_slider: bool) -> None:
         if not self._replay_timeline:
             return
-        t_min = float(self._replay_timeline[0][0])
-        t_max = float(self._replay_timeline[-1][0])
+        t_min = float(self._replay_t_min_sec)
+        t_max = float(self._replay_t_max_sec)
         self._replay_t_sec = min(max(float(t_sec), t_min), t_max)
         if self._replay_slider_m is not None and not from_slider:
             self._replay_slider_m.blockSignals(True)
@@ -1907,8 +1924,8 @@ class MainWindow(QMainWindow):
                 f"Траектория: idx={idx} t={pt[0]:.3f} x={pt[1]:.1f} y={pt[2]:.1f} z={pt[3]:.1f} v={pt[4]:.2f}"
             )
 
-        vis = self._nearest_frame(self._replay_visible_frames, t)
-        thr = self._nearest_frame(self._replay_thermal_frames, t)
+        vis = self._nearest_frame(self._replay_visible_frames, self._replay_visible_times, t)
+        thr = self._nearest_frame(self._replay_thermal_frames, self._replay_thermal_times, t)
         self._render_replay_channel(
             name="Видимый канал",
             frame_info=vis,
@@ -1977,29 +1994,32 @@ class MainWindow(QMainWindow):
             return None
 
     @staticmethod
-    def _nearest_frame(frames: list[tuple[float, int]], t_rel: float) -> Optional[tuple[float, int]]:
-        if not frames:
+    def _nearest_frame(
+        frames: list[tuple[float, int]],
+        times: list[float],
+        t_sec: float,
+    ) -> Optional[tuple[float, int]]:
+        if not frames or not times:
             return None
-        values = [x[0] for x in frames]
-        pos = bisect_left(values, float(t_rel))
+        pos = bisect_left(times, float(t_sec))
         if pos <= 0:
             return frames[0]
-        if pos >= len(frames):
+        if pos >= len(times):
             return frames[-1]
         a = frames[pos - 1]
         b = frames[pos]
-        return a if abs(a[0] - t_rel) <= abs(b[0] - t_rel) else b
+        return a if abs(a[0] - t_sec) <= abs(b[0] - t_sec) else b
 
-    def _nearest_timeline_index(self, t_rel: float) -> int:
-        if not self._replay_timeline:
+    def _nearest_timeline_index(self, t_sec: float) -> int:
+        if not self._replay_timeline or not self._replay_timeline_times:
             return 0
-        values = [x[0] for x in self._replay_timeline]
-        pos = bisect_left(values, float(t_rel))
+        pos = bisect_left(self._replay_timeline_times, float(t_sec))
         if pos <= 0:
             return 0
-        if pos >= len(values):
-            return len(values) - 1
-        return pos - 1 if abs(values[pos - 1] - t_rel) <= abs(values[pos] - t_rel) else pos
+        if pos >= len(self._replay_timeline_times):
+            return len(self._replay_timeline_times) - 1
+        l = self._replay_timeline_times
+        return pos - 1 if abs(l[pos - 1] - t_sec) <= abs(l[pos] - t_sec) else pos
 
     def _on_monitor_check_readiness_clicked(self) -> None:
         if self._readiness_task is not None or self._start_session_task is not None or self._stop_session_task is not None:

@@ -7,6 +7,14 @@ class _ReplayHarness:
     def __init__(self) -> None:
         self._replay_state = ReplayState.IDLE
         self._replay_timeline = [(0.0, 0.0, 0.0, 0.0, 0.0), (1.0, 1.0, 0.0, 0.0, 1.0)]
+        self._replay_timeline_times = [0.0, 1.0]
+        self._replay_visible_frames = []
+        self._replay_visible_times = []
+        self._replay_thermal_frames = []
+        self._replay_thermal_times = []
+        self._replay_t_min_sec = 0.0
+        self._replay_t_max_sec = 1.0
+        self._replay_duration_sec = 1.0
         self._replay_t_sec = 0.0
         self._replay_play_started_mono = 0.0
         self._replay_play_started_t_sec = 0.0
@@ -60,3 +68,19 @@ def test_replay_state_play_pause_flow_is_deterministic() -> None:
     MainWindow.step(h, 0.5)
     assert abs(h._replay_t_sec - 1.0) < 1e-9
     assert h._replay_state == ReplayState.PAUSED
+
+
+def test_replay_build_indices_normalizes_time_bounds() -> None:
+    h = _ReplayHarness()
+    h._replay_timeline = [(2.0, 0.0, 0.0, 0.0, 0.0), (5.5, 0.0, 0.0, 0.0, 0.0)]
+    h._replay_visible_frames = [(2.1, 1), (4.9, 2)]
+    h._replay_thermal_frames = [(2.0, 10), (5.4, 11)]
+
+    MainWindow._replay_build_indices(h)
+
+    assert h._replay_timeline_times == [2.0, 5.5]
+    assert h._replay_visible_times == [2.1, 4.9]
+    assert h._replay_thermal_times == [2.0, 5.4]
+    assert abs(h._replay_t_min_sec - 2.0) < 1e-9
+    assert abs(h._replay_t_max_sec - 5.5) < 1e-9
+    assert abs(h._replay_duration_sec - 3.5) < 1e-9
