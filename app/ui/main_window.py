@@ -396,7 +396,6 @@ class MainWindow(QMainWindow):
 
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
-        self._apply_research_tab_disclaimer()
 
         self._gl_trajectory_params: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "gl_trajectory_params")
         self._gl_trajectory_params_m: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "gl_trajectory_params_m")
@@ -405,6 +404,7 @@ class MainWindow(QMainWindow):
         self._vl_rtsp_visible: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "vl_rtsp_visible")
         self._vl_rtsp_thermal: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "vl_rtsp_thermal")
         self._vl_mayak_params: Optional[QVBoxLayout] = self._safe_find_layout(QVBoxLayout, "l_Mayak_params")
+        self._vl_mayak_params_m: Optional[QVBoxLayout] = self._safe_find_layout(QVBoxLayout, "l_Mayak_params_m")
         self._gl_sdr_options: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_SDR_options")
         self._gl_gps_sdr_options_m: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_gpsSDRSim_options_m")
         self._gl_functional_buttons: Optional[QGridLayout] = self._safe_find_layout(QGridLayout, "l_functionalButtons")
@@ -832,20 +832,6 @@ class MainWindow(QMainWindow):
         vl.setStretch(0, 1)
         self._traj_view_m.set_status("Мониторинг траектории (3D)\nОжидание подготовленного сценария")
 
-    def _apply_research_tab_disclaimer(self) -> None:
-        tw = getattr(self.ui, "tw_research", None)
-        scenario_tab = getattr(self.ui, "scenarioTab", None)
-        monitoring_tab = getattr(self.ui, "monitoringTab", None)
-        if tw is None or scenario_tab is None or monitoring_tab is None:
-            return
-        suffix = " (Маяк пока не задействован)"
-        i_scn = tw.indexOf(scenario_tab)
-        if i_scn >= 0:
-            tw.setTabText(i_scn, "Сценарий" + suffix)
-        i_mon = tw.indexOf(monitoring_tab)
-        if i_mon >= 0:
-            tw.setTabText(i_mon, "Мониторинг" + suffix)
-
     def _init_monitor_params_panel(self) -> None:
         gl = self._gl_trajectory_params_m
         if gl is None:
@@ -1255,10 +1241,17 @@ class MainWindow(QMainWindow):
             return
 
         self._clear_layout(vl)
+        if self._vl_mayak_params_m is not None:
+            self._clear_layout(self._vl_mayak_params_m)
 
         panel = QWidget(self)
         root = QVBoxLayout(panel)
         root.setContentsMargins(0, 0, 0, 0)
+        note_text = "Примечание: Маяк пока не задействован"
+        note_style = "font-weight:600; color:#b26a00;"
+        note_lbl = QLabel(note_text, panel)
+        note_lbl.setWordWrap(True)
+        note_lbl.setStyleSheet(note_style)
 
         control_box = QGroupBox("Управление Маяком", panel)
         control_form = QFormLayout(control_box)
@@ -1356,6 +1349,7 @@ class MainWindow(QMainWindow):
             self._lbl_mayak_error = None
             self._lbl_mayak_reason = None
 
+        root.addWidget(note_lbl)
         root.addWidget(control_box)
         root.addWidget(status_box)
         if self._ui_debug:
@@ -1363,6 +1357,12 @@ class MainWindow(QMainWindow):
         root.addStretch(1)
 
         vl.addWidget(panel)
+        if self._vl_mayak_params_m is not None:
+            note_m = QLabel(note_text, self)
+            note_m.setWordWrap(True)
+            note_m.setStyleSheet(note_style)
+            self._vl_mayak_params_m.addWidget(note_m)
+            self._vl_mayak_params_m.addStretch(1)
         self._refresh_duration_labels()
 
     def _init_functional_buttons(self) -> None:
