@@ -154,13 +154,13 @@ class GraphSyncAdapter:
 
 
 def _theme_stylesheet(theme: str) -> str:
-    if str(theme).strip().lower() != "dark":
-        return ""
-    icons_dir = (Path(__file__).resolve().parent / "assets" / "icons").as_posix()
-    branch_closed = f"{icons_dir}/tree_branch_closed_light.svg"
-    branch_open = f"{icons_dir}/tree_branch_open_light.svg"
-    return (
-        """
+    normalized = str(theme).strip().lower()
+    if normalized == "dark":
+        icons_dir = (Path(__file__).resolve().parent / "assets" / "icons").as_posix()
+        branch_closed = f"{icons_dir}/tree_branch_closed_light.svg"
+        branch_open = f"{icons_dir}/tree_branch_open_light.svg"
+        return (
+            """
 QWidget {
     background-color: #1f2228;
     color: #e8eaed;
@@ -242,9 +242,112 @@ QTreeView::branch:open:has-children:has-siblings {
     image: url("__BRANCH_OPEN__");
 }
 """
-        .replace("__BRANCH_CLOSED__", branch_closed)
-        .replace("__BRANCH_OPEN__", branch_open)
-    )
+            .replace("__BRANCH_CLOSED__", branch_closed)
+            .replace("__BRANCH_OPEN__", branch_open)
+        )
+
+    return """
+QWidget {
+    background-color: #f4f6f8;
+    color: #1f2937;
+}
+QGroupBox {
+    background-color: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    margin-top: 8px;
+    padding-top: 8px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 8px;
+    padding: 0 2px;
+    color: #334155;
+}
+QPushButton {
+    background-color: #ffffff;
+    border: 1px solid #c3ccd5;
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: #1f2937;
+}
+QPushButton:hover {
+    background-color: #eef3f8;
+}
+QPushButton:pressed {
+    background-color: #e3eaf3;
+}
+QPushButton:disabled {
+    color: #94a3b8;
+    background-color: #f3f4f6;
+    border-color: #d9dee5;
+}
+QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox {
+    background-color: #ffffff;
+    border: 1px solid #c3ccd5;
+    border-radius: 4px;
+    padding: 2px 4px;
+    color: #1f2937;
+    selection-background-color: #cfe5ff;
+}
+QTabWidget::pane {
+    border: 1px solid #d0d7de;
+    background-color: #ffffff;
+}
+QTabBar::tab {
+    background-color: #e9edf2;
+    color: #334155;
+    border: 1px solid #d0d7de;
+    padding: 6px 10px;
+}
+QTabBar::tab:selected {
+    background-color: #ffffff;
+    color: #0f172a;
+}
+QMenuBar {
+    background-color: #f3f5f7;
+    color: #1f2937;
+}
+QMenuBar::item {
+    background: transparent;
+    color: #1f2937;
+    padding: 4px 10px;
+}
+QMenuBar::item:selected {
+    background-color: #dde5ee;
+    color: #0f172a;
+}
+QMenu {
+    background-color: #ffffff;
+    color: #1f2937;
+    border: 1px solid #cfd8e1;
+}
+QMenu::item {
+    padding: 6px 16px;
+    color: #1f2937;
+}
+QMenu::item:selected {
+    background-color: #dde8f5;
+    color: #0f172a;
+}
+QHeaderView::section {
+    background-color: #eef2f7;
+    color: #334155;
+    border: 1px solid #d0d7de;
+}
+QTreeView {
+    background-color: #ffffff;
+    border: 1px solid #d0d7de;
+}
+QTreeView::item:selected {
+    background-color: #dce9f8;
+    color: #0f172a;
+}
+QStatusBar {
+    background-color: #f3f5f7;
+    color: #334155;
+}
+"""
 
 
 class _PrepareTestSignals(QObject):
