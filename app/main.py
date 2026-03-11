@@ -19,8 +19,21 @@ from app.services.video_channel import VideoChannelDaemonService
 from app.ui.main_window import MainWindow
 
 
+def _set_windows_appusermodel_id() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Surprize.SurprizeShell")
+    except Exception:
+        # Non-fatal: window icon still works even if taskbar AppID cannot be set.
+        return
+
+
 def main() -> int:
     setup_logging("./data/app.log")
+    _set_windows_appusermodel_id()
 
     bus = EventBus()
 
