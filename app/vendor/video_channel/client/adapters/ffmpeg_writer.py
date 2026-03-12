@@ -6,6 +6,8 @@ import subprocess
 import threading
 from pathlib import Path
 
+from app.core.subprocess_utils import windows_no_console_kwargs
+
 
 class FfmpegWriter:
     """
@@ -64,6 +66,7 @@ class FfmpegWriter:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     bufsize=0,
+                    **windows_no_console_kwargs(),
                 )
             except FileNotFoundError:
                 raise RuntimeError("ffmpeg not found in PATH")

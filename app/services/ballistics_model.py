@@ -27,6 +27,26 @@ def _frozen_runtime_root() -> Optional[Path]:
         return None
 
 
+def _windows_subprocess_kwargs() -> dict[str, Any]:
+    """
+    Hide console window for child processes in Windows frozen build.
+    Safe no-op on non-Windows platforms.
+    """
+    if os.name != "nt":
+        return {}
+
+    kwargs: dict[str, Any] = {}
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if create_no_window:
+        kwargs["creationflags"] = create_no_window
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+    kwargs["startupinfo"] = startupinfo
+    return kwargs
+
+
 @dataclass(frozen=True)
 class _RunConfig:
     model_root: Path
@@ -396,6 +416,7 @@ class BallisticsModelSubprocessService:
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
+                **_windows_subprocess_kwargs(),
             )
         except Exception as ex:
             emit_log(self._bus, "ERROR", "ballistics_model", "SERVICE_ERROR", f"stage={stage} err={type(ex).__name__} msg={ex}")
@@ -598,6 +619,7 @@ class BallisticsModelSubprocessService:
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
+                **_windows_subprocess_kwargs(),
             )
         except Exception as ex:
             emit_log(self._bus, "ERROR", "ballistics_model", "SERVICE_ERROR", f"stage=plots err={type(ex).__name__} msg={ex}")

@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
+from app.core.subprocess_utils import windows_no_console_kwargs
+
 
 LineCallback = Callable[[str], None]
 
@@ -70,6 +72,7 @@ def start_process(
         encoding=enc,
         errors="replace",
         bufsize=1,
+        **windows_no_console_kwargs(),
     )
 
     threads: list[threading.Thread] = []

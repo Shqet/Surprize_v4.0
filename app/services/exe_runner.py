@@ -10,6 +10,7 @@ from typing import Any, Optional
 from app.core.event_bus import EventBus
 from app.core.events import ProcessOutputEvent, ServiceStatusEvent
 from app.core.logging_setup import emit_log
+from app.core.subprocess_utils import windows_no_console_kwargs
 from app.services.base import ServiceStatus
 from app.services.stop_utils import terminate_process
 
@@ -157,6 +158,7 @@ class ExeRunnerService:
                 encoding=enc,
                 errors="replace",
                 bufsize=1,
+                **windows_no_console_kwargs(),
             )
         except Exception as ex:
             emit_log(

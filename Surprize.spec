@@ -50,7 +50,7 @@ datas += collect_data_files("pyqtgraph", include_py_files=False)
 datas += _data_if_exists(project_root / "model_ballistics", "model_ballistics")
 datas += _data_if_exists(project_root / "app" / "profiles", "app/profiles")
 datas += _data_if_exists(project_root / "app" / "ui" / "assets", "app/ui/assets")
-datas += _data_if_exists(project_root / "data", "data")
+datas += _data_if_exists(project_root / "data" / "ephemerides", "data/ephemerides")
 datas += _data_if_exists(project_root / "bin", "bin")
 
 binaries: list[tuple[str, str, str]] = []

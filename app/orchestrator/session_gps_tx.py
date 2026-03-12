@@ -8,6 +8,7 @@ from typing import Any
 
 from app.core.event_bus import EventBus
 from app.core.logging_setup import emit_log
+from app.core.subprocess_utils import windows_no_console_kwargs
 
 from .session_runtime import SessionRuntime
 
@@ -63,6 +64,7 @@ class SessionGpsTxRunner:
             text=True,
             encoding="utf-8",
             errors="replace",
+            **windows_no_console_kwargs(),
         )
         session_ctx.handles["gps_tx_proc"] = proc
         session_ctx.paths["gps_stdout"] = str(stdout_path)

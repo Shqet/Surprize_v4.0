@@ -9,10 +9,10 @@ from app.core.event_bus import EventBus
 from app.core.events import LogEvent
 
 
-def setup_logging(log_path: str = "./data/app.log", level: int = logging.INFO) -> None:
+def setup_logging(log_path: str = "./outputs/logs/app.log", level: int = logging.INFO) -> None:
     """
     v0:
-      - log to file ./data/app.log (create folder if needed)
+      - log to file ./outputs/logs/app.log (create folder if needed)
       - simple format: timestamp/level/logger/message
     """
     path = Path(log_path)

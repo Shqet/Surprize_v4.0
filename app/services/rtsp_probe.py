@@ -5,6 +5,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import Optional
 
+from app.core.subprocess_utils import windows_no_console_kwargs
+
 
 @dataclass(frozen=True, slots=True)
 class ProbeResult:
@@ -31,6 +33,7 @@ def _run_ffprobe(cmd: list[str], timeout_sec: float) -> ProbeResult:
             stderr=subprocess.PIPE,
             text=True,
             timeout=timeout_sec + 0.5,
+            **windows_no_console_kwargs(),
         )
     except subprocess.TimeoutExpired:
         return ProbeResult(ok=False, error="timeout")

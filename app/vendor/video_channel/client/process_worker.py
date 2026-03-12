@@ -9,6 +9,8 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from app.core.subprocess_utils import windows_no_console_kwargs
+
 
 @dataclass
 class ProcHealth:
@@ -103,6 +105,7 @@ class ProcessStreamWorker:
                 stdin=subprocess.PIPE,
                 cwd=cwd,
                 env=env,
+                **windows_no_console_kwargs(),
             )
             self._health.state = "CONNECTING"
             self._health.attempt = 0

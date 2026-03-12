@@ -14,6 +14,8 @@ from typing import Any, Callable, Optional
 from app.core.event_bus import EventBus
 from app.core.events import OrchestratorStateEvent, ServiceStatusEvent
 from app.core.logging_setup import emit_log
+from app.core.runtime_paths import find_existing_path, resolve_runtime_path
+from app.core.subprocess_utils import windows_no_console_kwargs
 from app.orchestrator.mayak_controller import (
     MayakStubController,
     is_stub_mode,
@@ -789,7 +791,7 @@ class Orchestrator:
         sdr_options = prepared.get("sdr_options") if isinstance(prepared, dict) else None
         gps_options = sdr_options.get("gps_sdr_sim") if isinstance(sdr_options, dict) else None
         nav = str(gps_options.get("nav", "") or "").strip() if isinstance(gps_options, dict) else ""
-        if not nav or not Path(nav).exists():
+        if not nav or find_existing_path(nav) is None:
             blocking_errors.append("gps_nav_missing")
 
         # cameras are warning-only
@@ -1278,7 +1280,7 @@ class Orchestrator:
         nav = str(gps.get("nav", "") or "").strip()
         if not nav:
             raise ValueError("gps_nav_missing")
-        nav_path = Path(nav).resolve()
+        nav_path = resolve_runtime_path(nav)
         if not nav_path.exists():
             raise FileNotFoundError(f"gps_nav_not_found={nav_path.as_posix()}")
 
@@ -1339,6 +1341,7 @@ class Orchestrator:
                 timeout=float(timeout_sec),
                 encoding="utf-8",
                 errors="replace",
+                **windows_no_console_kwargs(),
             )
         except FileNotFoundError as ex:
             raise FileNotFoundError(f"gps_sdr_sim_exe_not_found={exe}") from ex
@@ -2129,7 +2132,7 @@ class Orchestrator:
         nav = str(gps.get("nav", "") or "").strip()
         if not nav:
             return False, "gps_nav_missing"
-        nav_path = Path(nav).resolve()
+        nav_path = resolve_runtime_path(nav)
         if not nav_path.exists():
             return False, f"gps_nav_not_found={nav_path.as_posix()}"
 
@@ -2295,6 +2298,7 @@ class Orchestrator:
             timeout=45.0,
             encoding="utf-8",
             errors="replace",
+            **windows_no_console_kwargs(),
         )
         gps_stdout.write_text(proc.stdout or "", encoding="utf-8")
         gps_stderr.write_text(proc.stderr or "", encoding="utf-8")
@@ -2345,6 +2349,7 @@ class Orchestrator:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                **windows_no_console_kwargs(),
             )
         except Exception as ex:
             return False, f"pluto_start_failed:{type(ex).__name__}"
@@ -2455,7 +2460,7 @@ class Orchestrator:
 
             looks_like_path = any(sep in token for sep in ("/", "\\")) or Path(token).suffix.lower() == ".exe"
             if looks_like_path:
-                p = Path(token).expanduser().resolve()
+                p = resolve_runtime_path(token)
                 checked.append(p.as_posix())
                 if p.exists() and p.is_file():
                     return str(p)
@@ -2490,7 +2495,7 @@ class Orchestrator:
                 continue
             looks_like_path = any(sep in token for sep in ("/", "\\")) or Path(token).suffix.lower() == ".exe"
             if looks_like_path:
-                p = Path(token).expanduser().resolve()
+                p = resolve_runtime_path(token)
                 checked.append(p.as_posix())
                 if p.exists() and p.is_file():
                     return str(p)

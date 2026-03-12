@@ -11,6 +11,7 @@ from typing import Any, Optional
 from app.core.event_bus import EventBus
 from app.core.events import ProcessOutputEvent, ServiceStatusEvent
 from app.core.logging_setup import emit_log
+from app.core.runtime_paths import resolve_runtime_path
 from app.services.base import ServiceStatus
 from app.services.stop_utils import terminate_process
 
@@ -180,17 +181,17 @@ class GpsSdrSimService:
                 raise ValueError(f"invalid={k}")
             return v
 
-        out_root = Path(req_str("out_root")).resolve()
-        input_csv = Path(req_str("input")).resolve()
+        out_root = resolve_runtime_path(req_str("out_root"))
+        input_csv = resolve_runtime_path(req_str("input"))
         origin_lat = req_float("origin_lat")
         origin_lon = req_float("origin_lon")
         origin_h = req_float("origin_h")
         static_sec = opt_float("static_sec", 0.0)
         copy_input = opt_bool("copy_input", False)
 
-        gps_sdr_sim_exe = Path(req_str("gps_sdr_sim_exe")).resolve()
-        pluto_exe = Path(req_str("pluto_exe")).resolve()
-        nav_path = Path(req_str("nav")).resolve()
+        gps_sdr_sim_exe = resolve_runtime_path(req_str("gps_sdr_sim_exe"))
+        pluto_exe = resolve_runtime_path(req_str("pluto_exe"))
+        nav_path = resolve_runtime_path(req_str("nav"))
         bit_depth = int(section.get("bit_depth", 16))
         if bit_depth not in (8, 16):
             raise ValueError("invalid=bit_depth")
