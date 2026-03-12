@@ -41,6 +41,14 @@ from PyQt6.QtWidgets import (
 )
 
 from app.core.logging_setup import emit_log
+from app.core.runtime_config import (
+    DEFAULT_ANIM_WITHOUT_TEST as RC_DEFAULT_ANIM_WITHOUT_TEST,
+    DEFAULT_AUTO_STOP_AFTER_GPS_SEC as RC_DEFAULT_AUTO_STOP_AFTER_GPS_SEC,
+    DEFAULT_GPS_TIMEOUT_SEC as RC_DEFAULT_GPS_TIMEOUT_SEC,
+    DEFAULT_SESSION_OUTPUT_ROOT as RC_DEFAULT_SESSION_OUTPUT_ROOT,
+    DEFAULT_UI_THEME as RC_DEFAULT_UI_THEME,
+    RuntimeConfig,
+)
 from app.core.runtime_paths import default_gps_nav_path, find_existing_path, resolve_runtime_path
 from app.core.ui_bridge import UIBridge
 from app.orchestrator.orchestrator import Orchestrator
@@ -78,11 +86,12 @@ _DEFAULT_PLUTO_TX_ATTEN_DB = -20.0
 _DEFAULT_GPS_ORIGIN_LAT = 55.7558
 _DEFAULT_GPS_ORIGIN_LON = 37.6176
 _DEFAULT_GPS_ORIGIN_H_M = 156.0
-_DEFAULT_AUTO_STOP_AFTER_GPS_SEC = 10.0
-_DEFAULT_ANIM_WITHOUT_TEST = True
-_DEFAULT_SESSION_OUTPUT_ROOT = "outputs/sessions"
+_DEFAULT_AUTO_STOP_AFTER_GPS_SEC = RC_DEFAULT_AUTO_STOP_AFTER_GPS_SEC
+_DEFAULT_ANIM_WITHOUT_TEST = RC_DEFAULT_ANIM_WITHOUT_TEST
+_DEFAULT_SESSION_OUTPUT_ROOT = RC_DEFAULT_SESSION_OUTPUT_ROOT
 _REPLAY_CHANNEL_GAP_SEC = 0.5
-_DEFAULT_UI_THEME = "light"
+_DEFAULT_UI_THEME = RC_DEFAULT_UI_THEME
+_DEFAULT_GPS_TIMEOUT_SEC = RC_DEFAULT_GPS_TIMEOUT_SEC
 _DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 _SWP_NOSIZE = 0x0001
 _SWP_NOMOVE = 0x0002
@@ -597,6 +606,7 @@ class MainWindow(QMainWindow):
         self._pluto_rf_bw_spin: Optional[QDoubleSpinBox] = None
         self._pluto_tx_atten_spin: Optional[QDoubleSpinBox] = None
         self._opt_auto_stop_spin: Optional[QDoubleSpinBox] = None
+        self._opt_gps_timeout_spin: Optional[QSpinBox] = None
         self._opt_theme_combo: Optional[QComboBox] = None
         self._opt_anim_without_test_chk: Optional[QCheckBox] = None
         self._opt_nav_default_edit: Optional[QLineEdit] = None
@@ -759,63 +769,35 @@ class MainWindow(QMainWindow):
         init_raw = str(self._settings_store.value("ui_settings_initialized", "0") or "").strip().lower()
         initialized = init_raw in ("1", "true", "yes", "on")
         if not initialized:
-            defaults = {
-                "gps_nav_default_path": _DEFAULT_GPS_NAV_PATH,
-                "session_output_root": self._normalize_session_output_root(_DEFAULT_SESSION_OUTPUT_ROOT),
-                "auto_stop_after_gps_sec": _DEFAULT_AUTO_STOP_AFTER_GPS_SEC,
-                "monitor_anim_without_test": _DEFAULT_ANIM_WITHOUT_TEST,
-                "ui_theme": _DEFAULT_UI_THEME,
-            }
-            self._settings_store.setValue("gps_nav_default_path", defaults["gps_nav_default_path"])
-            self._settings_store.setValue("session_output_root", defaults["session_output_root"])
-            self._settings_store.setValue("auto_stop_after_gps_sec", float(defaults["auto_stop_after_gps_sec"]))
-            self._settings_store.setValue("monitor_anim_without_test", bool(defaults["monitor_anim_without_test"]))
-            self._settings_store.setValue("ui_theme", defaults["ui_theme"])
+            defaults = RuntimeConfig.defaults().to_settings_dict()
+            self._settings_store.setValue("gps_nav_default_path", defaults.get("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH))
+            self._settings_store.setValue("session_output_root", defaults.get("session_output_root", _DEFAULT_SESSION_OUTPUT_ROOT))
+            self._settings_store.setValue("auto_stop_after_gps_sec", float(defaults.get("auto_stop_after_gps_sec", _DEFAULT_AUTO_STOP_AFTER_GPS_SEC)))
+            self._settings_store.setValue("monitor_anim_without_test", bool(defaults.get("monitor_anim_without_test", _DEFAULT_ANIM_WITHOUT_TEST)))
+            self._settings_store.setValue("ui_theme", str(defaults.get("ui_theme", _DEFAULT_UI_THEME)))
+            self._settings_store.setValue("gps_timeout_sec", int(defaults.get("gps_timeout_sec", _DEFAULT_GPS_TIMEOUT_SEC)))
             self._settings_store.setValue("ui_settings_initialized", True)
             self._settings_store.sync()
             return defaults
 
-        nav_path = str(self._settings_store.value("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH) or "").strip()
-        if not nav_path:
-            nav_path = _DEFAULT_GPS_NAV_PATH
-        session_output_root_raw = str(
-            self._settings_store.value("session_output_root", _DEFAULT_SESSION_OUTPUT_ROOT) or ""
-        ).strip()
-        session_output_root = self._normalize_session_output_root(session_output_root_raw)
-        auto_stop = self._settings_store.value("auto_stop_after_gps_sec", _DEFAULT_AUTO_STOP_AFTER_GPS_SEC)
-        anim = self._settings_store.value("monitor_anim_without_test", _DEFAULT_ANIM_WITHOUT_TEST)
-        theme = str(self._settings_store.value("ui_theme", _DEFAULT_UI_THEME) or "").strip().lower()
-        if theme not in ("light", "dark"):
-            theme = _DEFAULT_UI_THEME
-        try:
-            auto_stop_val = float(auto_stop)
-        except Exception:
-            auto_stop_val = _DEFAULT_AUTO_STOP_AFTER_GPS_SEC
-        auto_stop_val = max(0.0, min(3600.0, auto_stop_val))
-        anim_val = str(anim).strip().lower() in ("1", "true", "yes", "on")
-        return {
-            "gps_nav_default_path": nav_path,
-            "session_output_root": session_output_root,
-            "auto_stop_after_gps_sec": auto_stop_val,
-            "monitor_anim_without_test": anim_val,
-            "ui_theme": theme,
-        }
+        cfg = RuntimeConfig.from_settings(self._settings_store)
+        return cfg.to_ui_dict()
 
     def _save_ui_settings(self) -> None:
-        self._settings_store.setValue("gps_nav_default_path", str(self._settings.get("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH)))
-        self._settings_store.setValue(
-            "session_output_root",
-            str(self._settings.get("session_output_root", _DEFAULT_SESSION_OUTPUT_ROOT)),
-        )
-        self._settings_store.setValue(
-            "auto_stop_after_gps_sec",
-            float(self._settings.get("auto_stop_after_gps_sec", _DEFAULT_AUTO_STOP_AFTER_GPS_SEC)),
-        )
-        self._settings_store.setValue(
-            "monitor_anim_without_test",
-            bool(self._settings.get("monitor_anim_without_test", _DEFAULT_ANIM_WITHOUT_TEST)),
-        )
-        self._settings_store.setValue("ui_theme", str(self._settings.get("ui_theme", _DEFAULT_UI_THEME)))
+        cfg = RuntimeConfig.from_settings(self._settings_store).with_updates(**self._settings)
+        data = cfg.to_settings_dict()
+        self._settings["gps_nav_default_path"] = str(data.get("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH))
+        self._settings["session_output_root"] = str(data.get("session_output_root", _DEFAULT_SESSION_OUTPUT_ROOT))
+        self._settings["auto_stop_after_gps_sec"] = float(data.get("auto_stop_after_gps_sec", _DEFAULT_AUTO_STOP_AFTER_GPS_SEC))
+        self._settings["monitor_anim_without_test"] = bool(data.get("monitor_anim_without_test", _DEFAULT_ANIM_WITHOUT_TEST))
+        self._settings["ui_theme"] = str(data.get("ui_theme", _DEFAULT_UI_THEME))
+        self._settings["gps_timeout_sec"] = int(data.get("gps_timeout_sec", _DEFAULT_GPS_TIMEOUT_SEC))
+        self._settings_store.setValue("gps_nav_default_path", self._settings["gps_nav_default_path"])
+        self._settings_store.setValue("session_output_root", self._settings["session_output_root"])
+        self._settings_store.setValue("auto_stop_after_gps_sec", self._settings["auto_stop_after_gps_sec"])
+        self._settings_store.setValue("monitor_anim_without_test", self._settings["monitor_anim_without_test"])
+        self._settings_store.setValue("ui_theme", self._settings["ui_theme"])
+        self._settings_store.setValue("gps_timeout_sec", self._settings["gps_timeout_sec"])
         self._settings_store.setValue("ui_settings_initialized", True)
         self._settings_store.sync()
 
@@ -1160,6 +1142,12 @@ class MainWindow(QMainWindow):
         self._opt_auto_stop_spin.setValue(float(self._settings.get("auto_stop_after_gps_sec", _DEFAULT_AUTO_STOP_AFTER_GPS_SEC)))
         self._opt_auto_stop_spin.valueChanged.connect(self._on_setting_auto_stop_changed)
 
+        self._opt_gps_timeout_spin = QSpinBox(box)
+        self._opt_gps_timeout_spin.setRange(10, 1800)
+        self._opt_gps_timeout_spin.setSingleStep(5)
+        self._opt_gps_timeout_spin.setValue(int(self._settings.get("gps_timeout_sec", _DEFAULT_GPS_TIMEOUT_SEC)))
+        self._opt_gps_timeout_spin.valueChanged.connect(self._on_setting_gps_timeout_changed)
+
         self._opt_theme_combo = QComboBox(box)
         self._opt_theme_combo.addItem("Светлая", "light")
         self._opt_theme_combo.addItem("Темная", "dark")
@@ -1205,6 +1193,7 @@ class MainWindow(QMainWindow):
 
         form.addRow("Тема интерфейса", self._opt_theme_combo)
         form.addRow("Авто-стоп после завершения GPS трансляции, сек", self._opt_auto_stop_spin)
+        form.addRow("Таймаут генерации GPS IQ, сек", self._opt_gps_timeout_spin)
         form.addRow("", self._opt_anim_without_test_chk)
         form.addRow("Дефолтный путь к эфемеридам", nav_row)
         form.addRow("Папка сессий по умолчанию", session_root_row)
@@ -1244,6 +1233,7 @@ class MainWindow(QMainWindow):
     def _on_options_dialog_closed(self, _result: int) -> None:
         self._options_dialog = None
         self._opt_auto_stop_spin = None
+        self._opt_gps_timeout_spin = None
         self._opt_theme_combo = None
         self._opt_anim_without_test_chk = None
         self._opt_nav_default_edit = None
@@ -3233,6 +3223,11 @@ class MainWindow(QMainWindow):
         self._save_ui_settings()
         self._orch.set_auto_stop_after_gps_sec(v)
 
+    def _on_setting_gps_timeout_changed(self, value: int) -> None:
+        v = max(10, min(1800, int(value)))
+        self._settings["gps_timeout_sec"] = v
+        self._save_ui_settings()
+
     def _on_setting_theme_changed(self, index: int) -> None:
         if self._opt_theme_combo is None:
             return
@@ -3302,11 +3297,14 @@ class MainWindow(QMainWindow):
             "gps_nav_default_path": _DEFAULT_GPS_NAV_PATH,
             "session_output_root": self._normalize_session_output_root(_DEFAULT_SESSION_OUTPUT_ROOT),
             "auto_stop_after_gps_sec": _DEFAULT_AUTO_STOP_AFTER_GPS_SEC,
+            "gps_timeout_sec": _DEFAULT_GPS_TIMEOUT_SEC,
             "monitor_anim_without_test": _DEFAULT_ANIM_WITHOUT_TEST,
             "ui_theme": _DEFAULT_UI_THEME,
         }
         if self._opt_auto_stop_spin is not None:
             self._opt_auto_stop_spin.setValue(_DEFAULT_AUTO_STOP_AFTER_GPS_SEC)
+        if self._opt_gps_timeout_spin is not None:
+            self._opt_gps_timeout_spin.setValue(_DEFAULT_GPS_TIMEOUT_SEC)
         if self._opt_theme_combo is not None:
             idx = self._opt_theme_combo.findData(_DEFAULT_UI_THEME)
             self._opt_theme_combo.setCurrentIndex(idx if idx >= 0 else 0)
@@ -3578,6 +3576,7 @@ class MainWindow(QMainWindow):
                     "origin_h": gps.get("origin_h", _DEFAULT_GPS_ORIGIN_H_M),
                     "rf_bw_mhz": pluto.get("rf_bw_mhz", _DEFAULT_PLUTO_RF_BW_MHZ),
                     "tx_atten_db": pluto.get("tx_atten_db", _DEFAULT_PLUTO_TX_ATTEN_DB),
+                    "gps_timeout_sec": int(self._settings.get("gps_timeout_sec", _DEFAULT_GPS_TIMEOUT_SEC)),
                     "gps_sdr_sim_exe": gps_exe_override,
                     "pluto_exe": pluto_exe_override,
                 }
