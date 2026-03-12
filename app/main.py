@@ -3,6 +3,9 @@ from __future__ import annotations
 import sys
 import multiprocessing
 import runpy
+import json
+import subprocess
+import time
 
 from pathlib import Path
 
@@ -12,8 +15,10 @@ from PyQt6.QtWidgets import QApplication, QSplashScreen
 
 from app.core.event_bus import EventBus
 from app.core.logging_setup import emit_log, setup_logging
+from app.core.runtime_paths import find_existing_path, resolve_runtime_path
 from app.core.ui_bridge import UIBridge
 from app.orchestrator.orchestrator import Orchestrator
+from app.services.gps_sdr_sim.engine import prepare_nmea_input
 from app.services.ballistics_model import BallisticsModelSubprocessService
 from app.services.exe_runner import ExeRunnerService
 from app.services.gps_sdr_sim.service import GpsSdrSimService
@@ -123,8 +128,121 @@ def _create_startup_splash(app_icon: QIcon, theme: str) -> QSplashScreen:
     return splash
 
 
+def _run_frozen_runtime_smoke() -> int:
+    """
+    Headless runtime smoke for frozen EXE:
+      1) trajectory generation via embedded ballistics worker
+      2) gps preflight IQ generation via gps-sdr-sim
+    """
+    out_root = (Path("outputs") / "smoke" / "frozen_runtime").resolve()
+    run_id = time.strftime("%Y%m%d_%H%M%S")
+    run_dir = out_root / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    model_root = resolve_runtime_path("model_ballistics")
+    calc_entry = model_root / "run_vkr.py"
+    if not calc_entry.exists():
+        print(f"SMOKE_FAIL missing_calc_entry={calc_entry.as_posix()}")
+        return 2
+
+    cfg = {
+        "simulation": {"dt": 0.01, "t_max": 2.0, "max_steps": 20000},
+        "projectile": {"m": 10.0, "S": 0.01, "C_L": 0.0, "C_mp": 0.0, "g": 9.81},
+        "rotation": {"Ix": 0.02, "Iy": 0.10, "Iz": 0.10, "k_stab": 1.0},
+        "initial_conditions": {"V0": 310.0, "theta_deg": 12.0, "psi_deg": 0.0},
+    }
+    cfg_path = run_dir / "smoke_vkr_config.json"
+    cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    ballistics_cmd = [
+        sys.executable,
+        "--ballistics-worker",
+        str(calc_entry),
+        "--config",
+        str(cfg_path),
+        "--out",
+        str(run_dir),
+    ]
+    ballistics = subprocess.run(
+        ballistics_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120.0,
+    )
+    (run_dir / "ballistics_stdout.log").write_text(ballistics.stdout or "", encoding="utf-8")
+    (run_dir / "ballistics_stderr.log").write_text(ballistics.stderr or "", encoding="utf-8")
+    if ballistics.returncode != 0:
+        print(f"SMOKE_FAIL ballistics_rc={ballistics.returncode}")
+        return 3
+
+    traj_csv = run_dir / "trajectory.csv"
+    diag_csv = run_dir / "diagnostics.csv"
+    if not traj_csv.exists() or not diag_csv.exists():
+        print("SMOKE_FAIL missing_ballistics_artifacts=1")
+        return 4
+
+    nav = find_existing_path("data/ephemerides/brdc0430.25n")
+    if nav is None:
+        print("SMOKE_FAIL missing_nav=1")
+        return 5
+    gps_exe = find_existing_path("bin/gps_sdr_sim/GPS-SDR-SIM.exe") or find_existing_path("bin/gps_sdr_sim/gps-sdr-sim.exe")
+    if gps_exe is None:
+        print("SMOKE_FAIL missing_gps_sdr_sim_exe=1")
+        return 6
+
+    preflight_dir = run_dir / "gps_preflight"
+    preflight_dir.mkdir(parents=True, exist_ok=True)
+    nmea_txt = preflight_dir / "nmea_strings.txt"
+    iq_bin = preflight_dir / "gpssim_iq.bin"
+    nav_local = preflight_dir / nav.name
+    nav_local.write_bytes(nav.read_bytes())
+    prepare_nmea_input(
+        input_trajectory_csv=traj_csv,
+        out_nmea_txt=nmea_txt,
+        origin_lat_deg=55.7558,
+        origin_lon_deg=37.6176,
+        origin_h_m=156.0,
+        static_sec=0.0,
+    )
+    gps_cmd = [
+        str(gps_exe),
+        "-e",
+        nav_local.name,
+        "-g",
+        nmea_txt.name,
+        "-b",
+        "16",
+        "-o",
+        iq_bin.name,
+    ]
+    gps = subprocess.run(
+        gps_cmd,
+        cwd=str(preflight_dir),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120.0,
+    )
+    (preflight_dir / "gps_stdout.log").write_text(gps.stdout or "", encoding="utf-8")
+    (preflight_dir / "gps_stderr.log").write_text(gps.stderr or "", encoding="utf-8")
+    if gps.returncode != 0:
+        print(f"SMOKE_FAIL gps_preflight_rc={gps.returncode}")
+        return 7
+    if not iq_bin.exists() or iq_bin.stat().st_size <= 0:
+        print("SMOKE_FAIL gps_iq_missing=1")
+        return 8
+
+    print(f"SMOKE_OK run_dir={run_dir.as_posix()}")
+    return 0
+
+
 def main() -> int:
-    setup_logging("./data/app.log")
+    setup_logging()
     _set_windows_appusermodel_id()
 
     bus = EventBus()
@@ -199,6 +317,8 @@ def main() -> int:
 if __name__ == "__main__":
     # Required for frozen builds that spawn worker processes.
     multiprocessing.freeze_support()
+    if "--frozen-runtime-smoke" in sys.argv:
+        raise SystemExit(_run_frozen_runtime_smoke())
     if "--ballistics-worker" in sys.argv:
         idx = sys.argv.index("--ballistics-worker")
         if idx + 1 >= len(sys.argv):
