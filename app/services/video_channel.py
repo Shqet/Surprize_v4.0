@@ -1,4 +1,4 @@
-# app/services/video_channel.py
+﻿# app/services/video_channel.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -102,6 +102,8 @@ class VideoChannelDaemonService:
         self._preview_period_sec: float = 0.0
         self._preview_log_every_sec: float = 5.0
         self._preview_last_log: float = 0.0
+        self._log_throttle_sec: float = 5.0
+        self._log_throttle_state: dict[str, dict[str, float]] = {}
 
         self._worker_factory = worker_factory or (lambda **kw: ProcessStreamWorker(**kw))
 
@@ -126,8 +128,42 @@ class VideoChannelDaemonService:
         self._bus.publish(ServiceStatusEvent(service_name=self._name, status=st.value))
 
     def _log(self, line: str) -> None:
-        # vendor worker пишет строки k=v — прокидываем как LogEvent через общий логгер
-        emit_log(self._bus, "INFO", self._name, "VIDEO", line)
+        # vendor worker produces high-frequency events; throttle repetitive preview/hb lines.
+        key: Optional[str] = None
+        if line.startswith("VIDEO_PREVIEW_CMD_RECV"):
+            key = "VIDEO_PREVIEW_CMD_RECV"
+        elif line.startswith("VIDEO_PREVIEW_WRITE_OK"):
+            key = "VIDEO_PREVIEW_WRITE_OK"
+        elif line.startswith("VIDEO_PREVIEW_CMD_SENT"):
+            key = "VIDEO_PREVIEW_CMD_SENT"
+        elif line.startswith("VIDEO_PREVIEW_TICK"):
+            key = "VIDEO_PREVIEW_TICK"
+        elif line.startswith("CHILD_EVENT") and '"type": "hb"' in line:
+            key = "CHILD_EVENT_HB"
+
+        if key is None:
+            emit_log(self._bus, "INFO", self._name, "VIDEO", line)
+            return
+
+        now = time.monotonic()
+        st = self._log_throttle_state.get(key)
+        if st is None:
+            self._log_throttle_state[key] = {"last": now, "suppressed": 0.0}
+            emit_log(self._bus, "INFO", self._name, "VIDEO", line)
+            return
+
+        last = float(st.get("last", 0.0))
+        if (now - last) < self._log_throttle_sec:
+            st["suppressed"] = float(st.get("suppressed", 0.0)) + 1.0
+            return
+
+        suppressed = int(st.get("suppressed", 0.0))
+        st["last"] = now
+        st["suppressed"] = 0.0
+        if suppressed > 0:
+            emit_log(self._bus, "INFO", self._name, "VIDEO", f"{line} suppressed={suppressed}")
+        else:
+            emit_log(self._bus, "INFO", self._name, "VIDEO", line)
 
     def _log_preview_enabled(self, enabled: bool) -> None:
         emit_log(
@@ -279,7 +315,7 @@ class VideoChannelDaemonService:
 
         try:
             # ProcessStreamWorker API: (stream, url, log, **opts)
-            # opts may be ignored if not supported — безопасно для v0
+            # opts may be ignored if not supported вЂ” Р±РµР·РѕРїР°СЃРЅРѕ РґР»СЏ v0
             self._worker = self._worker_factory(
                 stream=cfg.channel,
                 url=cfg.url,
@@ -290,7 +326,7 @@ class VideoChannelDaemonService:
             )
             self._worker.start()
         except TypeError:
-            # fallback: если worker_factory не принимает opts (или vendor пока их не поддерживает)
+            # fallback: РµСЃР»Рё worker_factory РЅРµ РїСЂРёРЅРёРјР°РµС‚ opts (РёР»Рё vendor РїРѕРєР° РёС… РЅРµ РїРѕРґРґРµСЂР¶РёРІР°РµС‚)
             self._worker = self._worker_factory(stream=cfg.channel, url=cfg.url, log=self._log)
             self._worker.start()
         except Exception as ex:
@@ -330,7 +366,7 @@ class VideoChannelDaemonService:
             return
 
         self._publish_status(ServiceStatus.STOPPING) if hasattr(ServiceStatus, "STOPPING") else None  # safety
-        # В твоём enum STOPPING нет, поэтому делаем просто лог + STOPPED.
+        # Р’ С‚РІРѕС‘Рј enum STOPPING РЅРµС‚, РїРѕСЌС‚РѕРјСѓ РґРµР»Р°РµРј РїСЂРѕСЃС‚Рѕ Р»РѕРі + STOPPED.
         emit_log(self._bus, "INFO", self._name, "VIDEO_DAEMON_STOP", f"service={self._name}")
 
         w = self._worker
@@ -356,3 +392,4 @@ class VideoChannelDaemonService:
 
         self._cfg = None
         self._publish_status(ServiceStatus.STOPPED)
+
