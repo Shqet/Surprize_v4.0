@@ -41,6 +41,7 @@ from PyQt6.QtWidgets import (
 )
 
 from app.core.logging_setup import emit_log
+from app.core.runtime_paths import default_gps_nav_path, find_existing_path, resolve_runtime_path
 from app.core.ui_bridge import UIBridge
 from app.orchestrator.orchestrator import Orchestrator
 from app.services.gps_sdr_sim.formats import ecef_to_geodetic, enu_to_ecef
@@ -70,7 +71,7 @@ _DEFAULT_CONFIG_JSON: dict[str, Any] = {
 
 _DEFAULT_PREVIEW_VISIBLE = "outputs/video_preview/visible/latest.jpg"
 _DEFAULT_PREVIEW_THERMAL = "outputs/video_preview/thermal/latest.jpg"
-_DEFAULT_GPS_NAV_PATH = "data/ephemerides/brdc0430.25n"
+_DEFAULT_GPS_NAV_PATH = str(default_gps_nav_path())
 _DEFAULT_GPS_STATIC_SEC = 0.0
 _DEFAULT_PLUTO_RF_BW_MHZ = 3.0
 _DEFAULT_PLUTO_TX_ATTEN_DB = -20.0
@@ -490,6 +491,7 @@ class MainWindow(QMainWindow):
         self._last_finished_session_notified: Optional[str] = None
         self._session_out_dir_hints: dict[str, str] = {}
         self._last_completed_out_dir: str = ""
+        self._resource_runtime_overrides: dict[str, str] = {}
         self._settings_store = QSettings("Surprize", "SurprizeShell")
         self._settings = self._load_ui_settings()
         self._anim_without_test_enabled: bool = bool(
@@ -583,6 +585,8 @@ class MainWindow(QMainWindow):
         self._gps_nav_path_edit: Optional[QLineEdit] = None
         self._btn_gps_nav_browse: Optional[QPushButton] = None
         self._btn_gps_nav_default: Optional[QPushButton] = None
+        self._lbl_resource_check: Optional[QLabel] = None
+        self._btn_fix_resource_paths: Optional[QPushButton] = None
         self._gps_static_sec_spin: Optional[QDoubleSpinBox] = None
         self._gps_origin_lat_spin: Optional[QDoubleSpinBox] = None
         self._gps_origin_lon_spin: Optional[QDoubleSpinBox] = None
@@ -698,6 +702,7 @@ class MainWindow(QMainWindow):
         self._runtime_ui_timer.timeout.connect(self._on_runtime_ui_tick)
         self._runtime_ui_timer.start()
         self._on_runtime_ui_tick()
+        QTimer.singleShot(200, self._run_startup_resource_check)
         self._replay_timer = QTimer(self)
         self._replay_timer.setInterval(125)
         self._replay_timer.timeout.connect(self._on_replay_timer_tick)
@@ -751,6 +756,25 @@ class MainWindow(QMainWindow):
         return out
 
     def _load_ui_settings(self) -> dict[str, Any]:
+        init_raw = str(self._settings_store.value("ui_settings_initialized", "0") or "").strip().lower()
+        initialized = init_raw in ("1", "true", "yes", "on")
+        if not initialized:
+            defaults = {
+                "gps_nav_default_path": _DEFAULT_GPS_NAV_PATH,
+                "session_output_root": self._normalize_session_output_root(_DEFAULT_SESSION_OUTPUT_ROOT),
+                "auto_stop_after_gps_sec": _DEFAULT_AUTO_STOP_AFTER_GPS_SEC,
+                "monitor_anim_without_test": _DEFAULT_ANIM_WITHOUT_TEST,
+                "ui_theme": _DEFAULT_UI_THEME,
+            }
+            self._settings_store.setValue("gps_nav_default_path", defaults["gps_nav_default_path"])
+            self._settings_store.setValue("session_output_root", defaults["session_output_root"])
+            self._settings_store.setValue("auto_stop_after_gps_sec", float(defaults["auto_stop_after_gps_sec"]))
+            self._settings_store.setValue("monitor_anim_without_test", bool(defaults["monitor_anim_without_test"]))
+            self._settings_store.setValue("ui_theme", defaults["ui_theme"])
+            self._settings_store.setValue("ui_settings_initialized", True)
+            self._settings_store.sync()
+            return defaults
+
         nav_path = str(self._settings_store.value("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH) or "").strip()
         if not nav_path:
             nav_path = _DEFAULT_GPS_NAV_PATH
@@ -792,6 +816,7 @@ class MainWindow(QMainWindow):
             bool(self._settings.get("monitor_anim_without_test", _DEFAULT_ANIM_WITHOUT_TEST)),
         )
         self._settings_store.setValue("ui_theme", str(self._settings.get("ui_theme", _DEFAULT_UI_THEME)))
+        self._settings_store.setValue("ui_settings_initialized", True)
         self._settings_store.sync()
 
     def _apply_ui_settings_to_runtime(self) -> None:
@@ -1272,6 +1297,15 @@ class MainWindow(QMainWindow):
         nav_row.setContentsMargins(0, 0, 0, 0)
         nav_row.addWidget(self._gps_nav_path_edit)
         nav_row.addWidget(self._btn_gps_nav_browse)
+        self._lbl_resource_check = QLabel("Проверка ресурсов: ...", gps_box)
+        self._btn_fix_resource_paths = QPushButton("Исправить пути", gps_box)
+        self._btn_fix_resource_paths.clicked.connect(self._on_fix_resource_paths_clicked)
+        res_row = QHBoxLayout()
+        res_row.setContentsMargins(0, 0, 0, 0)
+        res_row.addWidget(self._lbl_resource_check, 1)
+        res_row.addWidget(self._btn_fix_resource_paths, 0)
+        res_row_widget = QWidget(gps_box)
+        res_row_widget.setLayout(res_row)
 
         self._gps_static_sec_spin = QDoubleSpinBox(gps_box)
         self._gps_static_sec_spin.setRange(0.0, 36000.0)
@@ -1306,6 +1340,7 @@ class MainWindow(QMainWindow):
 
         gps_form.addRow(nav_hdr_row)
         gps_form.addRow(nav_row)
+        gps_form.addRow("Ресурсы", res_row_widget)
         gps_form.addRow("Время статики, сек", self._gps_static_sec_spin)
         gps_form.addRow("Старт: широта, °", self._gps_origin_lat_spin)
         gps_form.addRow("Старт: долгота, °", self._gps_origin_lon_spin)
@@ -3221,6 +3256,7 @@ class MainWindow(QMainWindow):
         self._save_ui_settings()
         if self._gps_nav_path_edit is not None:
             self._gps_nav_path_edit.setText(txt)
+        self._refresh_resource_check_status()
 
     def _on_setting_nav_path_browse(self) -> None:
         current = self._opt_nav_default_edit.text().strip() if self._opt_nav_default_edit is not None else ""
@@ -3363,6 +3399,7 @@ class MainWindow(QMainWindow):
         )
         if file_path and self._gps_nav_path_edit is not None:
             self._gps_nav_path_edit.setText(file_path)
+        self._refresh_resource_check_status()
 
     def _on_gps_nav_use_default_clicked(self) -> None:
         nav_default = str(self._settings.get("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH)).strip()
@@ -3370,6 +3407,100 @@ class MainWindow(QMainWindow):
             nav_default = _DEFAULT_GPS_NAV_PATH
         if self._gps_nav_path_edit is not None:
             self._gps_nav_path_edit.setText(nav_default)
+        self._refresh_resource_check_status()
+
+    def _run_startup_resource_check(self) -> None:
+        self._refresh_resource_check_status()
+
+    def _refresh_resource_check_status(self) -> None:
+        label = self._lbl_resource_check
+        if label is None:
+            return
+        status = self._collect_resource_status()
+        failed = [name for name, ok in status.get("checks", {}).items() if not ok]
+        if not failed:
+            label.setText("OK: ephemerides, gps-sdr-sim, PlutoPlayer")
+            label.setStyleSheet("color:#2e7d32; font-weight:600;")
+            return
+        label.setText(f"FAIL: {', '.join(failed)}")
+        label.setStyleSheet("color:#c62828; font-weight:600;")
+
+    def _collect_resource_status(self) -> dict[str, Any]:
+        nav = self._gps_nav_path_edit.text().strip() if self._gps_nav_path_edit is not None else ""
+        if not nav:
+            nav = str(self._settings.get("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH)).strip()
+        nav_path = find_existing_path(nav)
+
+        gps_path = ""
+        pluto_path = ""
+        gps_ok = False
+        pluto_ok = False
+
+        try:
+            services = self._orch._snapshot_service_sections("default", ("gps_sdr_sim",))  # type: ignore[attr-defined]
+            gps_service = services.get("gps_sdr_sim") if isinstance(services, dict) else {}
+            if not isinstance(gps_service, dict):
+                gps_service = {}
+            gps_path = str(self._orch._resolve_gps_sdr_sim_executable(gps_service, {}))  # type: ignore[attr-defined]
+            gps_ok = bool(gps_path and Path(gps_path).exists())
+        except Exception:
+            gps_ok = False
+
+        try:
+            services = self._orch._snapshot_service_sections("default", ("gps_sdr_sim",))  # type: ignore[attr-defined]
+            gps_service = services.get("gps_sdr_sim") if isinstance(services, dict) else {}
+            if not isinstance(gps_service, dict):
+                gps_service = {}
+            pluto_path = str(self._orch._resolve_pluto_player_executable(gps_service, {}))  # type: ignore[attr-defined]
+            pluto_ok = bool(pluto_path and Path(pluto_path).exists())
+        except Exception:
+            pluto_ok = False
+
+        return {
+            "checks": {
+                "ephemerides": nav_path is not None,
+                "gps-sdr-sim": gps_ok,
+                "PlutoPlayer": pluto_ok,
+            },
+            "resolved": {
+                "nav": str(nav_path) if nav_path is not None else "",
+                "gps_sdr_sim_exe": gps_path,
+                "pluto_exe": pluto_path,
+            },
+        }
+
+    def _on_fix_resource_paths_clicked(self) -> None:
+        status = self._collect_resource_status()
+        resolved = status.get("resolved", {}) if isinstance(status, dict) else {}
+        nav = str(resolved.get("nav", "") or "").strip()
+        gps_exe = str(resolved.get("gps_sdr_sim_exe", "") or "").strip()
+        pluto_exe = str(resolved.get("pluto_exe", "") or "").strip()
+
+        if not nav:
+            nav_candidate = find_existing_path(default_gps_nav_path())
+            if nav_candidate is not None:
+                nav = str(nav_candidate)
+            else:
+                nav = str(resolve_runtime_path(_DEFAULT_GPS_NAV_PATH))
+
+        if nav:
+            self._settings["gps_nav_default_path"] = nav
+            self._save_ui_settings()
+            if self._gps_nav_path_edit is not None:
+                self._gps_nav_path_edit.setText(nav)
+
+        self._resource_runtime_overrides = {}
+        if gps_exe and Path(gps_exe).exists():
+            self._resource_runtime_overrides["gps_sdr_sim_exe"] = gps_exe
+        if pluto_exe and Path(pluto_exe).exists():
+            self._resource_runtime_overrides["pluto_exe"] = pluto_exe
+
+        self._refresh_resource_check_status()
+        failed = [name for name, ok in status.get("checks", {}).items() if not ok]
+        if failed:
+            QMessageBox.warning(self, "Ресурсы", f"Автоисправление частичное. Не подтверждено: {', '.join(failed)}")
+        else:
+            self.statusBar().showMessage("Пути ресурсов обновлены", 2500)
 
     def _on_monitor_session_output_root_edited(self) -> None:
         txt = self._session_output_root_m_edit.text().strip() if self._session_output_root_m_edit is not None else ""
@@ -3435,6 +3566,8 @@ class MainWindow(QMainWindow):
         gps = opts.get("gps_sdr_sim", {}) if isinstance(opts, dict) else {}
         pluto = opts.get("pluto_player", {}) if isinstance(opts, dict) else {}
         nav_default = str(self._settings.get("gps_nav_default_path", _DEFAULT_GPS_NAV_PATH))
+        gps_exe_override = str(self._resource_runtime_overrides.get("gps_sdr_sim_exe", "")).strip()
+        pluto_exe_override = str(self._resource_runtime_overrides.get("pluto_exe", "")).strip()
         return {
             "services": {
                 "gps_sdr_sim": {
@@ -3445,6 +3578,8 @@ class MainWindow(QMainWindow):
                     "origin_h": gps.get("origin_h", _DEFAULT_GPS_ORIGIN_H_M),
                     "rf_bw_mhz": pluto.get("rf_bw_mhz", _DEFAULT_PLUTO_RF_BW_MHZ),
                     "tx_atten_db": pluto.get("tx_atten_db", _DEFAULT_PLUTO_TX_ATTEN_DB),
+                    "gps_sdr_sim_exe": gps_exe_override,
+                    "pluto_exe": pluto_exe_override,
                 }
             }
         }
