@@ -567,6 +567,9 @@ class MainWindow(QMainWindow):
         self._replay_t_min_sec: float = 0.0
         self._replay_t_max_sec: float = 0.0
         self._replay_duration_sec: float = 0.0
+        self._replay_source_t_min_sec: float = 0.0
+        self._replay_source_t_max_sec: float = 0.0
+        self._replay_static_sec: float = 0.0
         self._replay_t_sec: float = 0.0
         self._replay_state: ReplayState = ReplayState.IDLE
         self._replay_rate: float = 1.0
@@ -2353,6 +2356,7 @@ class MainWindow(QMainWindow):
         status = str(manifest.get("status", "")) if isinstance(manifest, dict) else ""
         if status and status != "STOPPED":
             raise RuntimeError(f"сессия не завершена, статус={status}")
+        self._replay_static_sec = self._read_replay_static_sec(session_dir=session_dir, session_manifest=manifest)
 
         timeline = self._read_replay_timeline(session_dir / "trajectory_timeline.csv")
         if not timeline:
@@ -2399,17 +2403,63 @@ class MainWindow(QMainWindow):
         self._sync_replay_controls()
         self._apply_replay_t_sec(self._replay_t_sec, from_slider=False)
 
+    def _read_replay_static_sec(self, *, session_dir: Path, session_manifest: dict[str, Any]) -> float:
+        scenario_id = str(session_manifest.get("scenario_id", "") or "").strip()
+        candidates: list[Path] = [session_dir / "scenario_manifest.json"]
+        if scenario_id:
+            candidates.append(session_dir.parent.parent / "scenarios" / scenario_id / "scenario_manifest.json")
+            candidates.append(Path("outputs") / "scenarios" / scenario_id / "scenario_manifest.json")
+        for manifest_path in candidates:
+            if not manifest_path.exists():
+                continue
+            try:
+                payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            sdr = payload.get("sdr_options")
+            gps = sdr.get("gps_sdr_sim") if isinstance(sdr, dict) else {}
+            static_raw = gps.get("static_sec") if isinstance(gps, dict) else None
+            if isinstance(static_raw, (int, float)):
+                static_sec = max(0.0, float(static_raw))
+                self._log_info(
+                    "UI_REPLAY_STATIC_SEC",
+                    f"value={static_sec:.3f} source={manifest_path.resolve().as_posix()}",
+                )
+                return static_sec
+        self._log_info("UI_REPLAY_STATIC_SEC", "value=0.000 source=default")
+        return 0.0
+
     def _replay_build_indices(self) -> None:
         self._replay_timeline_times = [float(x[0]) for x in self._replay_timeline]
         self._replay_visible_times = [float(x[0]) for x in self._replay_visible_frames]
         self._replay_thermal_times = [float(x[0]) for x in self._replay_thermal_frames]
         if self._replay_timeline_times:
-            self._replay_t_min_sec = float(self._replay_timeline_times[0])
-            self._replay_t_max_sec = float(self._replay_timeline_times[-1])
+            self._replay_source_t_min_sec = float(self._replay_timeline_times[0])
+            self._replay_source_t_max_sec = float(self._replay_timeline_times[-1])
         else:
-            self._replay_t_min_sec = 0.0
-            self._replay_t_max_sec = 0.0
+            self._replay_source_t_min_sec = 0.0
+            self._replay_source_t_max_sec = 0.0
+        static_sec = max(0.0, float(getattr(self, "_replay_static_sec", 0.0) or 0.0))
+        self._replay_t_min_sec = float(self._replay_source_t_min_sec)
+        self._replay_t_max_sec = float(self._replay_source_t_max_sec) + static_sec
         self._replay_duration_sec = max(0.0, float(self._replay_t_max_sec - self._replay_t_min_sec))
+
+    def _replay_master_to_source_t_sec(self, t_master: float) -> float:
+        src_min = float(getattr(self, "_replay_source_t_min_sec", getattr(self, "_replay_t_min_sec", 0.0)))
+        src_max = float(getattr(self, "_replay_source_t_max_sec", getattr(self, "_replay_t_max_sec", 0.0)))
+        if src_max <= src_min:
+            return src_min
+        t_min = float(self._replay_t_min_sec)
+        t_max = float(self._replay_t_max_sec)
+        static_sec = max(0.0, float(getattr(self, "_replay_static_sec", 0.0) or 0.0))
+        t = min(max(float(t_master), t_min), t_max)
+        if static_sec <= 1e-9:
+            return min(max(t, src_min), src_max)
+        if t <= t_min + static_sec:
+            return src_min
+        return min(max(t - static_sec, src_min), src_max)
 
     def _release_replay_caps(self) -> None:
         for cap in (self._replay_cap_visible, self._replay_cap_thermal):
@@ -2721,23 +2771,24 @@ class MainWindow(QMainWindow):
         if not self._replay_timeline:
             return
         t = float(self._replay_t_sec)
+        t_src = self._replay_master_to_source_t_sec(t)
         if self._lbl_replay_trel_m is not None:
             self._lbl_replay_trel_m.setText(f"t: {t:.3f} c")
 
-        idx = self._nearest_timeline_index(t)
+        idx = self._nearest_timeline_index(t_src)
         pt = self._replay_timeline[idx]
         self._traj_view_r.set_marker_point((pt[1], pt[2], pt[3]))
         self._traj_view_r.set_status(self._format_replay_3d_overlay(t_sec=t, idx=idx, pt=pt, total=len(self._replay_timeline)))
         if self._lbl_replay_traj_info_m is not None:
             self._lbl_replay_traj_info_m.setText(
-                f"Траектория: idx={idx} t={pt[0]:.3f} x={pt[1]:.1f} y={pt[2]:.1f} z={pt[3]:.1f} v={pt[4]:.2f}"
+                f"Траектория: idx={idx} t={pt[0]:.3f} t_src={t_src:.3f} x={pt[1]:.1f} y={pt[2]:.1f} z={pt[3]:.1f} v={pt[4]:.2f}"
             )
 
-        vis = self._nearest_frame(self._replay_visible_frames, self._replay_visible_times, t)
-        thr = self._nearest_frame(self._replay_thermal_frames, self._replay_thermal_times, t)
+        vis = self._nearest_frame(self._replay_visible_frames, self._replay_visible_times, t_src)
+        thr = self._nearest_frame(self._replay_thermal_frames, self._replay_thermal_times, t_src)
         self._render_replay_channel(
             name="Видимый канал",
-            t_master=t,
+            t_master=t_src,
             frame_info=vis,
             has_stream=bool(self._replay_visible_frames),
             label_info=self._lbl_replay_visible_info_m,
@@ -2746,7 +2797,7 @@ class MainWindow(QMainWindow):
         )
         self._render_replay_channel(
             name="Тепловой канал",
-            t_master=t,
+            t_master=t_src,
             frame_info=thr,
             has_stream=bool(self._replay_thermal_frames),
             label_info=self._lbl_replay_thermal_info_m,
