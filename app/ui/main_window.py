@@ -554,6 +554,7 @@ class MainWindow(QMainWindow):
         self._monitor_cum_dist_m: list[float] = []
         self._monitor_sample_dt: float = 0.0
         self._monitor_duration_sec: float = 0.0
+        self._monitor_static_sec: float = 0.0
         self._monitor_started_at: Optional[float] = None
         self._monitor_load_seq: int = 0
         self._replay_session_dir: Optional[Path] = None
@@ -3167,6 +3168,10 @@ class MainWindow(QMainWindow):
         if d <= 0.0:
             d = max((len(points) - 1) / 10.0, 0.1)
         self._monitor_duration_sec = d
+        self._monitor_static_sec = (
+            float(self._gps_static_sec_spin.value()) if self._gps_static_sec_spin is not None else _DEFAULT_GPS_STATIC_SEC
+        )
+        self._monitor_static_sec = max(0.0, self._monitor_static_sec)
         self._monitor_sample_dt = (d / (len(points) - 1)) if len(points) > 1 else 0.0
         self._monitor_started_at = time.monotonic()
 
@@ -3186,7 +3191,10 @@ class MainWindow(QMainWindow):
             self._monitor_timer.start()
             self._log_info(
                 "UI_MONITOR_ANIM_START",
-                f"points={len(points)} duration_sec={self._monitor_duration_sec:.3f}",
+                (
+                    f"points={len(points)} duration_sec={self._monitor_duration_sec:.3f} "
+                    f"static_sec={self._monitor_static_sec:.3f}"
+                ),
             )
         else:
             self._log_info(
@@ -3204,23 +3212,35 @@ class MainWindow(QMainWindow):
             return
 
         d = max(self._monitor_duration_sec, 0.001)
+        static_sec = max(0.0, float(self._monitor_static_sec))
         active = bool(self._session_runtime_last.get("active", False))
+        hold_static = False
         if active:
             elapsed = max(0.0, float(self._session_runtime_last.get("elapsed_sec", 0.0)))
-            t = min(elapsed, d)
+            if elapsed < static_sec:
+                t = 0.0
+                hold_static = True
+            else:
+                t = min(max(0.0, elapsed - static_sec), d)
         else:
             started = self._monitor_started_at
             if started is None:
                 self._monitor_started_at = time.monotonic()
                 started = self._monitor_started_at
             elapsed = max(0.0, time.monotonic() - float(started))
-            t = elapsed % d
-        idx = int((t / d) * (len(points) - 1))
+            cycle = max(0.001, static_sec + d)
+            cycle_t = elapsed % cycle
+            if cycle_t < static_sec:
+                t = 0.0
+                hold_static = True
+            else:
+                t = cycle_t - static_sec
+        idx = 0 if hold_static else int((t / d) * (len(points) - 1))
         idx = max(0, min(len(points) - 1, idx))
         self._traj_view_m.set_marker_point(points[idx])
-        self._update_monitor_params(idx)
+        self._update_monitor_params(idx, stationary=hold_static)
 
-    def _update_monitor_params(self, idx: int) -> None:
+    def _update_monitor_params(self, idx: int, *, stationary: bool = False) -> None:
         points = self._monitor_points
         if not points:
             return
@@ -3229,7 +3249,7 @@ class MainWindow(QMainWindow):
 
         speed = 0.0
         dt = self._monitor_sample_dt
-        if len(points) > 1 and dt > 0.0:
+        if (not stationary) and len(points) > 1 and dt > 0.0:
             i0 = max(0, i - 1)
             i1 = min(len(points) - 1, i + 1)
             if i1 > i0:
@@ -3238,7 +3258,7 @@ class MainWindow(QMainWindow):
                 ds = math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2)
                 speed = ds / (float(i1 - i0) * dt)
 
-        dist = self._monitor_cum_dist_m[i] if i < len(self._monitor_cum_dist_m) else 0.0
+        dist = 0.0 if stationary else (self._monitor_cum_dist_m[i] if i < len(self._monitor_cum_dist_m) else 0.0)
 
         if self._m_speed_lbl is not None:
             self._m_speed_lbl.setText(f"{speed:.2f}")
