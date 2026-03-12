@@ -495,6 +495,8 @@ class MainWindow(QMainWindow):
         self._last_sent_mayak_duration_sec: Optional[float] = None
         self._prepare_task: Optional[_PrepareTestTask] = None
         self._readiness_task: Optional[_ReadinessCheckTask] = None
+        self._last_readiness_ready: Optional[bool] = None
+        self._last_readiness_summary: str = ""
         self._start_session_task: Optional[_StartSessionFlowTask] = None
         self._stop_session_task: Optional[_StopSessionFlowTask] = None
         self._session_runtime_last: dict[str, Any] = {}
@@ -1864,6 +1866,8 @@ class MainWindow(QMainWindow):
     def _on_prepare_done(self, payload: object) -> None:
         self._set_prepare_progress_running(False)
         self._prepare_task = None
+        self._last_readiness_ready = None
+        self._last_readiness_summary = "после подготовки требуется новая проверка"
 
         data = payload if isinstance(payload, dict) else {}
         scenario_id = str(data.get("scenario_id", "none"))
@@ -1899,6 +1903,8 @@ class MainWindow(QMainWindow):
     def _on_prepare_fail(self, error: str) -> None:
         self._set_prepare_progress_running(False)
         self._prepare_task = None
+        self._last_readiness_ready = None
+        self._last_readiness_summary = "подготовка завершилась ошибкой"
         self._log_error("UI_PREPARE_FAILED", f"stage=run err={error}")
         QMessageBox.critical(self, "Подготовка к тесту", f"Ошибка подготовки: {error}")
 
@@ -1949,6 +1955,8 @@ class MainWindow(QMainWindow):
         warnings = report.get("warnings", [])
         blocking_txt = ",".join(str(x) for x in blocking) if isinstance(blocking, list) and blocking else "none"
         warnings_txt = ",".join(str(x) for x in warnings) if isinstance(warnings, list) and warnings else "none"
+        self._last_readiness_ready = ready
+        self._last_readiness_summary = f"blocking={blocking_txt}; warnings={warnings_txt}"
         details_html = self._build_readiness_details_html(report)
 
         if ready:
@@ -2058,6 +2066,8 @@ class MainWindow(QMainWindow):
     def _on_readiness_fail(self, error: str) -> None:
         self._set_readiness_check_running(False)
         self._readiness_task = None
+        self._last_readiness_ready = False
+        self._last_readiness_summary = f"ошибка проверки готовности: {error}"
         self._log_error("UI_MONITOR_READINESS_FAILED", f"err={error}")
         QMessageBox.critical(self, "Мониторинг", f"Ошибка проверки готовности: {error}")
         self._on_runtime_ui_tick()
@@ -2115,9 +2125,16 @@ class MainWindow(QMainWindow):
             elif busy:
                 self._lbl_runtime_gate_m.setText("Критический статус: идет предстартовая операция")
                 self._lbl_runtime_gate_m.setStyleSheet("font-weight:700; color:#f9a825;")
-            else:
+            elif self._last_readiness_ready is True:
                 self._lbl_runtime_gate_m.setText("Критический статус: готов к запуску")
                 self._lbl_runtime_gate_m.setStyleSheet("font-weight:700; color:#2e7d32;")
+            elif self._last_readiness_ready is False:
+                self._lbl_runtime_gate_m.setText("Критический статус: не готов к запуску")
+                self._lbl_runtime_gate_m.setStyleSheet("font-weight:700; color:#c62828;")
+            else:
+                self._lbl_runtime_gate_m.setText("Критический статус: требуется проверка готовности")
+                self._lbl_runtime_gate_m.setStyleSheet("font-weight:700; color:#f9a825;")
+            self._lbl_runtime_gate_m.setToolTip(self._last_readiness_summary or "")
 
         if self._lbl_session_id_m is not None:
             self._lbl_session_id_m.setText(f"Сессия: {session_id}")
@@ -2995,6 +3012,8 @@ class MainWindow(QMainWindow):
     def _on_monitor_start_flow_fail(self, error: str) -> None:
         self._start_session_task = None
         self._set_start_test_flow_running(False)
+        self._last_readiness_ready = False
+        self._last_readiness_summary = f"запуск отклонен: {error}"
         self._log_error("UI_MONITOR_START_TEST_FAILED", f"err={error}")
         self._set_last_test_result_label("Последнее испытание: ошибка запуска", "#c62828")
         QMessageBox.critical(self, "Мониторинг", f"Не удалось начать испытание: {error}")
