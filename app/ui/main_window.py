@@ -2,12 +2,14 @@
 
 import copy
 import csv
+import datetime as dt
 import json
 import math
 import os
 import subprocess
 import sys
 import time
+import zipfile
 from bisect import bisect_left
 from enum import Enum
 from pathlib import Path
@@ -658,6 +660,7 @@ class MainWindow(QMainWindow):
         self._lbl_runtime_gate_m: Optional[QLabel] = None
         self._lbl_last_test_result_m: Optional[QLabel] = None
         self._btn_open_last_results_m: Optional[QPushButton] = None
+        self._btn_export_last_report_m: Optional[QPushButton] = None
         self._session_output_root_m_edit: Optional[QLineEdit] = None
         self._btn_session_output_root_m_browse: Optional[QPushButton] = None
         self._btn_session_output_root_m_default: Optional[QPushButton] = None
@@ -1544,6 +1547,8 @@ class MainWindow(QMainWindow):
             self._lbl_last_test_result_m = QLabel("Последнее испытание: не запускалось", self)
             self._btn_open_last_results_m = QPushButton("Открыть папку результатов", self)
             self._btn_open_last_results_m.setEnabled(False)
+            self._btn_export_last_report_m = QPushButton("Экспорт отчета (zip)", self)
+            self._btn_export_last_report_m.setEnabled(False)
             self._session_output_root_m_edit = QLineEdit(self)
             self._session_output_root_m_edit.setText(str(self._settings.get("session_output_root", _DEFAULT_SESSION_OUTPUT_ROOT)))
             self._session_output_root_m_edit.setPlaceholderText(_DEFAULT_SESSION_OUTPUT_ROOT)
@@ -1562,6 +1567,7 @@ class MainWindow(QMainWindow):
             last_row = QHBoxLayout()
             last_row.setContentsMargins(0, 0, 0, 0)
             last_row.addWidget(self._lbl_last_test_result_m, 1)
+            last_row.addWidget(self._btn_export_last_report_m, 0)
             last_row.addWidget(self._btn_open_last_results_m, 0)
             last_row_widget = QWidget(self)
             last_row_widget.setLayout(last_row)
@@ -1618,6 +1624,8 @@ class MainWindow(QMainWindow):
             self._btn_session_output_root_m_default.clicked.connect(self._on_monitor_session_output_root_use_default)
         if self._btn_open_last_results_m is not None:
             self._btn_open_last_results_m.clicked.connect(self._on_open_last_results_clicked)
+        if self._btn_export_last_report_m is not None:
+            self._btn_export_last_report_m.clicked.connect(self._on_export_last_report_clicked)
         if self._btn_replay_open_m is not None:
             self._btn_replay_open_m.clicked.connect(self._on_replay_open_session_clicked)
         if self._btn_replay_play_m is not None:
@@ -2206,6 +2214,9 @@ class MainWindow(QMainWindow):
         if self._btn_open_last_results_m is not None:
             has_results_dir = bool(self._last_completed_out_dir) and Path(self._last_completed_out_dir).exists()
             self._btn_open_last_results_m.setEnabled(has_results_dir)
+        if self._btn_export_last_report_m is not None:
+            has_results_dir = bool(self._last_completed_out_dir) and Path(self._last_completed_out_dir).exists()
+            self._btn_export_last_report_m.setEnabled(has_results_dir)
 
     @staticmethod
     def _format_elapsed(value_sec: float) -> str:
@@ -2965,6 +2976,8 @@ class MainWindow(QMainWindow):
             self._last_completed_out_dir = out
             if self._btn_open_last_results_m is not None:
                 self._btn_open_last_results_m.setEnabled(True)
+            if self._btn_export_last_report_m is not None:
+                self._btn_export_last_report_m.setEnabled(True)
         if out:
             QMessageBox.information(
                 self,
@@ -2992,6 +3005,55 @@ class MainWindow(QMainWindow):
                 subprocess.Popen(["xdg-open", str(p)])
         except Exception as ex:
             QMessageBox.critical(self, "Мониторинг", f"Не удалось открыть папку:\n{type(ex).__name__}: {ex}")
+
+    def _on_export_last_report_clicked(self) -> None:
+        out = str(self._last_completed_out_dir or "").strip()
+        if not out:
+            QMessageBox.information(self, "Мониторинг", "Нет завершенной сессии для экспорта отчета.")
+            return
+        src_dir = Path(out)
+        if not src_dir.exists() or not src_dir.is_dir():
+            QMessageBox.warning(self, "Мониторинг", f"Папка сессии не найдена:\n{src_dir.as_posix()}")
+            return
+
+        stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"{src_dir.name}_report_{stamp}.zip"
+        default_path = str((src_dir.parent / default_name).resolve())
+        zip_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить отчет сессии",
+            default_path,
+            "ZIP архив (*.zip)",
+        )
+        if not zip_path:
+            return
+        if not zip_path.lower().endswith(".zip"):
+            zip_path += ".zip"
+        try:
+            written = self._export_session_report_zip(src_dir=src_dir, zip_path=Path(zip_path))
+        except Exception as ex:
+            QMessageBox.critical(self, "Мониторинг", f"Не удалось экспортировать отчет:\n{type(ex).__name__}: {ex}")
+            return
+        self.statusBar().showMessage(f"Отчет сохранен: {Path(zip_path).name} ({written} файлов)", 4000)
+        QMessageBox.information(self, "Мониторинг", f"Отчет экспортирован:\n{Path(zip_path).as_posix()}")
+
+    def _export_session_report_zip(self, *, src_dir: Path, zip_path: Path) -> int:
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        count = 0
+        with zipfile.ZipFile(zip_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+            manifest = {
+                "session_dir": str(src_dir.resolve()),
+                "exported_ts": time.time(),
+                "ui_runtime_snapshot": self._session_runtime_last,
+            }
+            zf.writestr("report_manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            for fp in src_dir.rglob("*"):
+                if not fp.is_file():
+                    continue
+                arcname = str(Path(src_dir.name) / fp.relative_to(src_dir))
+                zf.write(fp, arcname=arcname)
+                count += 1
+        return count
 
     def _set_last_test_result_label(self, text: str, color: str = "") -> None:
         if self._lbl_last_test_result_m is None:
