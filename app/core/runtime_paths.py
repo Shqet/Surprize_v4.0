@@ -9,6 +9,20 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def app_root() -> Path:
+    """
+    Runtime application root.
+    - frozen: directory with executable
+    - dev: project root
+    """
+    if getattr(sys, "frozen", False):
+        try:
+            return Path(sys.executable).resolve().parent
+        except Exception:
+            pass
+    return _project_root()
+
+
 def bundled_root() -> Optional[Path]:
     """
     Return frozen runtime bundle root when available.
@@ -49,8 +63,9 @@ def _search_roots() -> list[Path]:
         seen.add(key)
         roots.append(r)
 
-    _add(Path.cwd())
+    _add(app_root())
     _add(bundled_root())
+    _add(Path.cwd())
     _add(_project_root())
     return roots
 
@@ -79,7 +94,7 @@ def resolve_runtime_path(path_like: str | Path) -> Path:
     """
     Resolve path for runtime usage.
     For relative paths tries cwd, frozen bundle root and project root.
-    Falls back to cwd-relative absolute path when target does not exist yet.
+    Falls back to app-root-relative absolute path when target does not exist yet.
     """
     found = find_existing_path(path_like)
     if found is not None:
@@ -91,7 +106,7 @@ def resolve_runtime_path(path_like: str | Path) -> Path:
             return p.resolve()
         except Exception:
             return p
-    return (Path.cwd() / p).resolve()
+    return (app_root() / p).resolve()
 
 
 def default_gps_nav_path() -> Path:
@@ -100,4 +115,3 @@ def default_gps_nav_path() -> Path:
     if found is not None:
         return found
     return resolve_runtime_path(rel)
-

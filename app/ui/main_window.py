@@ -79,8 +79,8 @@ _DEFAULT_CONFIG_JSON: dict[str, Any] = {
     },
 }
 
-_DEFAULT_PREVIEW_VISIBLE = "outputs/video_preview/visible/latest.jpg"
-_DEFAULT_PREVIEW_THERMAL = "outputs/video_preview/thermal/latest.jpg"
+_DEFAULT_PREVIEW_VISIBLE = str(resolve_runtime_path("outputs/video_preview/visible/latest.jpg"))
+_DEFAULT_PREVIEW_THERMAL = str(resolve_runtime_path("outputs/video_preview/thermal/latest.jpg"))
 _DEFAULT_GPS_NAV_PATH = str(default_gps_nav_path())
 _DEFAULT_GPS_STATIC_SEC = 0.0
 _DEFAULT_PLUTO_RF_BW_MHZ = 3.0
@@ -905,7 +905,7 @@ class MainWindow(QMainWindow):
         txt = str(value or "").strip()
         if not txt:
             txt = _DEFAULT_SESSION_OUTPUT_ROOT
-        return str(Path(txt).expanduser().resolve())
+        return str(resolve_runtime_path(txt))
 
     # ---------------- UI init ----------------
 
@@ -2425,7 +2425,7 @@ class MainWindow(QMainWindow):
         candidates: list[Path] = [session_dir / "scenario_manifest.json"]
         if scenario_id:
             candidates.append(session_dir.parent.parent / "scenarios" / scenario_id / "scenario_manifest.json")
-            candidates.append(Path("outputs") / "scenarios" / scenario_id / "scenario_manifest.json")
+            candidates.append(resolve_runtime_path(Path("outputs") / "scenarios" / scenario_id / "scenario_manifest.json"))
         for manifest_path in candidates:
             if not manifest_path.exists():
                 continue

@@ -111,7 +111,7 @@ class Orchestrator:
         self._trajectory_ticker = SessionTrajectoryTicker(bus)
         self._video_recorder = SessionVideoRecorder(bus, self._sm.get_services)
         self._auto_stop_after_gps_sec: float = 10.0
-        self._session_output_root: Path = (Path("outputs") / "sessions").resolve()
+        self._session_output_root: Path = resolve_runtime_path(Path("outputs") / "sessions")
         self._mayak_mode: str = "real"
         self._mayak_stub = MayakStubController()
 
@@ -141,7 +141,7 @@ class Orchestrator:
         txt = str(value or "").strip()
         if not txt:
             txt = str(Path("outputs") / "sessions")
-        root = Path(txt).expanduser().resolve()
+        root = resolve_runtime_path(txt)
         root.mkdir(parents=True, exist_ok=True)
         self._session_output_root = root
         return str(root)
@@ -1304,7 +1304,7 @@ class Orchestrator:
             timeout_sec = 120
         extra_args = str(gps_service.get("gps_extra_args", "") or "")
 
-        out_dir = (Path("outputs") / "scenarios" / scenario_id / "gps_preflight").resolve()
+        out_dir = resolve_runtime_path(Path("outputs") / "scenarios" / scenario_id / "gps_preflight")
         out_dir.mkdir(parents=True, exist_ok=True)
         nmea_txt = out_dir / "nmea_strings.txt"
         iq_bin = out_dir / "gpssim_iq.bin"
@@ -1989,7 +1989,7 @@ class Orchestrator:
         """
         Best-effort lookup of the latest generated ballistics trajectory.
         """
-        root = Path("outputs") / "ballistics"
+        root = resolve_runtime_path(Path("outputs") / "ballistics")
         if not root.exists():
             return None
 
@@ -2017,7 +2017,7 @@ class Orchestrator:
 
     def _write_scenario_manifest(self, prepared: dict[str, Any]) -> Path:
         scenario_id = str(prepared.get("scenario_id", "scn_unknown"))
-        out_dir = (Path("outputs") / "scenarios" / scenario_id).resolve()
+        out_dir = resolve_runtime_path(Path("outputs") / "scenarios" / scenario_id)
         out_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = out_dir / "scenario_manifest.json"
         manifest_path.write_text(json.dumps(prepared, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -2084,7 +2084,7 @@ class Orchestrator:
 
     def _build_session_gps_tx_config(self, prepared: dict[str, Any]) -> dict[str, Any]:
         scenario_id = str(prepared.get("scenario_id", "scn_unknown"))
-        iq_path = (Path("outputs") / "scenarios" / scenario_id / "gps_preflight" / "gpssim_iq.bin").resolve()
+        iq_path = resolve_runtime_path(Path("outputs") / "scenarios" / scenario_id / "gps_preflight" / "gpssim_iq.bin")
         if not iq_path.exists():
             raise FileNotFoundError(f"gps_preflight_iq_missing={iq_path.as_posix()}")
 
@@ -2261,7 +2261,7 @@ class Orchestrator:
         origin_lon: float,
         origin_h: float,
     ) -> Path:
-        out_dir = (Path("outputs") / "gps_sdr_sim" / "probe_cache").resolve()
+        out_dir = resolve_runtime_path(Path("outputs") / "gps_sdr_sim" / "probe_cache")
         out_dir.mkdir(parents=True, exist_ok=True)
 
         traj_csv = out_dir / "probe_trajectory.csv"
@@ -2549,7 +2549,7 @@ class Orchestrator:
 
     def _write_pluto_input_artifact(self, prepared: dict[str, Any]) -> Path:
         scenario_id = str(prepared.get("scenario_id", "scn_unknown"))
-        out_dir = (Path("outputs") / "scenarios" / scenario_id).resolve()
+        out_dir = resolve_runtime_path(Path("outputs") / "scenarios" / scenario_id)
         out_dir.mkdir(parents=True, exist_ok=True)
         payload = {
             "scenario_id": scenario_id,

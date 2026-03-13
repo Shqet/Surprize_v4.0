@@ -7,6 +7,7 @@ from typing import Optional
 
 from app.core.event_bus import EventBus
 from app.core.events import LogEvent
+from app.core.runtime_paths import resolve_runtime_path
 
 
 def setup_logging(log_path: str = "./outputs/logs/app.log", level: int = logging.INFO) -> None:
@@ -15,7 +16,7 @@ def setup_logging(log_path: str = "./outputs/logs/app.log", level: int = logging
       - log to file ./outputs/logs/app.log (create folder if needed)
       - simple format: timestamp/level/logger/message
     """
-    path = Path(log_path)
+    path = resolve_runtime_path(log_path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # Avoid duplicate handlers if setup_logging() is called multiple times.

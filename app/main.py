@@ -134,7 +134,7 @@ def _run_frozen_runtime_smoke() -> int:
       1) trajectory generation via embedded ballistics worker
       2) gps preflight IQ generation via gps-sdr-sim
     """
-    out_root = (Path("outputs") / "smoke" / "frozen_runtime").resolve()
+    out_root = resolve_runtime_path(Path("outputs") / "smoke" / "frozen_runtime")
     run_id = time.strftime("%Y%m%d_%H%M%S")
     run_dir = out_root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
